@@ -100,6 +100,10 @@ function parseWorker(value: unknown): WorkerSpec {
       throw new Error(`Worker ${id} has invalid route for ${status}`);
     }
 
+    if (status === "failed" && next !== null) {
+      throw new Error(`Worker ${id} cannot route failed status`);
+    }
+
     on[status as WorkerStatus] = next as string | null;
   }
 
