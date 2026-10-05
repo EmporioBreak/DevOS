@@ -11,6 +11,7 @@ export interface RunState {
 export interface StateStore {
   load(): Promise<RunState | null>;
   save(state: RunState): Promise<void>;
+  clear(): Promise<void>;
 }
 
 export interface OrchestratorOptions {
@@ -67,7 +68,7 @@ export class Orchestrator {
       const nextWorkerId = result.next ?? worker.on[result.status];
 
       if (nextWorkerId === null || nextWorkerId === undefined) {
-        await stateStore.save(state);
+        await stateStore.clear();
         return state;
       }
 
