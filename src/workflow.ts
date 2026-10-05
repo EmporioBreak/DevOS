@@ -29,7 +29,6 @@ export interface Workflow {
 
 export interface DevosResult {
   status: WorkerStatus;
-  next?: string;
 }
 
 export interface WorkerOutput {
