@@ -67,6 +67,16 @@ export class Orchestrator {
 
       const nextWorkerId = worker.on[result.status];
 
+      if (
+        (result.status === "needs_host" || result.status === "changes_requested") &&
+        (nextWorkerId === null || nextWorkerId === undefined)
+      ) {
+        await stateStore.save(state);
+        throw new Error(
+          `Worker ${worker.id} returned unroutable status: ${result.status}`,
+        );
+      }
+
       if (nextWorkerId === null || nextWorkerId === undefined) {
         await stateStore.clear();
         return state;
