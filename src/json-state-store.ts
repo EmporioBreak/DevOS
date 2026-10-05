@@ -1,12 +1,18 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RunState, StateStore } from "./orchestrator.js";
+import type { TaskRef } from "./workflow.js";
 
 export class JsonStateStore implements StateStore {
   readonly path: string;
 
-  constructor(projectRoot: string) {
-    this.path = join(projectRoot, ".devos", "state.json");
+  constructor(projectRoot: string, task: TaskRef) {
+    this.path = join(
+      projectRoot,
+      ".devos",
+      "state",
+      `${encodeURIComponent(task.repo)}-issue-${task.issue}.json`,
+    );
   }
 
   async load(): Promise<RunState | null> {
@@ -27,6 +33,10 @@ export class JsonStateStore implements StateStore {
     const temporaryPath = `${this.path}.tmp`;
     await writeFile(temporaryPath, `${JSON.stringify(valid, null, 2)}\n`, "utf8");
     await rename(temporaryPath, this.path);
+  }
+
+  async clear(): Promise<void> {
+    await rm(this.path, { force: true });
   }
 }
 
