@@ -8,6 +8,7 @@ class MemoryStore implements StateStore {
   state: RunState | null = null;
   async load(): Promise<RunState | null> { return this.state; }
   async save(state: RunState): Promise<void> { this.state = state; }
+  async clear(): Promise<void> { this.state = null; }
 }
 
 class QueueExecutor implements Executor {
@@ -133,4 +134,73 @@ test("routes needs_host from ChatGPT to local Codex mechanically", async () => {
   assert.equal(result.completedRuns, 2);
   assert.equal(chat.requests.length, 1);
   assert.equal(codex.requests.length, 1);
+});
+
+
+test("clears persisted state after successful completion", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 101 },
+    start: "worker",
+    workers: [
+      {
+        id: "worker",
+        executor: "chatgpt_browser",
+        prompt: "Complete the task.",
+        on: { done: null },
+      },
+    ],
+  };
+
+  const store = new MemoryStore();
+  const chat = new QueueExecutor("chatgpt_browser", [
+    { text: 'DEVOS_RESULT {"status":"done"}', sessionId: "session-1" },
+  ]);
+
+  await new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["chatgpt_browser", chat]]),
+    stateStore: store,
+  }).run();
+
+  assert.equal(store.state, null);
+});
+
+test("keeps persisted state after worker failure", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 102 },
+    start: "worker",
+    workers: [
+      {
+        id: "worker",
+        executor: "chatgpt_browser",
+        prompt: "Attempt the task.",
+        on: { failed: null },
+      },
+    ],
+  };
+
+  const store = new MemoryStore();
+  const chat = new QueueExecutor("chatgpt_browser", [
+    { text: 'DEVOS_RESULT {"status":"failed"}', sessionId: "session-2" },
+  ]);
+
+  await assert.rejects(
+    () =>
+      new Orchestrator({
+        projectRoot: "/project",
+        workflow,
+        executors: new Map([["chatgpt_browser", chat]]),
+        stateStore: store,
+      }).run(),
+    /Worker failed/,
+  );
+
+  assert.deepEqual(store.state, {
+    currentWorkerId: "worker",
+    completedRuns: 1,
+    sessions: { worker: "session-2" },
+  });
 });
