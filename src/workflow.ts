@@ -8,7 +8,8 @@ export type WorkerStatus =
 
 export interface TaskRef {
   repo: string;
-  pr: number;
+  issue: number;
+  pr?: number;
 }
 
 export interface WorkerSpec {
