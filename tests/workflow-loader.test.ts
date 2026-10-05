@@ -96,3 +96,24 @@ test("rejects unsupported executors", () => {
     /unsupported executor/,
   );
 });
+
+
+test("rejects undeclared host fallback workers", () => {
+  assert.throws(
+    () =>
+      parseWorkflow({
+        version: 1,
+        task: { repo: "owner/product", issue: 18 },
+        start: "developer",
+        workers: [
+          {
+            id: "developer",
+            executor: "chatgpt_browser",
+            prompt: "Attempt the task.",
+            on: { done: null, needs_host: "local_developer" },
+          },
+        ],
+      }),
+    /routes to unknown worker: local_developer/,
+  );
+});
