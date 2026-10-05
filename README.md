@@ -1,64 +1,145 @@
 # DevOS
 
-DevOS is a deliberately dumb local orchestrator for autonomous product development.
+DevOS — это намеренно простой локальный оркестратор для автономной разработки продуктов.
 
-It replaces the manual work of opening one AI agent after another, passing work between them, waiting for completion, and routing review feedback back to implementation.
+Его задача — убрать ручную работу по переключению между AI-агентами: запускать нужного агента, ждать завершения, читать машинный статус результата и запускать следующего.
 
-## Responsibilities
+## Главный принцип
 
-DevOS does:
+> DevOS управляет координацией, но никогда не принимает интеллектуальные решения.
 
-- run a worker chosen by the main agent;
-- wait for it to finish;
-- parse one small machine-readable result;
-- persist orchestration state;
-- route to the next configured worker;
-- resume after restart.
+Главный агент решает:
 
-DevOS does **not** decide:
+- что именно нужно сделать;
+- какие роли нужны для задачи;
+- какой агент должен выполнять каждую роль;
+- когда работу нужно вернуть на доработку;
+- когда результат готов к финальному ревью;
+- когда нужно позвать пользователя.
 
-- what product to build;
-- which roles are needed;
-- whether code is good;
-- how to implement a task;
-- whether a review finding is correct;
-- whether a result is production-ready.
+DevOS только исполняет этот workflow.
 
-Those decisions belong to AI agents.
+## Как проходит работа
 
-## Shared memory
+Главный агент создаёт pull request и описывает в нём задачу и ожидаемый результат.
 
-GitHub is the durable collaboration surface:
+После этого DevOS запускает агентов по очереди.
 
-- issues describe tasks;
-- pull requests contain the implementation;
-- commits contain code history;
-- comments contain worker reports;
-- reviews contain findings and approvals.
+Пример:
 
-Workers read the relevant GitHub task/PR themselves. DevOS should not accumulate or replay project history into prompts.
+```text
+главный агент
+    ↓
+developer
+    ↓
+reviewer
+    ├─ changes_requested → developer
+    └─ approved → ui_tester
+                         ↓
+                   final_reviewer
+```
 
-## Executors
+Если reviewer просит изменения, DevOS снова запускает developer-а. Сам DevOS не анализирует замечания и не решает, правильны ли они.
 
-A workflow may use different ways to run workers.
+## GitHub как общая память
 
-- `codex`: local Codex CLI for workers that need files, terminal, tools, simulators, SDKs, or other local capabilities.
-- `chatgpt_browser`: normal ChatGPT through a persistent Playwright browser session for reasoning/review workers that do not need local filesystem access.
+Pull request — основная точка координации задачи.
 
-The main agent chooses the worker and executor. DevOS only executes that choice.
+В PR находятся:
 
-## Worker result
+- описание задачи;
+- код и diff;
+- commits;
+- отчёты разработчиков;
+- результаты тестирования;
+- review-комментарии;
+- решения агентов.
 
-The meaningful report belongs in GitHub. The final line of a worker response is only orchestration control data:
+Каждый worker сам читает PR и получает из него нужный контекст.
+
+DevOS не должен собирать историю проекта в большой prompt, пересказывать работу предыдущих агентов или хранить параллельную «истину» в собственных evidence-файлах.
+
+Issues могут использоваться человеком или главным агентом для планирования проекта, но внутренний worker-loop DevOS строится вокруг pull request.
+
+## Исполнители
+
+Worker может запускаться разными способами.
+
+### `codex`
+
+Локальный Codex CLI.
+
+Используется, когда агенту нужны:
+
+- файлы проекта;
+- терминал;
+- изменение кода;
+- локальные тесты;
+- SDK;
+- симуляторы;
+- браузеры;
+- установка дополнительных инструментов.
+
+### `chatgpt_browser`
+
+Обычный ChatGPT, открытый DevOS через Playwright в постоянной браузерной сессии.
+
+Такой worker подходит для задач, где не нужен локальный доступ к файловой системе, например:
+
+- code review;
+- архитектурное review;
+- анализ;
+- планирование;
+- финальная интеллектуальная проверка.
+
+Это отдельный путь выполнения, чтобы не тратить лимиты Codex там, где локальная среда не нужна.
+
+Главный агент сам выбирает executor для каждого worker-а. DevOS не пытается принимать это решение.
+
+## Результат worker-а
+
+Содержательный результат работы агент пишет в pull request.
+
+В собственном ответе worker оставляет только короткий управляющий результат для DevOS.
+
+Последняя строка ответа должна иметь вид:
 
 ```text
 DEVOS_RESULT {"status":"done"}
 ```
 
-Other statuses are `approved`, `changes_requested`, and `failed`. A worker may optionally return a configured worker id in `next`.
+Поддерживаемые статусы:
 
-## Design rule
+- `done` — работа выполнена, переходить дальше по workflow;
+- `approved` — review пройден;
+- `changes_requested` — требуется вернуть работу указанному worker-у;
+- `failed` — выполнение остановлено из-за ошибки.
 
-> DevOS owns coordination, never judgment.
+При необходимости worker может явно указать следующий шаг:
 
-See issue #1 for the MVP.
+```text
+DEVOS_RESULT {"status":"changes_requested","next":"developer"}
+```
+
+DevOS читает только этот управляющий результат. Смысл работы остаётся в GitHub.
+
+## Что DevOS не должен делать
+
+В ядре DevOS не должно быть:
+
+- requirements engine;
+- technical planner;
+- AI-выбора ролей;
+- semantic quality gates;
+- evidence subsystem;
+- reconciliation engine;
+- сложного policy routing;
+- попыток определить, production-ready ли код.
+
+Если для решения нужен интеллект — это задача агента, а не оркестратора.
+
+## Правило разработки самого DevOS
+
+После первоначального bootstrap все изменения DevOS делаются только через pull request.
+
+Внутренний цикл разработки должен по возможности проходить локально. GitHub Actions не должен использоваться как постоянный внутренний цикл между каждым шагом агентов.
