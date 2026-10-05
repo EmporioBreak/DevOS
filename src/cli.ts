@@ -8,19 +8,34 @@ import { CodexExecutor } from "./codex-executor.js";
 import { LocalCommandRunner } from "./command-runner.js";
 import type { Executor } from "./executor.js";
 import { JsonStateStore } from "./json-state-store.js";
-import { Orchestrator } from "./orchestrator.js";
+import { Orchestrator, type StateStore } from "./orchestrator.js";
 import { loadWorkflow } from "./workflow-loader.js";
 
 export interface RunCommand {
+  mode: "run" | "restart";
   workflowPath: string;
 }
 
 export function parseCliArgs(args: string[]): RunCommand {
-  if (args.length !== 2 || args[0] !== "run" || !args[1]?.trim()) {
-    throw new Error("Usage: devos run <workflow.json>");
+  const mode = args[0];
+  if (
+    args.length !== 2 ||
+    (mode !== "run" && mode !== "restart") ||
+    !args[1]?.trim()
+  ) {
+    throw new Error("Usage: devos <run|restart> <workflow.json>");
   }
 
-  return { workflowPath: args[1] };
+  return { mode, workflowPath: args[1] };
+}
+
+export async function prepareRunState(
+  command: RunCommand,
+  stateStore: StateStore,
+): Promise<void> {
+  if (command.mode === "restart") {
+    await stateStore.clear();
+  }
 }
 
 export async function main(
@@ -35,6 +50,9 @@ export async function main(
   const codex = new CodexExecutor(commandRunner);
   const chatgpt = new ChatGptBrowserExecutor();
 
+  const stateStore = new JsonStateStore(cwd, workflow.task);
+  await prepareRunState(command, stateStore);
+
   try {
     const state = await new Orchestrator({
       projectRoot: cwd,
@@ -43,7 +61,7 @@ export async function main(
         ["codex", codex],
         ["chatgpt_browser", chatgpt],
       ]),
-      stateStore: new JsonStateStore(cwd, workflow.task),
+      stateStore,
     }).run();
 
     process.stdout.write(
