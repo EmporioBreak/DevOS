@@ -219,8 +219,17 @@ devos restart .devos/workflow.json
   "workers": [
     {
       "id": "developer",
-      "executor": "codex",
+      "executor": "chatgpt_browser",
       "prompt": "Implement the task described in GitHub.",
+      "on": {
+        "done": "reviewer",
+        "needs_host": "local_developer"
+      }
+    },
+    {
+      "id": "local_developer",
+      "executor": "codex",
+      "prompt": "Continue the developer task using the host environment.",
       "on": {
         "done": "reviewer",
         "failed": null
@@ -230,6 +239,16 @@ devos restart .devos/workflow.json
       "id": "reviewer",
       "executor": "chatgpt_browser",
       "prompt": "Review the implementation and report findings in GitHub.",
+      "on": {
+        "approved": null,
+        "changes_requested": "developer",
+        "needs_host": "local_reviewer"
+      }
+    },
+    {
+      "id": "local_reviewer",
+      "executor": "codex",
+      "prompt": "Continue the review using the host environment.",
       "on": {
         "approved": null,
         "changes_requested": "developer",
