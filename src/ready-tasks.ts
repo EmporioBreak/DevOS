@@ -64,6 +64,8 @@ export async function listReadyTasks(
       config.repo,
       "--state",
       "open",
+      "--author",
+      "@me",
       "--limit",
       "100",
       "--json",
