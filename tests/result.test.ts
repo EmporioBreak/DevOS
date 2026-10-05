@@ -9,6 +9,13 @@ test("parses the final control line", () => {
   );
 });
 
+test("accepts host fallback status", () => {
+  assert.deepEqual(
+    parseDevosResult('DEVOS_RESULT {"status":"needs_host"}'),
+    { status: "needs_host" },
+  );
+});
+
 test("accepts explicit rerouting", () => {
   assert.deepEqual(
     parseDevosResult('DEVOS_RESULT {"status":"changes_requested","next":"developer"}'),
