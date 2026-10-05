@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "id": "homepage-r1",
+  "mode": "run",
+  "workflow": {
+    "version": 1,
+    "task": {
+      "repo": "owner/project",
+      "issue": 42
+    },
+    "start": "developer",
+    "workers": [
+      {
+        "id": "developer",
+        "executor": "chatgpt_browser",
+        "prompt": "Implement the task described in GitHub Issue #42. Report meaningful work in GitHub.",
+        "on": {
+          "done": "reviewer",
+          "needs_host": "local_developer"
+        }
+      },
+      {
+        "id": "local_developer",
+        "executor": "codex",
+        "prompt": "Continue the same implementation task using the host environment.",
+        "on": {
+          "done": "reviewer"
+        }
+      },
+      {
+        "id": "reviewer",
+        "executor": "chatgpt_browser",
+        "prompt": "Independently review the implementation against the original Issue and report findings in GitHub.",
+        "on": {
+          "approved": "acceptance",
+          "changes_requested": "developer",
+          "needs_host": "local_reviewer"
+        }
+      },
+      {
+        "id": "local_reviewer",
+        "executor": "codex",
+        "prompt": "Continue the same review using the host environment.",
+        "on": {
+          "approved": "acceptance",
+          "changes_requested": "developer"
+        }
+      },
+      {
+        "id": "acceptance",
+        "executor": "chatgpt_browser",
+        "prompt": "Perform final task-level acceptance against the original Issue and all implementation and review evidence. Approve only when the original task is complete.",
+        "on": {
+          "approved": null,
+          "changes_requested": "developer",
+          "needs_host": "local_acceptance"
+        }
+      },
+      {
+        "id": "local_acceptance",
+        "executor": "codex",
+        "prompt": "Continue the same final task-level acceptance using the host environment.",
+        "on": {
+          "approved": null,
+          "changes_requested": "developer"
+        }
+      }
+    ]
+  }
+}
