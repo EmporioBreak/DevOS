@@ -161,3 +161,51 @@ DevOS читает только этот управляющий результа
 После первоначального bootstrap все изменения DevOS делаются только через pull request.
 
 Внутренний цикл разработки должен по возможности проходить локально. GitHub Actions не должен использоваться как постоянный внутренний цикл между каждым шагом агентов.
+
+## Запуск
+
+Минимальный запуск выполняется из корня проекта:
+
+```bash
+devos run .devos/workflow.json
+```
+
+Файл workflow описывает только уже принятое главным агентом решение: какие workers нужны, каким executor-ом запускать каждого и куда переходить по управляющему статусу.
+
+Пример:
+
+```json
+{
+  "version": 1,
+  "task": {
+    "repo": "owner/product",
+    "issue": 42,
+    "pr": 57
+  },
+  "start": "developer",
+  "workers": [
+    {
+      "id": "developer",
+      "executor": "codex",
+      "prompt": "Implement the task described in GitHub.",
+      "on": {
+        "done": "reviewer",
+        "failed": null
+      }
+    },
+    {
+      "id": "reviewer",
+      "executor": "chatgpt_browser",
+      "prompt": "Review the implementation and report findings in GitHub.",
+      "on": {
+        "approved": null,
+        "changes_requested": "developer",
+        "failed": null
+      }
+    }
+  ]
+}
+```
+
+DevOS не выбирает роли или executor-ы из этого файла. Он только исполняет уже заданный workflow и сохраняет локальное состояние в `.devos/state.json`.
+
