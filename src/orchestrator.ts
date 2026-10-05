@@ -33,14 +33,10 @@ export class Orchestrator {
 
     while (true) {
       const worker = workers.get(state.currentWorkerId);
-      if (!worker) {
-        throw new Error(`Unknown worker: ${state.currentWorkerId}`);
-      }
+      if (!worker) throw new Error(`Unknown worker: ${state.currentWorkerId}`);
 
       const executor = this.options.executors.get(worker.executor);
-      if (!executor) {
-        throw new Error(`Missing executor: ${worker.executor}`);
-      }
+      if (!executor) throw new Error(`Missing executor: ${worker.executor}`);
 
       const output = await executor.run({
         projectRoot: this.options.projectRoot,
@@ -73,13 +69,17 @@ export class Orchestrator {
 }
 
 export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec): string {
-  const pr = workflow.task.pr ? ` PR #${workflow.task.pr}.` : "";
+  const refs = [
+    `${workflow.task.repo} Issue #${workflow.task.issue}`,
+    workflow.task.pr ? `PR #${workflow.task.pr}` : null,
+  ].filter(Boolean).join(", ");
+
   return [
     worker.prompt.trim(),
     "",
-    `Shared project context is in GitHub: ${workflow.task.repo} issue #${workflow.task.issue}.${pr}`,
-    "Read the relevant GitHub task, PR, diff, and latest worker reports yourself.",
-    "Put your meaningful work report in GitHub.",
+    `Shared task context is in GitHub: ${refs}.`,
+    "Read the Issue and, when present, the linked PR, diff, commits, latest worker reports, and review discussion yourself.",
+    "Put your meaningful work report in the appropriate GitHub Issue, PR, review, or comment.",
     'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|failed","next":"optional-worker-id"}',
   ].join("\n");
 }
