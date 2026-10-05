@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ChatGptBrowserExecutor } from "./chatgpt-browser-executor.js";
 import { CodexExecutor } from "./codex-executor.js";
 import { LocalCommandRunner } from "./command-runner.js";
+import type { Executor } from "./executor.js";
 import { JsonStateStore } from "./json-state-store.js";
 import { Orchestrator } from "./orchestrator.js";
 import { loadWorkflow } from "./workflow-loader.js";
@@ -36,7 +39,7 @@ export async function main(
     const state = await new Orchestrator({
       projectRoot: cwd,
       workflow,
-      executors: new Map([
+      executors: new Map<string, Executor>([
         ["codex", codex],
         ["chatgpt_browser", chatgpt],
       ]),
@@ -51,7 +54,17 @@ export async function main(
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+export function isCliEntrypoint(moduleUrl: string, argvPath: string | undefined): boolean {
+  if (!argvPath) return false;
+
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(argvPath);
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntrypoint(import.meta.url, process.argv[1])) {
   main().catch(error => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`DevOS failed: ${message}\n`);
