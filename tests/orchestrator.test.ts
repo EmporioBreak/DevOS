@@ -89,3 +89,44 @@ test("starts without a pull request or existing sessions", async () => {
   assert.doesNotMatch(codex.requests[0]?.prompt ?? "", /PR #/);
   assert.deepEqual(result.sessions, { developer: "codex-1" });
 });
+
+
+test("routes needs_host from ChatGPT to local Codex mechanically", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 99 },
+    start: "primary",
+    workers: [
+      {
+        id: "primary",
+        executor: "chatgpt_browser",
+        prompt: "Attempt the task.",
+        on: { done: null, needs_host: "host" },
+      },
+      {
+        id: "host",
+        executor: "codex",
+        prompt: "Continue on the host machine.",
+        on: { done: null },
+      },
+    ],
+  };
+
+  const chat = new QueueExecutor("chatgpt_browser", [
+    { text: 'DEVOS_RESULT {"status":"needs_host"}', sessionId: "https://chatgpt.com/c/primary" },
+  ]);
+  const codex = new QueueExecutor("codex", [
+    { text: 'DEVOS_RESULT {"status":"done"}', sessionId: "codex-host" },
+  ]);
+
+  const result = await new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["chatgpt_browser", chat], ["codex", codex]]),
+    stateStore: new MemoryStore(),
+  }).run();
+
+  assert.equal(result.completedRuns, 2);
+  assert.equal(chat.requests.length, 1);
+  assert.equal(codex.requests.length, 1);
+});
