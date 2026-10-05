@@ -43,7 +43,7 @@ export async function main(
         ["codex", codex],
         ["chatgpt_browser", chatgpt],
       ]),
-      stateStore: new JsonStateStore(cwd),
+      stateStore: new JsonStateStore(cwd, workflow.task),
     }).run();
 
     process.stdout.write(
