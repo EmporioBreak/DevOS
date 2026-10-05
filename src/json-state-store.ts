@@ -15,9 +15,7 @@ export class JsonStateStore implements StateStore {
       const value: unknown = JSON.parse(raw);
       return validateState(value);
     } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") {
-        return null;
-      }
+      if (isNodeError(error) && error.code === "ENOENT") return null;
       throw error;
     }
   }
@@ -39,12 +37,15 @@ function validateState(value: unknown): RunState {
 
   const record = value as Record<string, unknown>;
   if (
-    Object.keys(record).length !== 2 ||
+    Object.keys(record).some(
+      key => key !== "currentWorkerId" && key !== "completedRuns" && key !== "sessions",
+    ) ||
     typeof record.currentWorkerId !== "string" ||
     !record.currentWorkerId.trim() ||
     typeof record.completedRuns !== "number" ||
     !Number.isSafeInteger(record.completedRuns) ||
-    record.completedRuns < 0
+    record.completedRuns < 0 ||
+    !isSessionMap(record.sessions)
   ) {
     throw new Error("Invalid DevOS state");
   }
@@ -52,7 +53,18 @@ function validateState(value: unknown): RunState {
   return {
     currentWorkerId: record.currentWorkerId,
     completedRuns: record.completedRuns,
+    sessions: { ...record.sessions },
   };
+}
+
+function isSessionMap(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.entries(value).every(
+    ([workerId, sessionId]) =>
+      workerId.trim().length > 0 &&
+      typeof sessionId === "string" &&
+      sessionId.trim().length > 0,
+  );
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
