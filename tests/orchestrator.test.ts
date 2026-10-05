@@ -14,71 +14,78 @@ class QueueExecutor implements Executor {
   constructor(
     readonly kind: ExecutorKind,
     private readonly outputs: WorkerOutput[],
-    readonly prompts: string[] = [],
+    readonly requests: WorkerRequest[] = [],
   ) {}
 
   async run(request: WorkerRequest): Promise<WorkerOutput> {
-    this.prompts.push(request.prompt);
+    this.requests.push(request);
     const output = this.outputs.shift();
     if (!output) throw new Error("No queued output");
     return output;
   }
 }
 
-test("routes review changes back to developer then finishes on approval", async () => {
+test("reuses each worker session across review loops", async () => {
   const workflow: Workflow = {
     version: 1,
     task: { repo: "owner/product", issue: 12, pr: 34 },
     start: "developer",
     workers: [
-      { id: "developer", executor: "codex", prompt: "Implement the task.", on: { done: "reviewer" } },
-      { id: "reviewer", executor: "chatgpt_browser", prompt: "Review the implementation.", on: { changes_requested: "developer", approved: null } },
+      { id: "developer", executor: "codex", prompt: "Implement.", on: { done: "reviewer" } },
+      { id: "reviewer", executor: "chatgpt_browser", prompt: "Review.", on: { changes_requested: "developer", approved: null } },
     ],
   };
 
   const codex = new QueueExecutor("codex", [
-    { text: 'DEVOS_RESULT {"status":"done"}' },
-    { text: 'DEVOS_RESULT {"status":"done"}' },
+    { text: 'DEVOS_RESULT {"status":"done"}', sessionId: "codex-1" },
+    { text: 'DEVOS_RESULT {"status":"done"}', sessionId: "codex-1" },
   ]);
   const chat = new QueueExecutor("chatgpt_browser", [
-    { text: 'DEVOS_RESULT {"status":"changes_requested"}' },
-    { text: 'DEVOS_RESULT {"status":"approved"}' },
+    { text: 'DEVOS_RESULT {"status":"changes_requested"}', sessionId: "https://chatgpt.com/c/review-1" },
+    { text: 'DEVOS_RESULT {"status":"approved"}', sessionId: "https://chatgpt.com/c/review-1" },
   ]);
-  const store = new MemoryStore();
 
   const result = await new Orchestrator({
     projectRoot: "/project",
     workflow,
     executors: new Map([["codex", codex], ["chatgpt_browser", chat]]),
-    stateStore: store,
+    stateStore: new MemoryStore(),
   }).run();
 
   assert.equal(result.completedRuns, 4);
-  assert.match(chat.prompts[0] ?? "", /Issue #12/);
-  assert.match(chat.prompts[0] ?? "", /PR #34/);
+  assert.deepEqual(result.sessions, {
+    developer: "codex-1",
+    reviewer: "https://chatgpt.com/c/review-1",
+  });
+  assert.equal(codex.requests[1]?.sessionId, "codex-1");
+  assert.equal(chat.requests[1]?.sessionId, "https://chatgpt.com/c/review-1");
+  assert.match(chat.requests[0]?.prompt ?? "", /Issue #12/);
+  assert.match(chat.requests[0]?.prompt ?? "", /PR #34/);
 });
 
-test("works before a pull request exists", async () => {
+test("starts without a pull request or existing sessions", async () => {
   const workflow: Workflow = {
     version: 1,
     task: { repo: "owner/product", issue: 12 },
     start: "developer",
     workers: [
-      { id: "developer", executor: "codex", prompt: "Start implementation.", on: { done: null } },
+      { id: "developer", executor: "codex", prompt: "Start.", on: { done: null } },
     ],
   };
 
   const codex = new QueueExecutor("codex", [
-    { text: 'DEVOS_RESULT {"status":"done"}' },
+    { text: 'DEVOS_RESULT {"status":"done"}', sessionId: "codex-1" },
   ]);
 
-  await new Orchestrator({
+  const result = await new Orchestrator({
     projectRoot: "/project",
     workflow,
     executors: new Map([["codex", codex]]),
     stateStore: new MemoryStore(),
   }).run();
 
-  assert.match(codex.prompts[0] ?? "", /Issue #12/);
-  assert.doesNotMatch(codex.prompts[0] ?? "", /PR #/);
+  assert.equal(codex.requests[0]?.sessionId, undefined);
+  assert.match(codex.requests[0]?.prompt ?? "", /Issue #12/);
+  assert.doesNotMatch(codex.requests[0]?.prompt ?? "", /PR #/);
+  assert.deepEqual(result.sessions, { developer: "codex-1" });
 });
