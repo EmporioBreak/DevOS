@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+RUNTIME="$ROOT/.devos/runtime"
+CLI="$RUNTIME/dist/src/cli.js"
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "DevOS requires Node.js 22 or newer." >&2
+  exit 1
+fi
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "DevOS requires the GitHub CLI (gh) authenticated for this project's repository." >&2
+  exit 1
+fi
+
+if [ ! -f "$CLI" ]; then
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "DevOS first-run setup requires npm." >&2
+    exit 1
+  fi
+
+  mkdir -p "$ROOT/.devos"
+  TMP="$ROOT/.devos/runtime.tmp.$$"
+  rm -rf "$TMP"
+
+  echo "Setting up DevOS locally for this project..."
+  gh repo clone EmporioBreak/DevOS "$TMP" -- --depth 1 >/dev/null
+  (
+    cd "$TMP"
+    npm install --no-package-lock >/dev/null
+    npm run build >/dev/null
+  )
+  rm -rf "$RUNTIME"
+  mv "$TMP" "$RUNTIME"
+fi
+
+cd "$ROOT"
+exec node "$CLI" "$@"
