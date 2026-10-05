@@ -6,6 +6,7 @@ const STATUSES = new Set<WorkerStatus>([
   "done",
   "approved",
   "changes_requested",
+  "needs_host",
   "failed",
 ]);
 
