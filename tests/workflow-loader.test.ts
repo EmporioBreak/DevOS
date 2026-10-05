@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseWorkflow } from "../src/workflow-loader.js";
 
-test("parses a minimal valid workflow", () => {
+test("parses needs_host routes in a valid workflow", () => {
   assert.deepEqual(
     parseWorkflow({
       version: 1,
@@ -11,8 +11,14 @@ test("parses a minimal valid workflow", () => {
       workers: [
         {
           id: "developer",
+          executor: "chatgpt_browser",
+          prompt: "Attempt the task.",
+          on: { done: "reviewer", needs_host: "host", failed: null },
+        },
+        {
+          id: "host",
           executor: "codex",
-          prompt: "Implement the task.",
+          prompt: "Continue on the host.",
           on: { done: "reviewer", failed: null },
         },
         {
@@ -30,8 +36,14 @@ test("parses a minimal valid workflow", () => {
       workers: [
         {
           id: "developer",
+          executor: "chatgpt_browser",
+          prompt: "Attempt the task.",
+          on: { done: "reviewer", needs_host: "host", failed: null },
+        },
+        {
+          id: "host",
           executor: "codex",
-          prompt: "Implement the task.",
+          prompt: "Continue on the host.",
           on: { done: "reviewer", failed: null },
         },
         {
