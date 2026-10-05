@@ -13,7 +13,19 @@ test("parses a minimal valid workflow", () => {
           id: "developer",
           executor: "codex",
           prompt: "Implement the task.",
-          on: { done: "reviewer", failed: null },
+          on: { done: "reviewer", needs_host: "host", failed: null },
+        },
+        {
+          id: "host",
+          executor: "codex",
+          prompt: "Run host-only work.",
+          on: { done: "reviewer" },
+        },
+        {
+          id: "host",
+          executor: "codex",
+          prompt: "Run host-only work.",
+          on: { done: "reviewer" },
         },
         {
           id: "reviewer",
@@ -32,7 +44,7 @@ test("parses a minimal valid workflow", () => {
           id: "developer",
           executor: "codex",
           prompt: "Implement the task.",
-          on: { done: "reviewer", failed: null },
+          on: { done: "reviewer", needs_host: "host", failed: null },
         },
         {
           id: "reviewer",
