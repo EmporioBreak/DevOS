@@ -73,13 +73,12 @@ export class Orchestrator {
 }
 
 export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec): string {
-  const pr = workflow.task.pr ? ` PR #${workflow.task.pr}.` : "";
   return [
     worker.prompt.trim(),
     "",
-    `Shared project context is in GitHub: ${workflow.task.repo} issue #${workflow.task.issue}.${pr}`,
-    "Read the relevant GitHub task, PR, diff, and latest worker reports yourself.",
-    "Put your meaningful work report in GitHub.",
+    `Shared task context is in GitHub: ${workflow.task.repo} PR #${workflow.task.pr}.`,
+    "Read the PR description, diff, commits, latest worker reports, and review discussion yourself.",
+    "Put your meaningful work report in the pull request.",
     'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|failed","next":"optional-worker-id"}',
   ].join("\n");
 }
