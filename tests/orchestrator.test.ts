@@ -204,3 +204,47 @@ test("keeps persisted state after worker failure", async () => {
     sessions: { worker: "session-2" },
   });
 });
+
+
+for (const status of ["needs_host", "changes_requested"] as const) {
+  test(`preserves state and rejects unroutable ${status}`, async () => {
+    const workflow: Workflow = {
+      version: 1,
+      task: { repo: "owner/product", issue: 103 },
+      start: "worker",
+      workers: [
+        {
+          id: "worker",
+          executor: "chatgpt_browser",
+          prompt: "Attempt the task.",
+          on: {},
+        },
+      ],
+    };
+
+    const store = new MemoryStore();
+    const chat = new QueueExecutor("chatgpt_browser", [
+      {
+        text: `DEVOS_RESULT {"status":"${status}"}`,
+        sessionId: "session-3",
+      },
+    ]);
+
+    await assert.rejects(
+      () =>
+        new Orchestrator({
+          projectRoot: "/project",
+          workflow,
+          executors: new Map([["chatgpt_browser", chat]]),
+          stateStore: store,
+        }).run(),
+      new RegExp(`unroutable status: ${status}`),
+    );
+
+    assert.deepEqual(store.state, {
+      currentWorkerId: "worker",
+      completedRuns: 1,
+      sessions: { worker: "session-3" },
+    });
+  });
+}
