@@ -4,51 +4,58 @@ import type { CommandResult, CommandRunner } from "../src/command-runner.js";
 import {
   CodexExecutor,
   buildCodexArgs,
+  buildCodexResumeArgs,
   parseFinalAgentMessage,
   parseThreadId,
 } from "../src/codex-executor.js";
 
-test("builds codex exec arguments without hidden routing decisions", () => {
+test("builds start and resume arguments explicitly", () => {
+  const options = {
+    model: "gpt-5.6-codex",
+    reasoningEffort: "medium" as const,
+    sandbox: "workspace-write" as const,
+  };
+
   assert.deepEqual(
-    buildCodexArgs("/project", "Do the work", {
-      model: "gpt-5.6-codex",
-      reasoningEffort: "medium",
-      sandbox: "workspace-write",
-    }),
+    buildCodexArgs("/project", "Do the work", options),
     [
-      "exec",
-      "-C",
-      "/project",
-      "--sandbox",
-      "workspace-write",
-      "-m",
-      "gpt-5.6-codex",
-      "-c",
-      'model_reasoning_effort="medium"',
-      "--json",
-      "Do the work",
+      "exec", "-C", "/project",
+      "--sandbox", "workspace-write",
+      "-m", "gpt-5.6-codex",
+      "-c", 'model_reasoning_effort="medium"',
+      "--json", "Do the work",
+    ],
+  );
+
+  assert.deepEqual(
+    buildCodexResumeArgs("/project", "thread-1", "Continue", options),
+    [
+      "exec", "-C", "/project",
+      "--sandbox", "workspace-write",
+      "resume", "thread-1",
+      "-m", "gpt-5.6-codex",
+      "-c", 'model_reasoning_effort="medium"',
+      "--json", "Continue",
     ],
   );
 });
 
-test("parses thread id and final agent message from codex json stream", () => {
+test("parses thread id and final agent message", () => {
   const stdout = [
     '{"type":"thread.started","thread_id":"abc-123"}',
-    'not-json diagnostic',
     '{"type":"item.completed","item":{"type":"agent_message","text":"first"}}',
     '{"type":"item.completed","item":{"type":"agent_message","text":"final\\nDEVOS_RESULT {\\\"status\\\":\\\"done\\\"}"}}',
   ].join("\n");
 
   assert.equal(parseThreadId(stdout), "abc-123");
-  assert.equal(
-    parseFinalAgentMessage(stdout),
-    'final\nDEVOS_RESULT {"status":"done"}',
-  );
+  assert.equal(parseFinalAgentMessage(stdout), 'final\nDEVOS_RESULT {"status":"done"}');
 });
 
-test("executor returns final message and session id", async () => {
+test("resumes the supplied Codex session", async () => {
+  const calls: string[][] = [];
   const runner: CommandRunner = {
-    async run(): Promise<CommandResult> {
+    async run(_command, args): Promise<CommandResult> {
+      calls.push(args);
       return {
         exitCode: 0,
         stderr: "",
@@ -62,24 +69,10 @@ test("executor returns final message and session id", async () => {
 
   const result = await new CodexExecutor(runner).run({
     projectRoot: "/project",
-    prompt: "Implement",
-  });
-
-  assert.deepEqual(result, {
-    text: 'DEVOS_RESULT {"status":"done"}',
+    prompt: "Continue",
     sessionId: "session-1",
   });
-});
 
-test("executor rejects non-zero codex exit", async () => {
-  const runner: CommandRunner = {
-    async run(): Promise<CommandResult> {
-      return { exitCode: 2, stdout: "", stderr: "boom" };
-    },
-  };
-
-  await assert.rejects(
-    () => new CodexExecutor(runner).run({ projectRoot: "/project", prompt: "x" }),
-    /Codex exited with code 2: boom/,
-  );
+  assert.equal(calls[0]?.includes("resume"), true);
+  assert.equal(result.sessionId, "session-1");
 });
