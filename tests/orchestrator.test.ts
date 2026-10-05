@@ -61,6 +61,10 @@ test("reuses each worker session across review loops", async () => {
   assert.equal(chat.requests[1]?.sessionId, "https://chatgpt.com/c/review-1");
   assert.match(chat.requests[0]?.prompt ?? "", /Issue #12/);
   assert.match(chat.requests[0]?.prompt ?? "", /PR #34/);
+  assert.match(
+    chat.requests[0]?.prompt ?? "",
+    /\*\*DevOS worker:\*\* `reviewer` \(`chatgpt_browser`\)/,
+  );
 });
 
 test("starts without a pull request or existing sessions", async () => {

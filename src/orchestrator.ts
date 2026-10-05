@@ -93,6 +93,7 @@ export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec): strin
     `Shared task context is in GitHub: ${refs}.`,
     "Read the Issue and, when present, the linked PR, diff, commits, latest worker reports, and review discussion yourself.",
     "Put your meaningful work report in the appropriate GitHub Issue, PR, review, or comment.",
+    `Begin every GitHub report with exactly: **DevOS worker:** \`${worker.id}\` (\`${worker.executor}\`)`,
     'If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_host instead of failed.',
     'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_host|failed","next":"optional-worker-id"}',
   ].join("\n");
