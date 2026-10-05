@@ -28,21 +28,11 @@ class QueueExecutor implements Executor {
 test("routes review changes back to developer then finishes on approval", async () => {
   const workflow: Workflow = {
     version: 1,
-    task: { repo: "owner/product", pr: 34 },
+    task: { repo: "owner/product", issue: 12, pr: 34 },
     start: "developer",
     workers: [
-      {
-        id: "developer",
-        executor: "codex",
-        prompt: "Implement the task.",
-        on: { done: "reviewer" },
-      },
-      {
-        id: "reviewer",
-        executor: "chatgpt_browser",
-        prompt: "Review the implementation.",
-        on: { changes_requested: "developer", approved: null },
-      },
+      { id: "developer", executor: "codex", prompt: "Implement the task.", on: { done: "reviewer" } },
+      { id: "reviewer", executor: "chatgpt_browser", prompt: "Review the implementation.", on: { changes_requested: "developer", approved: null } },
     ],
   };
 
@@ -59,14 +49,36 @@ test("routes review changes back to developer then finishes on approval", async 
   const result = await new Orchestrator({
     projectRoot: "/project",
     workflow,
-    executors: new Map([
-      ["codex", codex],
-      ["chatgpt_browser", chat],
-    ]),
+    executors: new Map([["codex", codex], ["chatgpt_browser", chat]]),
     stateStore: store,
   }).run();
 
   assert.equal(result.completedRuns, 4);
-  assert.match(chat.prompts[0] ?? "", /owner\/product PR #34/);
-  assert.doesNotMatch(chat.prompts[0] ?? "", /issue #/i);
+  assert.match(chat.prompts[0] ?? "", /Issue #12/);
+  assert.match(chat.prompts[0] ?? "", /PR #34/);
+});
+
+test("works before a pull request exists", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 12 },
+    start: "developer",
+    workers: [
+      { id: "developer", executor: "codex", prompt: "Start implementation.", on: { done: null } },
+    ],
+  };
+
+  const codex = new QueueExecutor("codex", [
+    { text: 'DEVOS_RESULT {"status":"done"}' },
+  ]);
+
+  await new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["codex", codex]]),
+    stateStore: new MemoryStore(),
+  }).run();
+
+  assert.match(codex.prompts[0] ?? "", /Issue #12/);
+  assert.doesNotMatch(codex.prompts[0] ?? "", /PR #/);
 });
