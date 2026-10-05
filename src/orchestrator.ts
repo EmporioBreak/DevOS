@@ -5,6 +5,7 @@ import type { Workflow, WorkerSpec } from "./workflow.js";
 export interface RunState {
   currentWorkerId: string;
   completedRuns: number;
+  sessions: Record<string, string>;
 }
 
 export interface StateStore {
@@ -29,6 +30,7 @@ export class Orchestrator {
       (await stateStore.load()) ?? {
         currentWorkerId: workflow.start,
         completedRuns: 0,
+        sessions: {},
       };
 
     while (true) {
@@ -38,13 +40,24 @@ export class Orchestrator {
       const executor = this.options.executors.get(worker.executor);
       if (!executor) throw new Error(`Missing executor: ${worker.executor}`);
 
+      const sessionId = state.sessions[worker.id];
       const output = await executor.run({
         projectRoot: this.options.projectRoot,
         prompt: buildWorkerPrompt(workflow, worker),
+        ...(sessionId ? { sessionId } : {}),
       });
 
+      const sessions =
+        output.sessionId === undefined
+          ? state.sessions
+          : { ...state.sessions, [worker.id]: output.sessionId };
+
       const result = parseDevosResult(output.text);
-      state = { ...state, completedRuns: state.completedRuns + 1 };
+      state = {
+        ...state,
+        sessions,
+        completedRuns: state.completedRuns + 1,
+      };
 
       if (result.status === "failed") {
         await stateStore.save(state);
@@ -62,7 +75,7 @@ export class Orchestrator {
         throw new Error(`Worker ${worker.id} routed to unknown worker: ${nextWorkerId}`);
       }
 
-      state = { currentWorkerId: nextWorkerId, completedRuns: state.completedRuns };
+      state = { ...state, currentWorkerId: nextWorkerId };
       await stateStore.save(state);
     }
   }
