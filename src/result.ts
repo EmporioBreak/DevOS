@@ -29,7 +29,7 @@ export function parseDevosResult(output: string): DevosResult {
   }
 
   const keys = Object.keys(value);
-  if (keys.some((key) => key !== "status" && key !== "next")) {
+  if (keys.some((key) => key !== "status")) {
     throw new Error("DEVOS_RESULT contains unsupported fields");
   }
 
@@ -37,16 +37,7 @@ export function parseDevosResult(output: string): DevosResult {
     throw new Error("DEVOS_RESULT has invalid status");
   }
 
-  if (
-    value.next !== undefined &&
-    (typeof value.next !== "string" || !value.next.trim())
-  ) {
-    throw new Error("DEVOS_RESULT has invalid next worker");
-  }
-
-  return value.next === undefined
-    ? { status: value.status as WorkerStatus }
-    : { status: value.status as WorkerStatus, next: value.next };
+  return { status: value.status as WorkerStatus };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

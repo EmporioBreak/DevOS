@@ -16,10 +16,10 @@ test("accepts host fallback status", () => {
   );
 });
 
-test("accepts explicit rerouting", () => {
-  assert.deepEqual(
-    parseDevosResult('DEVOS_RESULT {"status":"changes_requested","next":"developer"}'),
-    { status: "changes_requested", next: "developer" },
+test("rejects worker-controlled next routing", () => {
+  assert.throws(
+    () => parseDevosResult('DEVOS_RESULT {"status":"changes_requested","next":"developer"}'),
+    /unsupported fields/,
   );
 });
 

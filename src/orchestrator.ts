@@ -65,7 +65,7 @@ export class Orchestrator {
         throw new Error(`Worker failed: ${worker.id}`);
       }
 
-      const nextWorkerId = result.next ?? worker.on[result.status];
+      const nextWorkerId = worker.on[result.status];
 
       if (nextWorkerId === null || nextWorkerId === undefined) {
         await stateStore.clear();
@@ -96,6 +96,6 @@ export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec): strin
     "Put your meaningful work report in the appropriate GitHub Issue, PR, review, or comment.",
     `Begin every GitHub report with exactly: **DevOS worker:** \`${worker.id}\` (\`${worker.executor}\`)`,
     'If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_host instead of failed.',
-    'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_host|failed","next":"optional-worker-id"}',
+    'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_host|failed"}',
   ].join("\n");
 }
