@@ -117,3 +117,30 @@ test("rejects undeclared host fallback workers", () => {
     /routes to unknown worker: local_developer/,
   );
 });
+
+
+test("rejects non-null failed routes", () => {
+  assert.throws(
+    () =>
+      parseWorkflow({
+        version: 1,
+        task: { repo: "owner/product", issue: 26 },
+        start: "developer",
+        workers: [
+          {
+            id: "developer",
+            executor: "chatgpt_browser",
+            prompt: "Attempt the task.",
+            on: { done: null, failed: "recovery" },
+          },
+          {
+            id: "recovery",
+            executor: "codex",
+            prompt: "Recover.",
+            on: { done: null },
+          },
+        ],
+      }),
+    /cannot route failed status/,
+  );
+});
