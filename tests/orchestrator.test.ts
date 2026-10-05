@@ -28,7 +28,7 @@ class QueueExecutor implements Executor {
 test("routes review changes back to developer then finishes on approval", async () => {
   const workflow: Workflow = {
     version: 1,
-    task: { repo: "owner/product", issue: 12, pr: 34 },
+    task: { repo: "owner/product", pr: 34 },
     start: "developer",
     workers: [
       {
@@ -67,6 +67,6 @@ test("routes review changes back to developer then finishes on approval", async 
   }).run();
 
   assert.equal(result.completedRuns, 4);
-  assert.match(chat.prompts[0] ?? "", /owner\/product issue #12/);
-  assert.match(chat.prompts[0] ?? "", /PR #34/);
+  assert.match(chat.prompts[0] ?? "", /owner\/product PR #34/);
+  assert.doesNotMatch(chat.prompts[0] ?? "", /issue #/i);
 });
