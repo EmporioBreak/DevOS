@@ -14,28 +14,22 @@ class TrackingStore implements StateStore {
   async clear(): Promise<void> { this.cleared += 1; }
 }
 
-test("accepts run, restart, and watch commands", () => {
+test("accepts run and restart commands", () => {
   assert.deepEqual(parseCliArgs(["run", ".devos/workflow.json"]), {
-    kind: "workflow",
     mode: "run",
     workflowPath: ".devos/workflow.json",
   });
   assert.deepEqual(parseCliArgs(["restart", ".devos/workflow.json"]), {
-    kind: "workflow",
     mode: "restart",
     workflowPath: ".devos/workflow.json",
   });
-  assert.deepEqual(parseCliArgs(["watch", "owner/product"]), {
-    kind: "watch",
-    repo: "owner/product",
-  });
 });
 
-test("rejects unsupported CLI shapes", () => {
-  assert.throws(() => parseCliArgs([]), /Usage: devos/);
-  assert.throws(() => parseCliArgs(["start", "workflow.json"]), /Usage: devos/);
-  assert.throws(() => parseCliArgs(["run"]), /Usage: devos/);
-  assert.throws(() => parseCliArgs(["watch", "not-a-repo"]), /Usage: devos/);
+test("rejects unsupported CLI shapes including watch", () => {
+  assert.throws(() => parseCliArgs([]), /Usage: devos <run\|restart>/);
+  assert.throws(() => parseCliArgs(["start", "workflow.json"]), /Usage: devos <run\|restart>/);
+  assert.throws(() => parseCliArgs(["run"]), /Usage: devos <run\|restart>/);
+  assert.throws(() => parseCliArgs(["watch", "owner/product"]), /Usage: devos <run\|restart>/);
 });
 
 test("restart clears state while run preserves it", async () => {
