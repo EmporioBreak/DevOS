@@ -146,7 +146,7 @@ export class Orchestrator {
       const nextWorkerId = worker.on[result.status];
 
       if (
-        (result.status === "needs_host" || result.status === "changes_requested") &&
+        (result.status === "needs_local_worker" || result.status === "changes_requested") &&
         (nextWorkerId === null || nextWorkerId === undefined)
       ) {
         await stateStore.save(state);
@@ -254,8 +254,8 @@ export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec): strin
     "Put your meaningful work report in the appropriate GitHub Issue, PR, review, or comment.",
     "Do not invent new workers, roles, or routing during execution. The complete worker graph was declared before DevOS started.",
     `Begin every GitHub report with exactly: **DevOS worker:** \`${worker.id}\` (\`${worker.executor}\`)`,
-    'If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_host instead of failed.',
-    'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_host|failed"}',
+    'If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_local_worker instead of failed.',
+    'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_local_worker|failed"}',
   ].join("\n");
 }
 
