@@ -104,3 +104,20 @@ test("keeps a preconfigured PR without querying GitHub", async () => {
   );
   assert.equal(runner.calls.length, 0);
 });
+
+test("keeps the Issue reference when the optional gh lookup cannot start", async () => {
+  const runner: CommandRunner = {
+    async run() {
+      throw new Error("gh is not installed");
+    },
+  };
+
+  assert.deepEqual(
+    await resolveTaskReference(
+      { repo: "owner/product", issue: 39 },
+      "/project",
+      runner,
+    ),
+    { repo: "owner/product", issue: 39 },
+  );
+});

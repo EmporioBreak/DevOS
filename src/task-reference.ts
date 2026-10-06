@@ -1,4 +1,4 @@
-import type { CommandRunner } from "./command-runner.js";
+import type { CommandResult, CommandRunner } from "./command-runner.js";
 import type { TaskRef } from "./workflow.js";
 
 export async function resolveTaskReference(
@@ -8,24 +8,29 @@ export async function resolveTaskReference(
 ): Promise<TaskRef> {
   if (task.pr !== undefined) return task;
 
-  const result = await runner.run(
-    "gh",
-    [
-      "pr",
-      "list",
-      "--repo",
-      task.repo,
-      "--state",
-      "all",
-      "--search",
-      `#${task.issue} in:body`,
-      "--limit",
-      "100",
-      "--json",
-      "number,body",
-    ],
-    projectRoot,
-  );
+  let result: CommandResult;
+  try {
+    result = await runner.run(
+      "gh",
+      [
+        "pr",
+        "list",
+        "--repo",
+        task.repo,
+        "--state",
+        "all",
+        "--search",
+        `#${task.issue} in:body`,
+        "--limit",
+        "100",
+        "--json",
+        "number,body",
+      ],
+      projectRoot,
+    );
+  } catch {
+    return task;
+  }
 
   if (result.exitCode !== 0) return task;
 
