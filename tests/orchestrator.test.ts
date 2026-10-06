@@ -13,6 +13,14 @@ class MemoryStore implements StateStore {
   async clear(): Promise<void> { this.state = null; }
 }
 
+function withoutBudgetMetadata(state: RunState | null): Omit<RunState, "startedAt" | "reviewLoops"> {
+  assert.ok(state);
+  assert.equal(typeof state.startedAt, "string");
+  assert.equal(typeof state.reviewLoops, "number");
+  const { startedAt: _startedAt, reviewLoops: _reviewLoops, ...rest } = state;
+  return rest;
+}
+
 class QueueExecutor implements Executor {
   constructor(
     readonly kind: ExecutorKind,
@@ -202,7 +210,7 @@ test("keeps persisted state after worker failure", async () => {
     /Worker failed/,
   );
 
-  assert.deepEqual(store.state, {
+  assert.deepEqual(withoutBudgetMetadata(store.state), {
     currentWorkerId: "worker",
     completedRuns: 1,
     sessions: { worker: "session-2" },
@@ -247,7 +255,7 @@ for (const status of ["needs_local_worker", "changes_requested"] as const) {
       new RegExp(`unroutable status: ${status}`),
     );
 
-    assert.deepEqual(store.state, {
+    assert.deepEqual(withoutBudgetMetadata(store.state), {
       currentWorkerId: "worker",
       completedRuns: 1,
       sessions: { worker: "session-3" },
@@ -295,7 +303,7 @@ test("refuses to silently recreate a previously started browser worker without i
   );
 
   assert.equal(chat.requests.length, 0);
-  assert.deepEqual(store.state, {
+  assert.deepEqual(withoutBudgetMetadata(store.state), {
     currentWorkerId: "worker",
     completedRuns: 1,
     sessions: {},
@@ -378,7 +386,7 @@ test("persists a returned browser session before parsing malformed worker output
     /DEVOS_RESULT/,
   );
 
-  assert.deepEqual(store.state, {
+  assert.deepEqual(withoutBudgetMetadata(store.state), {
     currentWorkerId: "worker",
     completedRuns: 0,
     sessions: { worker: sessionId },
@@ -438,7 +446,7 @@ test("persists an early browser session when response loading fails after conver
     /simulated response loader failure/,
   );
 
-  assert.deepEqual(store.state, {
+  assert.deepEqual(withoutBudgetMetadata(store.state), {
     currentWorkerId: "worker",
     completedRuns: 0,
     sessions: { worker: sessionId },
