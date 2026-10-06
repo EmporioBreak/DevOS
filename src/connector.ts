@@ -300,6 +300,19 @@ export function ngrokArgs(root: string, port: number) {
     "--inspect=false",
   ];
 }
+
+export function ngrokFailureReason(stderr: string) {
+  const bounded = stderr.slice(0, 8192).toLowerCase();
+  if (
+    /authentication\s+failed/.test(bounded) ||
+    /authtoken[^\n]{0,120}(invalid|not valid|rejected|unauthori[sz]ed)/.test(
+      bounded,
+    ) ||
+    /(invalid|rejected|unauthori[sz]ed)[^\n]{0,120}authtoken/.test(bounded)
+  )
+    return "ngrok credential rejected.";
+  return "ngrok exited unexpectedly.";
+}
 async function publicEndpoint(
   apiPort: number,
   gatewayPort: number,
@@ -886,13 +899,19 @@ export async function connectorRuntime(root: string) {
       ngrokArgs(root, config.gatewayPort),
       {
         cwd: root,
-        stdio: "ignore",
+        stdio: ["ignore", "ignore", "pipe"],
         env: {
           ...safeEnvironment(process.env),
           NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN,
         },
       },
     );
+    let ngrokStderr = "";
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      if (ngrokStderr.length < 8192)
+        ngrokStderr += chunk.slice(0, 8192 - ngrokStderr.length);
+    });
     let exited = false;
     const exit = new Promise<void>((ok) => {
       child!.once("error", () => {
@@ -901,7 +920,7 @@ export async function connectorRuntime(root: string) {
         ok();
       });
       child!.once("exit", () => {
-        if (!stopping) failureReason = "ngrok exited unexpectedly.";
+        if (!stopping) failureReason = ngrokFailureReason(ngrokStderr);
         exited = true;
         ok();
       });
