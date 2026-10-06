@@ -771,3 +771,31 @@ test("gateway stays closed before public HTTPS identity is ready", async () => {
     await g.close();
   }
 });
+
+
+test("stale background PID is never accepted without project identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-owner-"));
+  try {
+    await mkdir(join(root, ".devos/connector"), { recursive: true });
+    await writeFile(
+      join(root, ".devos/connector/background.json"),
+      JSON.stringify({ pid: process.pid, identity: "stale-or-other-project" }),
+      { mode: 0o600 },
+    );
+    assert.equal(await connectorModule.connectorBackgroundRunning(root), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("connector hardening keeps recovery and credentials out of CLI argv", async () => {
+  const source = await readFile(new URL("../src/connector.ts", import.meta.url), "utf8");
+  const runner = await readFile(new URL("../src/connector-runner.ts", import.meta.url), "utf8");
+  assert.match(source, /find-generic-password/);
+  assert.match(source, /add-generic-password/);
+  assert.match(source, /backgroundOwned/);
+  assert.match(source, /atomicWrite/);
+  assert.doesNotMatch(source, /\["--[^"]*(secret|token)/i);
+  assert.match(runner, /const backoff = \[500, 1500, 4000\]/);
+  assert.match(runner, /status: "failed"/);
+});
