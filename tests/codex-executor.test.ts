@@ -53,7 +53,7 @@ test("parses thread id and final agent message", () => {
 });
 
 test("resumes the supplied Codex session", async () => {
-  const calls: Array<{ args: string[]; cwd: string; stdin?: string }> = [];
+  const calls: Array<{ args: string[]; cwd: string; stdin: string | undefined }> = [];
   const runner: CommandRunner = {
     async run(_command, args, cwd, stdin): Promise<CommandResult> {
       calls.push({ args, cwd, stdin });
@@ -135,7 +135,7 @@ test("does not classify a post-execution resume failure as safe to restart", asy
 
 
 test("feeds fresh Codex prompt through stdin instead of argv", async () => {
-  const calls: Array<{ args: string[]; stdin?: string }> = [];
+  const calls: Array<{ args: string[]; stdin: string | undefined }> = [];
   const runner: CommandRunner = {
     async run(_command, args, _cwd, stdin): Promise<CommandResult> {
       calls.push({ args, stdin });
