@@ -433,9 +433,12 @@ async function startBackground(root: string, config: {
   }
 
   if (processAlive(child.pid)) {
-    try {
-      process.kill(child.pid!, "SIGTERM");
-    } catch {}
+    const actual = child.pid ? await captureProcessIdentity(child.pid) : null;
+    if (actual && sameProcessIdentity(childIdentity, actual)) {
+      try {
+        process.kill(child.pid!, "SIGTERM");
+      } catch {}
+    }
   }
   await rm(serviceFile, { force: true });
   throw new Error("DevOS background startup failed.");
