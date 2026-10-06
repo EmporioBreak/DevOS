@@ -166,6 +166,12 @@ export class Orchestrator {
           await stateStore.save(state);
         }
 
+        if (workflow.owner) {
+          await this.emit({
+            type: "owner_handoff",
+            task: state.task ?? workflow.task,
+          });
+        }
         const ownerResult = await this.handoffToOwner(state);
         if (ownerResult === "approved") {
           await stateStore.clear();
@@ -175,10 +181,6 @@ export class Orchestrator {
         if (ownerResult === "final_review_required") {
           state = { ...state, ownerReviewPending: true };
           await stateStore.save(state);
-          await this.emit({
-            type: "owner_handoff",
-            task: state.task ?? workflow.task,
-          });
           return state;
         }
 
