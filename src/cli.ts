@@ -11,7 +11,12 @@ import { CodexExecutor } from "./codex-executor.js";
 import { LocalCommandRunner } from "./command-runner.js";
 import type { Executor } from "./executor.js";
 import { JsonStateStore } from "./json-state-store.js";
-import { Orchestrator, type RunState, type StateStore } from "./orchestrator.js";
+import {
+  Orchestrator,
+  type OrchestrationEvent,
+  type RunState,
+  type StateStore,
+} from "./orchestrator.js";
 import {
   listReadyTasks,
   loadOrCreateProjectConfig,
@@ -83,6 +88,7 @@ export async function runWorkflow(
       stateStore,
       ...(ownerDecision ? { ownerDecision } : {}),
       resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
+      onEvent: writeOrchestrationEvent,
     }).run();
   } finally {
     await chatgpt.close();
@@ -156,6 +162,30 @@ export async function main(
   const workflow = await loadWorkflow(workflowPath);
   const state = await runWorkflow(workflow, command.mode, cwd, config);
   writeRunResult(workflow, state);
+}
+
+export function formatOrchestrationEvent(event: OrchestrationEvent): string {
+  switch (event.type) {
+    case "task_started":
+      return `Task #${event.task.issue} ${event.resumed ? "resumed" : "started"}\n`;
+    case "worker_started":
+      if (event.executor === "chatgpt_browser") {
+        return event.session === "resumed"
+          ? `[${event.workerId}] ${event.executor} — resuming existing session\n`
+          : `[${event.workerId}] ${event.executor} — starting fresh conversation\n`;
+      }
+      return `[${event.workerId}] ${event.executor} — starting\n`;
+    case "worker_result":
+      return `[${event.workerId}] ${event.executor} — ${event.status}\n`;
+    case "transition":
+      return `→ ${event.to}\n`;
+    case "owner_handoff":
+      return "Final review required by task owner\n";
+  }
+}
+
+export function writeOrchestrationEvent(event: OrchestrationEvent): void {
+  process.stdout.write(formatOrchestrationEvent(event));
 }
 
 export function formatRunResult(
