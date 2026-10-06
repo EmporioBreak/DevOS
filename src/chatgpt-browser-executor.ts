@@ -1,7 +1,7 @@
 import { profileProcesses, terminateOwnedBrowser, type OwnedBrowserProcess } from "./owned-browser-process.js";
 import { readCompletedTurn, type SubmittedTurn } from "./chatgpt-turn-recovery.js";
 import { mkdir } from "node:fs/promises";
-import { chromium, type BrowserContext, type Page } from "playwright";
+import { chromium, type BrowserContext, type CDPSession, type Page } from "playwright";
 import type { Executor, WorkerRequest } from "./executor.js";
 import { debugLog } from "./debug-log.js";
 import type { WorkerOutput } from "./workflow.js";
@@ -428,6 +428,7 @@ export class ChatGptBrowserExecutor implements Executor {
     this.ownedProcess = launched.length === 1 ? launched[0] : undefined;
     context.on("close", () => { if (this.context === context) this.context = undefined; });
     try {
+      if (!this.config.headless) await this.minimizeOwnedWindow(context, Math.min(timeout, 2_000));
       await context.addInitScript({ content: CHATGPT_RESPONSE_LOADER_SOURCE });
     } catch (error) {
       await this.close();
@@ -435,6 +436,51 @@ export class ChatGptBrowserExecutor implements Executor {
     }
     return context;
   }
+
+  private async minimizeOwnedWindow(context: BrowserContext, timeout: number): Promise<void> {
+    let expired = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let phase = "owned-page";
+    const minimize = async () => {
+      let session: CDPSession | undefined;
+      try {
+        const page = context.pages().find(candidate => !candidate.isClosed());
+        if (!page) throw new Error("No owned page");
+        phase = "cdp-session";
+        session = await context.newCDPSession(page);
+        if (expired) return false;
+        phase = "window-identity";
+        // Omitting targetId uses this page-scoped session's target, never a
+        // browser-wide search or a window belonging to another Chrome process.
+        const { windowId } = await session.send("Browser.getWindowForTarget");
+        if (expired) return false;
+        if (!Number.isSafeInteger(windowId) || windowId <= 0) throw new Error("Invalid owned window id");
+        phase = "set-bounds";
+        await session.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "minimized" } });
+        if (expired) return false;
+        phase = "verify-bounds";
+        const { bounds } = await session.send("Browser.getWindowBounds", { windowId });
+        return bounds.windowState === "minimized";
+      } finally {
+        // Context close still owns transport cleanup if detach hangs or fails.
+        if (session) void session.detach().catch(() => undefined);
+      }
+    };
+    try {
+      const minimized = await Promise.race([
+        minimize(),
+        new Promise<boolean>(resolve => { timer = setTimeout(() => { expired = true; resolve(false); }, timeout); }),
+      ]);
+      debugLog("browser.window.minimize", { decision: minimized ? "minimized" : "continue-visible", phase, ...(expired ? { reason: "deadline" } : {}) });
+    } catch {
+      // Do not log raw CDP errors: they may contain URLs or account data.
+      debugLog("browser.window.minimize", { decision: "continue-visible", phase, reason: "unavailable" });
+    } finally {
+      expired = true;
+      if (timer) clearTimeout(timer);
+    }
+  }
+
 }
 
 export function isSameChatGptConversation(requestedUrl: string, actualUrl: string): boolean {
