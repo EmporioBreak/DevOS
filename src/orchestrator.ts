@@ -134,7 +134,7 @@ export class Orchestrator {
       state = {
         currentWorkerId: workflow.start,
         completedRuns: state.completedRuns,
-        startedAt: state.startedAt,
+        startedAt: state.startedAt ?? new Date((this.options.now ?? Date.now)()).toISOString(),
         reviewLoops: (state.reviewLoops ?? 0) + 1,
         sessions: state.sessions,
         ...(state.sessionProjectRoots ? { sessionProjectRoots: state.sessionProjectRoots } : {}),
@@ -370,7 +370,7 @@ export class Orchestrator {
         state = {
           currentWorkerId: workflow.start,
           completedRuns: state.completedRuns,
-          startedAt: state.startedAt,
+          startedAt: state.startedAt ?? new Date((this.options.now ?? Date.now)()).toISOString(),
           reviewLoops: state.reviewLoops ?? 0,
           sessions: state.sessions,
           ...(state.sessionProjectRoots ? { sessionProjectRoots: state.sessionProjectRoots } : {}),
