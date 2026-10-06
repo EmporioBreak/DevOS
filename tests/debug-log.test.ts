@@ -65,3 +65,30 @@ test("redacts escaped quotes, multiple nested JSON strings, JSONL and credential
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test("redacts pretty-printed serialized credential objects without dropping ordinary context", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-debug-pretty-"));
+  const file = join(root, "debug.jsonl");
+  const oldDebug = process.env.DEVOS_DEBUG;
+  const oldFile = process.env.DEVOS_DEBUG_FILE;
+  try {
+    process.env.DEVOS_DEBUG = "1";
+    process.env.DEVOS_DEBUG_FILE = file;
+    debugLog("pretty", {
+      commandOutput: JSON.stringify({
+        authorization: { value: "SYNTHETIC_PRETTY_SECRET" },
+        ordinary: "keep",
+      }, null, 2),
+    });
+
+    const raw = await readFile(file, "utf8");
+    assert.equal(raw.includes("SYNTHETIC_PRETTY_SECRET"), false);
+    assert.equal(raw.includes("keep"), true);
+    assert.equal(raw.includes("[REDACTED]"), true);
+  } finally {
+    if (oldDebug === undefined) delete process.env.DEVOS_DEBUG; else process.env.DEVOS_DEBUG = oldDebug;
+    if (oldFile === undefined) delete process.env.DEVOS_DEBUG_FILE; else process.env.DEVOS_DEBUG_FILE = oldFile;
+    await rm(root, { recursive: true, force: true });
+  }
+});
