@@ -67,6 +67,9 @@ export async function runWorkflow(
   );
   const stateStore = new JsonStateStore(cwd, workflow.task);
   await prepareRunState(mode, stateStore);
+  const ownerDecision = workflow.owner?.mode === "parent_process"
+    ? parseParentOwnerDecision(process.env.DEVOS_OWNER_RESULT)
+    : undefined;
 
   try {
     return await new Orchestrator({
@@ -77,9 +80,7 @@ export async function runWorkflow(
         ["chatgpt_browser", chatgpt],
       ]),
       stateStore,
-      ...(workflow.owner?.mode === "parent_process"
-        ? { ownerDecision: parseParentOwnerDecision(process.env.DEVOS_OWNER_RESULT) }
-        : {}),
+      ...(ownerDecision ? { ownerDecision } : {}),
     }).run();
   } finally {
     await chatgpt.close();
