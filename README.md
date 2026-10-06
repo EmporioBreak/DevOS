@@ -104,7 +104,7 @@ Repo проекта определяется из локального `git remo
 ./devos
 ```
 
-DevOS один раз получает из GitHub открытые Issues текущего пользователя, выбирает только Issues с готовым `DEVOS_TASK_V1` workflow и показывает меню:
+DevOS один раз получает из GitHub открытые Issues текущего пользователя, выбирает только Issues с готовым `DEVOS_TASK_V1` workflow и показывает меню. Уже успешно завершённые задачи отмечаются project-local marker-ом в `.devos/completed/` и повторно в меню не предлагаются:
 
 ```text
 Ready DevOS tasks for owner/product:
@@ -184,13 +184,13 @@ Local Codex не обязан показывать интерактивное м
 ./devos run 35
 ```
 
-После явного replan:
+Повторный `./devos run 35` для уже завершённой задачи останавливается с коротким объяснением. После явного replan используется намеренный restart, который снимает completion marker и начинает новый graph:
 
 ```bash
 ./devos restart 35
 ```
 
-Файловый режим остаётся доступен:
+Файловый режим остаётся доступен и использует тот же completion guard по `workflow.task.issue`:
 
 ```bash
 ./devos run .devos/workflow.json
