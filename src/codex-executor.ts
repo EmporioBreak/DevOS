@@ -74,7 +74,7 @@ export class CodexExecutor implements Executor {
 
 export function buildCodexArgs(
   projectRoot: string,
-  prompt: string,
+  _prompt: string,
   options: CodexOptions = {},
 ): string[] {
   const args = ["exec", "-C", projectRoot];
@@ -87,7 +87,7 @@ export function buildCodexArgs(
 export function buildCodexResumeArgs(
   projectRoot: string,
   sessionId: string,
-  prompt: string,
+  _prompt: string,
   options: CodexOptions = {},
 ): string[] {
   const args = ["exec", "-C", projectRoot];
