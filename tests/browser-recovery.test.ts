@@ -3,6 +3,9 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { chromium, type BrowserContext } from "playwright";
 import { ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
+import type { Executor } from "../src/executor.js";
+import { Orchestrator, type RunState, type StateStore } from "../src/orchestrator.js";
+import type { Workflow } from "../src/workflow.js";
 
 const project = "https://chatgpt.com/g/one/project";
 const saved = "https://chatgpt.com/g/one/c/saved";
@@ -231,4 +234,156 @@ test("backend HTML 403 during prompt preparation stops before irreversible submi
   );
   assert.deepEqual(f.urls, [saved]);
   assert.equal(f.sends(), 0);
+});
+
+
+class RecoveryStateStore implements StateStore {
+  constructor(public state: RunState | null = null) {}
+  async load(): Promise<RunState | null> { return this.state; }
+  async save(state: RunState): Promise<void> { this.state = structuredClone(state); }
+  async clear(): Promise<void> { this.state = null; }
+}
+
+function recoveryWorkflow(): Workflow {
+  return {
+    version: 1,
+    task: { repo: "owner/product", issue: 620, pr: 63 },
+    start: "browser",
+    workers: [
+      { id: "browser", executor: "chatgpt_browser", prompt: "Work", on: { done: null } },
+    ],
+  };
+}
+
+test("orchestrator ordinary run retries a proven first-turn pre-submit 403 without replacing task state", async () => {
+  const options = { status: 403 };
+  const f = fixture(options);
+  const workflow = recoveryWorkflow();
+  const store = new RecoveryStateStore({
+    currentWorkerId: "browser",
+    completedRuns: 2,
+    sessions: { other: "https://chatgpt.com/g/one/c/other" },
+    browserWorkersStarted: ["other"],
+    task: workflow.task,
+  });
+
+  await assert.rejects(
+    new Orchestrator({
+      projectRoot: "/project",
+      workflow,
+      executors: new Map([["chatgpt_browser", f.executor]]),
+      stateStore: store,
+    }).run(),
+    /HTTP 403/,
+  );
+
+  assert.deepEqual(store.state?.browserPreSubmitRetry, ["browser"]);
+  assert.deepEqual(store.state?.sessions, { other: "https://chatgpt.com/g/one/c/other" });
+  assert.deepEqual(store.state?.task, workflow.task);
+  assert.equal(f.sends(), 0);
+
+  options.status = 200;
+  const result = await new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["chatgpt_browser", f.executor]]),
+    stateStore: store,
+  }).run();
+
+  assert.equal(result.sessions.browser, created);
+  assert.equal(result.sessions.other, "https://chatgpt.com/g/one/c/other");
+  assert.equal(result.browserPreSubmitRetry?.includes("browser"), false);
+  assert.deepEqual(result.task, workflow.task);
+  assert.equal(f.sends(), 1);
+});
+
+test("orchestrator ordinary run retries a proven first-turn transient exhaustion", async () => {
+  const options: { phase?: "wait"; failures?: number } = { phase: "wait", failures: 99 };
+  const f = fixture(options);
+  const workflow = recoveryWorkflow();
+  const store = new RecoveryStateStore();
+
+  await assert.rejects(
+    new Orchestrator({
+      projectRoot: "/project",
+      workflow,
+      executors: new Map([["chatgpt_browser", f.executor]]),
+      stateStore: store,
+    }).run(),
+    /attempt=3.*Timeout/,
+  );
+  assert.deepEqual(store.state?.browserPreSubmitRetry, ["browser"]);
+  assert.equal(f.sends(), 0);
+
+  options.failures = 0;
+  const result = await new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["chatgpt_browser", f.executor]]),
+    stateStore: store,
+  }).run();
+  assert.equal(result.sessions.browser, created);
+  assert.equal(f.sends(), 1);
+});
+
+test("unknown fresh browser failure clears safe retry permission and cannot start a replacement", async () => {
+  const workflow = recoveryWorkflow();
+  const store = new RecoveryStateStore({
+    currentWorkerId: "browser",
+    completedRuns: 0,
+    sessions: {},
+    browserWorkersStarted: ["browser"],
+    browserPreSubmitRetry: ["browser"],
+    task: workflow.task,
+  });
+  let calls = 0;
+  const unknown: Executor = {
+    kind: "chatgpt_browser",
+    async run() {
+      calls++;
+      throw new Error("unknown executor failure");
+    },
+  };
+
+  await assert.rejects(
+    new Orchestrator({
+      projectRoot: "/project",
+      workflow,
+      executors: new Map([["chatgpt_browser", unknown]]),
+      stateStore: store,
+    }).run(),
+    /unknown executor failure/,
+  );
+  assert.deepEqual(store.state?.browserPreSubmitRetry, []);
+
+  await assert.rejects(
+    new Orchestrator({
+      projectRoot: "/project",
+      workflow,
+      executors: new Map([["chatgpt_browser", unknown]]),
+      stateStore: store,
+    }).run(),
+    /Missing saved browser session/,
+  );
+  assert.equal(calls, 1);
+});
+
+test("ambiguous post-submit fresh failure preserves created identity instead of authorizing fresh replacement", async () => {
+  const f = fixture({ sendError: true });
+  const workflow = recoveryWorkflow();
+  const store = new RecoveryStateStore();
+
+  await assert.rejects(
+    new Orchestrator({
+      projectRoot: "/project",
+      workflow,
+      executors: new Map([["chatgpt_browser", f.executor]]),
+      stateStore: store,
+    }).run(),
+    /post-submit.*not replayed/,
+  );
+
+  assert.equal(store.state?.sessions.browser, created);
+  assert.equal(store.state?.browserPreSubmitRetry?.includes("browser"), false);
+  assert.equal(f.sends(), 1);
 });
