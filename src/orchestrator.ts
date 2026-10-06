@@ -159,6 +159,7 @@ export class Orchestrator {
         projectRoot: this.options.projectRoot,
         prompt: buildWorkerPrompt(activeWorkflow, worker),
         ...(sessionId ? { sessionId } : {}),
+        ...(worker.executor === "chatgpt_browser" ? { requireProject: true } : {}),
       });
 
       const sessions =
