@@ -1,5 +1,4 @@
 import { isCodexResumeUnavailableError } from "./codex-executor.js";
-import { isBrowserResumeUnavailableError } from "./chatgpt-browser-executor.js";
 import type { Executor } from "./executor.js";
 import { parseDevosResult } from "./result.js";
 import type { ExecutorKind, TaskRef, WorkerOutput, WorkerStatus, Workflow, WorkerSpec } from "./workflow.js";
@@ -161,10 +160,7 @@ export class Orchestrator {
       const browserWorkerAlreadyStarted =
         worker.executor === "chatgpt_browser" &&
         state.browserWorkersStarted?.includes(worker.id) === true;
-      const browserRecoveryPending =
-        worker.executor === "chatgpt_browser" &&
-        state.browserSessionRecovery?.includes(worker.id) === true;
-      if (browserWorkerAlreadyStarted && !sessionId && !browserRecoveryPending) {
+      if (browserWorkerAlreadyStarted && !sessionId) {
         await stateStore.save(state);
         throw new Error(
           `Missing saved browser session for previously started worker: ${worker.id}`,
@@ -201,7 +197,7 @@ export class Orchestrator {
       try {
         output = await executor.run({
           projectRoot: this.options.projectRoot,
-          prompt: buildWorkerPrompt(activeWorkflow, worker),
+          prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot),
           ...(sessionId ? { sessionId } : {}),
           ...(worker.executor === "chatgpt_browser" ? { enforceProjectScope: true } : {}),
           onSession,
@@ -222,32 +218,7 @@ export class Orchestrator {
           });
           output = await executor.run({
             projectRoot: this.options.projectRoot,
-            prompt: buildWorkerPrompt(activeWorkflow, worker),
-            onSession,
-          });
-        } else if (
-          worker.executor === "chatgpt_browser" &&
-          sessionId &&
-          isBrowserResumeUnavailableError(error)
-        ) {
-          const sessions = { ...state.sessions };
-          delete sessions[worker.id];
-          const browserSessionRecovery = [
-            ...(state.browserSessionRecovery ?? []).filter(id => id !== worker.id),
-            worker.id,
-          ];
-          state = { ...state, sessions, browserSessionRecovery };
-          await stateStore.save(state);
-          await this.emit({
-            type: "worker_session_recovered",
-            workerId: worker.id,
-            executor: worker.executor,
-            reason: error.message,
-          });
-          output = await executor.run({
-            projectRoot: this.options.projectRoot,
-            prompt: buildWorkerPrompt(activeWorkflow, worker),
-            enforceProjectScope: true,
+            prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot),
             onSession,
           });
         } else {
@@ -387,7 +358,7 @@ export class Orchestrator {
 
 }
 
-export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec): string {
+export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec, projectRoot?: string): string {
   const refs = [
     `${workflow.task.repo} Issue #${workflow.task.issue}`,
     workflow.task.pr ? `PR #${workflow.task.pr}` : null,
@@ -395,6 +366,10 @@ export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec): strin
 
   return [
     worker.prompt.trim(),
+    ...(worker.executor === "codex" && projectRoot ? [
+      `Task workspace: ${JSON.stringify(projectRoot)} (the directory containing the project-local devos launcher).`,
+      "Perform task work in this exact workspace, including resumed turns. Do not create another clone or worktree, or use runtime or cache directories as the task workspace. A task branch in this workspace is allowed. This workspace instruction takes precedence over generic isolation/worktree skill guidance.",
+    ] : []),
     "",
     `Shared task context is in GitHub: ${refs}.`,
     "Read the Issue and, when present, the linked PR, diff, commits, latest worker reports, and review discussion yourself.",

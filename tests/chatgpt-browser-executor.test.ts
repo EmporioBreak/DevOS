@@ -16,7 +16,7 @@ test("recognizes only the saved Project conversation after browser resume", () =
 
 test("waits for ChatGPT to replace its provisional conversation URL", async () => {
   let currentUrl = "https://chatgpt.com/g/g-p-project/project";
-  const page = { url: () => currentUrl } as unknown as Page;
+  const page = { on() {}, url: () => currentUrl } as unknown as Page;
   const provisionalUrl =
     "https://chatgpt.com/g/g-p-project/c/local-chatgpt%3A1234";
   const durableUrl =
@@ -45,7 +45,7 @@ function browserFixture(projectUrl: string, navigation: string, moveDuringFill?:
   let url = projectUrl;
   let sends = 0;
   const locator = { first() { return this; }, async waitFor() {}, async fill() { if (moveDuringFill) url = moveDuringFill; }, async isVisible() { return true; }, async click() { sends++; if (moveAfterSend) url = moveAfterSend; }, async press() { sends++; } };
-  const page = { url: () => url, async goto() { url = navigation; }, locator: () => locator, async evaluate() { return { text: 'DEVOS_RESULT {"status":"done"}', failed: false }; }, async waitForFunction() {}, async close() {} };
+  const page = { on() {}, url: () => url, async goto() { url = navigation; }, locator: () => locator, async evaluate() { return { text: 'DEVOS_RESULT {"status":"done"}', failed: false }; }, async waitForFunction() {}, async close() {} };
   const executor = new ChatGptBrowserExecutor({ projectUrl, profileDir: "/unused", browserChannel: "chrome", headless: false }, 50);
   Object.assign(executor, { context: { async newPage() { return page; }, async close() {} } });
   return { executor, sends: () => sends };
@@ -103,7 +103,7 @@ test("fresh response failure still persists a conversation created during submis
     async click() { url = created; }, async press() { url = created; },
   };
   const page = {
-    url: () => url, async goto() {}, locator: () => locator,
+    on() {}, url: () => url, async goto() {}, locator: () => locator,
     async evaluate() { return 1; }, async waitForFunction() { throw new Error("response failed after submission"); }, async close() {},
   };
   const executor = new ChatGptBrowserExecutor({ projectUrl: project, profileDir: "/unused", browserChannel: "chrome", headless: false }, 1000);

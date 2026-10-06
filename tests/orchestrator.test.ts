@@ -461,68 +461,21 @@ test("persists an early browser session when response loading fails after conver
   assert.equal(result.completedRuns, 1);
 });
 
-test("recovers only the current browser worker after a persisted conversation cannot resume", async () => {
-  const workflow: Workflow = {
-    version: 1,
-    task: { repo: "owner/product", issue: 108, pr: 50 },
-    start: "reviewer",
-    workers: [{ id: "reviewer", executor: "chatgpt_browser", prompt: "Review.", on: { done: null } }],
-  };
+test("missing saved browser conversation stops and preserves all identity and PR", async () => {
+  const workflow: Workflow = { version: 1, task: { repo: "owner/product", issue: 108, pr: 50 }, start: "reviewer", workers: [{ id: "reviewer", executor: "chatgpt_browser", prompt: "Review", on: { done: null } }] };
   const store = new MemoryStore();
-  store.state = {
-    currentWorkerId: "reviewer",
-    completedRuns: 2,
-    sessions: { developer: "https://chatgpt.com/g/g-p-project/c/developer" },
-    browserWorkersStarted: ["developer"],
-    task: workflow.task,
-  };
-  const originalSession = "https://chatgpt.com/g/g-p-project/c/broken";
-  const fresh: Executor = {
-    kind: "chatgpt_browser",
-    async run(request) {
-      assert.equal(request.sessionId, undefined);
-      await request.onSession?.(originalSession);
-      throw new Error("simulated response loader failure after conversation creation");
-    },
-  };
-  await assert.rejects(
-    () => new Orchestrator({
-      projectRoot: "/product",
-      workflow,
-      executors: new Map([["chatgpt_browser", fresh]]),
-      stateStore: store,
-    }).run(),
-    /simulated response loader failure/,
-  );
-  assert.equal(store.state?.sessions.reviewer, originalSession);
-
-  const requests: WorkerRequest[] = [];
-  let call = 0;
-  const resumed: Executor = {
-    kind: "chatgpt_browser",
-    async run(request) {
-      requests.push(request);
-      if (call++ === 0) throw new BrowserResumeUnavailableError(request.sessionId!, "redirected outside configured Project");
-      const replacement = "https://chatgpt.com/g/g-p-project/c/recovered";
-      await request.onSession?.(replacement);
-      return { text: 'DEVOS_RESULT {"status":"done"}', sessionId: replacement };
-    },
-  };
-  const events: OrchestrationEvent[] = [];
-  const result = await new Orchestrator({
-    projectRoot: "/product", workflow,
-    executors: new Map([["chatgpt_browser", resumed]]),
-    stateStore: store,
-    onEvent: event => { events.push(event); },
-  }).run();
-
-  assert.equal(requests.length, 2);
-  assert.equal(requests[0]?.sessionId, "https://chatgpt.com/g/g-p-project/c/broken");
-  assert.equal(requests[1]?.sessionId, undefined);
-  assert.equal(result.sessions.reviewer, "https://chatgpt.com/g/g-p-project/c/recovered");
-  assert.equal(result.sessions.developer, "https://chatgpt.com/g/g-p-project/c/developer");
-  assert.deepEqual(result.task, workflow.task);
-  assert.ok(events.some(event => event.type === "worker_session_recovered" && event.executor === "chatgpt_browser"));
+  const saved = "https://chatgpt.com/g/one/c/missing";
+  store.state = { currentWorkerId: "reviewer", completedRuns: 2, sessions: { reviewer: saved, developer: "other" }, browserWorkersStarted: ["reviewer"], task: workflow.task };
+  let calls = 0;
+  const executor: Executor = { kind: "chatgpt_browser", async run() {
+    if (++calls === 1) throw new BrowserResumeUnavailableError(saved, "conversation unavailable");
+    return { text: 'DEVOS_RESULT {"status":"done"}', sessionId: "replacement" };
+  } };
+  await assert.rejects(new Orchestrator({ projectRoot: "/product", workflow, executors: new Map([["chatgpt_browser", executor]]), stateStore: store }).run(), /conversation unavailable/);
+  assert.equal(calls, 1);
+  assert.deepEqual(store.state?.sessions, { reviewer: saved, developer: "other" });
+  assert.deepEqual(store.state?.task, workflow.task);
+  assert.equal(store.state?.completedRuns, 2);
 });
 
 
@@ -715,4 +668,31 @@ test("changes_requested cannot override approval waiting only for bookkeeping", 
   const workflow: Workflow = { version: 1, task: { repo: "owner/product", issue: 159 }, owner: { mode: "main_agent" }, start: "reviewer", workers: [{ id: "reviewer", executor: "codex", prompt: "Review", on: { approved: null } }] };
   await assert.rejects(new Orchestrator({ projectRoot: "/product", workflow, executors: new Map(), stateStore: store, mainAgentDecision: "changes_requested" }).run(), /waiting for final review/);
   assert.equal(store.state?.completionApproved, true);
+});
+
+for (const resumed of [false, true]) {
+  test(`local worker receives explicit workspace contract on ${resumed ? "resume" : "fresh"}`, async () => {
+    const root = "/projects/My Project";
+    const workflow: Workflow = { version: 1, task: { repo: "owner/product", issue: 62 }, start: "local", workers: [{ id: "local", executor: "codex", prompt: "Work", on: { done: null } }] };
+    const store = new MemoryStore();
+    if (resumed) store.state = { currentWorkerId: "local", completedRuns: 0, sessions: { local: "thread" }, sessionProjectRoots: { local: root }, task: workflow.task };
+    const executor = new QueueExecutor("codex", [{ text: 'DEVOS_RESULT {"status":"done"}', sessionId: "thread" }]);
+    await new Orchestrator({ projectRoot: root, workflow, executors: new Map([["codex", executor]]), stateStore: store }).run();
+    assert.equal(executor.requests[0]?.projectRoot, root);
+    assert.equal(executor.requests[0]?.sessionId, resumed ? "thread" : undefined);
+    assert.match(executor.requests[0]!.prompt, /Task workspace: "\/projects\/My Project"/);
+    assert.match(executor.requests[0]!.prompt, /Do not create another clone or worktree/);
+    assert.match(executor.requests[0]!.prompt, /runtime or cache/);
+  });
+}
+
+test("legacy browser recovery marker cannot silently replace a missing saved conversation", async () => {
+  const workflow: Workflow = { version: 1, task: { repo: "owner/product", issue: 62, pr: 63 }, start: "browser", workers: [{ id: "browser", executor: "chatgpt_browser", prompt: "Work", on: { done: null } }] };
+  const store = new MemoryStore();
+  store.state = { currentWorkerId: "browser", completedRuns: 2, sessions: { other: "saved-other" }, browserWorkersStarted: ["browser"], browserSessionRecovery: ["browser"], task: workflow.task };
+  const executor = new QueueExecutor("chatgpt_browser", [{ text: 'DEVOS_RESULT {"status":"done"}', sessionId: "replacement" }]);
+  await assert.rejects(new Orchestrator({ projectRoot: "/project", workflow, executors: new Map([["chatgpt_browser", executor]]), stateStore: store }).run(), /Missing saved browser session/);
+  assert.equal(executor.requests.length, 0);
+  assert.deepEqual(store.state?.sessions, { other: "saved-other" });
+  assert.deepEqual(store.state?.task, workflow.task);
 });

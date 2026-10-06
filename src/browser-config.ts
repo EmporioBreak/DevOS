@@ -18,7 +18,7 @@ export function loadChatGptBrowserConfig(
     "https://chatgpt.com/";
   validateChatGptUrl(projectUrl);
 
-  const headless = env.DEVOS_BROWSER_HEADLESS?.trim() || "0";
+  const headless = env.DEVOS_BROWSER_HEADLESS?.trim() || "1";
   if (headless !== "0" && headless !== "1") {
     throw new Error("DEVOS_BROWSER_HEADLESS must be 0 or 1");
   }

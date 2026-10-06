@@ -362,3 +362,26 @@ test("natural zero exit without turn.completed is not logical success", async ()
   ].join("\n") }; } };
   await assert.rejects(new CodexExecutor(runner).run({ projectRoot: process.cwd(), prompt: "Work" }), /complete.*turn/);
 });
+
+test("real child cwd stays at the supplied workspace for fresh and resumed argv", async () => {
+  const root = process.cwd();
+  for (const sessionId of [undefined, "cwd-observation"]) {
+    let observedCwd: string | undefined;
+    const runner: CommandRunner = {
+      async run(_command, args, cwd) {
+        assert.deepEqual(args.slice(0, 3), ["exec", "-C", root]);
+        assert.equal(args.includes("resume"), sessionId !== undefined);
+        const observation = await new LocalCommandRunner().run(process.execPath, ["-e", "process.stdout.write(process.cwd())"], cwd);
+        assert.equal(observation.exitCode, 0);
+        observedCwd = observation.stdout;
+        return { exitCode: 0, stderr: "", stdout: [
+          JSON.stringify({ type: "thread.started", thread_id: "cwd-observation" }),
+          JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: 'DEVOS_RESULT {"status":"done"}' } }),
+          turnCompletedEvent(),
+        ].join("\n") };
+      },
+    };
+    await new CodexExecutor(runner).run({ projectRoot: root, prompt: "Fixture", ...(sessionId ? { sessionId } : {}) });
+    assert.equal(observedCwd, root);
+  }
+});

@@ -17,7 +17,7 @@ test("loads deterministic browser defaults", () => {
   assert.equal(config.projectUrl, "https://chatgpt.com/");
   assert.equal(config.browserChannel, "chrome");
   assert.equal(config.profileDir, "/tmp/devos-profile");
-  assert.equal(config.headless, false);
+  assert.equal(config.headless, true);
 });
 
 test("project-local ChatGPT Project URL overrides environment fallback", () => {
@@ -141,3 +141,9 @@ test("rejects provisional local ChatGPT conversation IDs as resumable sessions",
     /Project conversation URL did not appear/,
   );
 });
+
+ test("headless accepts explicit login override and rejects invalid settings", () => {
+  assert.equal(loadChatGptBrowserConfig({ DEVOS_BROWSER_HEADLESS: "0" }).headless, false);
+  assert.equal(loadChatGptBrowserConfig({ DEVOS_BROWSER_HEADLESS: "1" }).headless, true);
+  assert.throws(() => loadChatGptBrowserConfig({ DEVOS_BROWSER_HEADLESS: "yes" }), /must be 0 or 1/);
+ });

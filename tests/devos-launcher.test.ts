@@ -17,10 +17,10 @@ ${body}
   await chmod(file, 0o755);
 }
 
-async function fixture(options: { selfHost?: boolean; runtimeHead?: string } = {}) {
+async function fixture(options: { selfHost?: boolean; runtimeHead?: string; spaces?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "devos-launcher-"));
   const bin = path.join(root, "bin");
-  const project = path.join(root, "project");
+  const project = path.join(root, options.spaces ? "project with spaces" : "project");
   const log = path.join(root, "commands.log");
   await mkdir(bin);
   await mkdir(project);
@@ -35,7 +35,7 @@ async function fixture(options: { selfHost?: boolean; runtimeHead?: string } = {
     await writeFile(path.join(project, ".devos", "runtime", "dist", "src", "cli.js"), "");
   }
 
-  await executable(path.join(bin, "node"), 'echo "node:$*" >> "$DEVOS_TEST_LOG"');
+  await executable(path.join(bin, "node"), 'echo "node:$*" >> "$DEVOS_TEST_LOG"; echo "node-cwd:$PWD" >> "$DEVOS_TEST_LOG"');
   await executable(
     path.join(bin, "npm"),
     'echo "npm:$PWD:$*" >> "$DEVOS_TEST_LOG"; if [ "$1 $2" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi',
@@ -192,3 +192,14 @@ test("a stale project-local runtime is refreshed without touching project state"
   assert.match(log, /npm:.*runtime\.tmp\.[0-9]+:run build/);
   assert.equal(await readFile(state, "utf8"), '{"status":"running"}');
 });
+
+for (const selfHost of [false, true]) {
+  test(`launcher invoked outside a path with spaces keeps ${selfHost ? "self-host" : "runtime"} task cwd at launcher directory`, async () => {
+    const f = await fixture({ selfHost, runtimeHead: "current-sha", spaces: true });
+    const result = spawnSync(path.join(f.project, "devos"), ["run", "62"], { cwd: f.root, env: f.env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const log = await readFile(f.log, "utf8");
+    assert.ok(log.includes(`node-cwd:${f.project}\n`));
+    assert.ok(log.includes(`node:${f.project}/${selfHost ? "dist" : ".devos/runtime/dist"}/src/cli.js run 62`));
+  });
+}
