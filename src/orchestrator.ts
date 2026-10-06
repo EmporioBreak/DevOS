@@ -62,6 +62,7 @@ export class Orchestrator {
         currentWorkerId: workflow.start,
         completedRuns: state.completedRuns,
         sessions: state.sessions,
+        task: state.task ?? workflow.task,
       };
       await stateStore.save(state);
     }
