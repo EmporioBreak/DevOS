@@ -9,18 +9,22 @@ export interface CommandResult {
 }
 
 export interface CommandRunner {
-  run(command: string, args: string[], cwd: string): Promise<CommandResult>;
+  run(command: string, args: string[], cwd: string, stdin?: string): Promise<CommandResult>;
 }
 
 export class LocalCommandRunner implements CommandRunner {
-  async run(command: string, args: string[], cwd: string): Promise<CommandResult> {
+  async run(command: string, args: string[], cwd: string, stdin?: string): Promise<CommandResult> {
     const startedAt = Date.now();
-    debugLog("process.start", { command, args, cwd });
+    debugLog("process.start", { command, args, cwd, stdin: stdin === undefined ? "ignored" : "provided" });
     return await new Promise((resolve, reject) => {
       const child = spawn(command, args, {
         cwd,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       });
+
+      if (stdin !== undefined) {
+        child.stdin.end(stdin);
+      }
 
       let stdout = "";
       let stderr = "";
