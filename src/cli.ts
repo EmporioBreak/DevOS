@@ -12,9 +12,11 @@ import type { Executor } from "./executor.js";
 import { JsonStateStore } from "./json-state-store.js";
 import { Orchestrator, type StateStore } from "./orchestrator.js";
 import {
+  clearTaskCompletion,
   listReadyTasks,
   loadOrCreateProjectConfig,
   loadReadyTask,
+  markTaskCompleted,
   type ReadyTask,
 } from "./ready-tasks.js";
 import type { Workflow } from "./workflow.js";
@@ -127,6 +129,7 @@ export async function main(
 
     process.stdout.write(`\nStarting #${task.issue}: ${task.title}\n`);
     const completedRuns = await runWorkflow(task.workflow, task.mode, cwd);
+    await markTaskCompleted(cwd, task.issue);
     process.stdout.write(
       `DevOS complete: #${task.issue}, ${completedRuns} worker runs.\n`,
     );
@@ -137,8 +140,18 @@ export async function main(
   if (issue !== null) {
     const runner = new LocalCommandRunner();
     const config = await loadOrCreateProjectConfig(cwd, runner);
-    const task = await loadReadyTask(config, issue, cwd, runner);
+    const task = await loadReadyTask(
+      config,
+      issue,
+      cwd,
+      runner,
+      command.mode === "restart",
+    );
+    if (command.mode === "restart") {
+      await clearTaskCompletion(cwd, issue);
+    }
     const completedRuns = await runWorkflow(task.workflow, command.mode, cwd);
+    await markTaskCompleted(cwd, task.issue);
     process.stdout.write(
       `DevOS complete: #${task.issue}, ${completedRuns} worker runs.\n`,
     );
