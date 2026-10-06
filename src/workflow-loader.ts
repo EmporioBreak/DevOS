@@ -1,5 +1,12 @@
 import { readFile } from "node:fs/promises";
-import type { ExecutorKind, WorkerSpec, WorkerStatus, Workflow } from "./workflow.js";
+import { validateChatGptUrl } from "./browser-config.js";
+import type {
+  ExecutorKind,
+  TaskOwner,
+  WorkerSpec,
+  WorkerStatus,
+  Workflow,
+} from "./workflow.js";
 
 const EXECUTORS = new Set<ExecutorKind>(["codex", "chatgpt_browser"]);
 const STATUSES = new Set<WorkerStatus>([
@@ -38,6 +45,8 @@ export function parseWorkflow(value: unknown): Workflow {
       ? undefined
       : requirePositiveInteger(task.pr, "Workflow task pr");
 
+  const owner =
+    record.owner === undefined ? undefined : parseOwner(record.owner);
   const start = requireNonEmptyString(record.start, "Workflow start");
 
   if (!Array.isArray(record.workers) || record.workers.length === 0) {
@@ -73,9 +82,44 @@ export function parseWorkflow(value: unknown): Workflow {
       issue,
       ...(pr === undefined ? {} : { pr }),
     },
+    ...(owner === undefined ? {} : { owner }),
     start,
     workers,
   };
+}
+
+function parseOwner(value: unknown): TaskOwner {
+  const record = asRecord(value, "Workflow owner");
+  const mode = requireNonEmptyString(record.mode, "Workflow owner mode");
+
+  if (mode === "parent_process") {
+    if (Object.keys(record).some(key => key !== "mode")) {
+      throw new Error("Workflow parent_process owner has unsupported fields");
+    }
+    return { mode };
+  }
+
+  if (mode === "chatgpt_conversation") {
+    if (
+      Object.keys(record).some(
+        key => key !== "mode" && key !== "conversationUrl",
+      )
+    ) {
+      throw new Error("Workflow chatgpt_conversation owner has unsupported fields");
+    }
+
+    const conversationUrl = requireNonEmptyString(
+      record.conversationUrl,
+      "Workflow owner conversationUrl",
+    );
+    const url = validateChatGptUrl(conversationUrl);
+    if (!/\/c\/[^/?#]+/.test(url.pathname)) {
+      throw new Error("Workflow owner conversationUrl must identify a ChatGPT conversation");
+    }
+    return { mode, conversationUrl: url.href };
+  }
+
+  throw new Error(`Workflow owner has unsupported mode: ${mode}`);
 }
 
 function parseWorker(value: unknown): WorkerSpec {
