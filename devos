@@ -12,6 +12,36 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+# All connector bootstrap tools run without runtime/admin credentials, inherited
+# npm/Node/debug options, or arbitrary caller configuration. Diagnostics stay fixed.
+connector_environment() {
+  env -i PATH="$PATH" HOME="${HOME-}" TMPDIR="${TMPDIR-}" LANG="${LANG-}" "$@"
+}
+connector_bootstrap() {
+  connector_environment "$@" >/dev/null 2>&1
+}
+
+# Explicit connector operations use this software checkout as-is, including a task
+# branch. Ordinary task launch retains its existing clean-main/update semantics.
+if [ "${1-}" = "connector" ] && [ -f "$ROOT/src/connector.ts" ] && [ -f "$ROOT/package.json" ]; then
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "DevOS connector requires npm." >&2
+    exit 1
+  fi
+  if [ ! -d "$ROOT/node_modules" ]; then
+    if ! (cd "$ROOT" && connector_bootstrap npm ci --ignore-scripts); then
+      echo "DevOS connector dependency bootstrap failed; check npm/network and retry setup." >&2
+      exit 1
+    fi
+  fi
+  if ! (cd "$ROOT" && connector_bootstrap npm run build); then
+    echo "DevOS connector build failed; run npm run build without runtime credentials for diagnostics." >&2
+    exit 1
+  fi
+  cd "$ROOT"
+  exec node "$SELF_CLI" "$@"
+fi
+
 if ! command -v gh >/dev/null 2>&1; then
   echo "DevOS requires the GitHub CLI (gh) authenticated for this project's repository." >&2
   exit 1
@@ -103,11 +133,25 @@ install_runtime() {
   trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
   echo "Refreshing DevOS runtime for this project..."
-  gh repo clone "$DEVOS_REPO" "$TMP" -- --depth 1 >/dev/null
+  if [ "${1-}" = "connector" ]; then
+    connector_bootstrap gh repo clone "$DEVOS_REPO" "$TMP" -- --depth 1 || {
+      echo "DevOS connector runtime bootstrap failed; check GitHub authentication/network." >&2
+      exit 1
+    }
+  else
+    gh repo clone "$DEVOS_REPO" "$TMP" -- --depth 1 >/dev/null
+  fi
   (
     cd "$TMP"
-    npm install --no-package-lock >/dev/null
-    npm run build >/dev/null
+    if [ "${1-}" = "connector" ]; then
+      connector_bootstrap npm ci --ignore-scripts && connector_bootstrap npm run build || {
+        echo "DevOS connector runtime build failed; retry without runtime credentials for diagnostics." >&2
+        exit 1
+      }
+    else
+      npm install --no-package-lock >/dev/null
+      npm run build >/dev/null
+    fi
   )
   rm -rf "$RUNTIME"
   mv "$TMP" "$RUNTIME"
@@ -118,18 +162,22 @@ if is_self_host_checkout; then
   sync_self_host_checkout
   build_self_host
   cd "$ROOT"
-  exec node "$SELF_CLI" "$@"
+  exec env DEVOS_MANAGE_BACKGROUND=1 node "$SELF_CLI" "$@"
 fi
 
-REMOTE_HEAD=$(gh api "repos/$DEVOS_REPO/commits/main" --jq .sha)
+if [ "${1-}" = "connector" ]; then
+  REMOTE_HEAD=$(connector_environment gh api "repos/$DEVOS_REPO/commits/main" --jq .sha)
+else
+  REMOTE_HEAD=$(gh api "repos/$DEVOS_REPO/commits/main" --jq .sha)
+fi
 LOCAL_HEAD=""
 if [ -f "$RUNTIME_CLI" ]; then
   LOCAL_HEAD=$(git -C "$RUNTIME" rev-parse HEAD 2>/dev/null || true)
 fi
 
 if [ ! -f "$RUNTIME_CLI" ] || [ -z "$LOCAL_HEAD" ] || [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
-  install_runtime
+  install_runtime "$@"
 fi
 
 cd "$ROOT"
-exec node "$RUNTIME_CLI" "$@"
+exec env DEVOS_MANAGE_BACKGROUND=1 node "$RUNTIME_CLI" "$@"
