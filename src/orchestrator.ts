@@ -187,6 +187,14 @@ export class Orchestrator {
         await stateStore.save(state);
       }
 
+      if (browserPreSubmitRetryPending) {
+        // Consume durably before another attempt can submit. If the process
+        // stops without a classified outcome, ordinary run must fail closed.
+        // Only a newly proven pre-submit failure below can restore permission.
+        state = { ...state, browserPreSubmitRetry: state.browserPreSubmitRetry!.filter(id => id !== worker.id) };
+        await stateStore.save(state);
+      }
+
       await this.emit({
         type: "worker_started",
         workerId: worker.id,

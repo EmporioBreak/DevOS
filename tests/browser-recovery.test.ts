@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { JsonStateStore } from "../src/json-state-store.js";
 import { runInNewContext } from "node:vm";
 import { chromium, type BrowserContext } from "playwright";
 import { ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
@@ -10,7 +13,7 @@ import type { Workflow } from "../src/workflow.js";
 const project = "https://chatgpt.com/g/one/project";
 const saved = "https://chatgpt.com/g/one/c/saved";
 const created = "https://chatgpt.com/g/one/c/created";
-function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failures?: number; error?: string; destination?: string; status?: number; body?: string; historyBody?: boolean; sendError?: boolean; responseError?: boolean; slow?: boolean; closeSlow?: boolean; backendDenied?: boolean; backendDeniedDuringWait?: boolean; backendDeniedDuringFill?: boolean; rootRedirect?: boolean } = {}) {
+function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failures?: number; error?: string; destination?: string; status?: number; body?: string; historyBody?: boolean; sendError?: boolean; noConversation?: boolean; responseError?: boolean; slow?: boolean; closeSlow?: boolean; backendDenied?: boolean; backendDeniedDuringWait?: boolean; backendDeniedDuringFill?: boolean; rootRedirect?: boolean } = {}) {
   let attempts = 0, sends = 0, fills = 0, closes = 0;
   const urls: string[] = [];
   let responseListener: ((response: any) => void) | undefined;
@@ -34,7 +37,7 @@ function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failur
       if (options.phase === "fill") fail();
     },
     async isVisible() { return true; },
-    async click() { sends++; url = url === saved ? saved : created; if (options.sendError) throw new Error("Target page crashed during click"); },
+    async click() { sends++; url = options.noConversation ? project : url === saved ? saved : created; if (options.sendError) throw new Error("Target page crashed during click"); },
     async press() { await this.click(); },
   };
   let url = project;
@@ -384,7 +387,7 @@ test("ambiguous post-submit fresh failure preserves created identity instead of 
   );
 
   assert.equal(store.state?.sessions.browser, created);
-  assert.equal(store.state?.browserPreSubmitRetry?.includes("browser"), false);
+  assert.notEqual(store.state?.browserPreSubmitRetry?.includes("browser"), true);
   assert.equal(f.sends(), 1);
 });
 
@@ -424,5 +427,60 @@ test("saved conversation remains identical across a pre-submit failure and ordin
   assert.equal(result.sessions.browser, saved);
   assert.equal(result.sessions.other, "https://chatgpt.com/g/one/c/other");
   assert.deepEqual(f.urls, [saved, saved]);
+  assert.equal(f.sends(), 1);
+});
+
+for (const failure of ["auth", "transient"] as const) {
+  test(`durable ordinary run resumes proven first-turn ${failure} failure`, async t => {
+    const root = await mkdtemp(join(process.cwd(), ".devos", "presubmit-fixture-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const workflow = { ...recoveryWorkflow(), owner: { mode: "main_agent" as const } };
+    const store = new JsonStateStore(root, workflow.task);
+    await store.save({ currentWorkerId: "browser", completedRuns: 2, sessions: { other: saved }, browserWorkersStarted: ["other"], task: workflow.task });
+    const options = { status: failure === "auth" ? 403 : 200, phase: "wait" as const, failures: failure === "transient" ? 99 : 0 };
+    const f = fixture(options);
+    const runOptions = { projectRoot: root, workflow, executors: new Map([["chatgpt_browser", f.executor]]) };
+    await assert.rejects(new Orchestrator({ ...runOptions, stateStore: store }).run(), failure === "auth" ? /HTTP 403/ : /attempt=3.*Timeout/);
+    const persisted = await new JsonStateStore(root, workflow.task).load();
+    assert.deepEqual(persisted?.browserPreSubmitRetry, ["browser"]);
+    assert.deepEqual(persisted?.sessions, { other: saved });
+    assert.deepEqual(persisted?.task, workflow.task);
+    assert.equal(f.sends(), 0);
+    options.status = 200; options.failures = 0;
+    const result = await new Orchestrator({ ...runOptions, stateStore: new JsonStateStore(root, workflow.task) }).run();
+    assert.equal(result.sessions.browser, created);
+    assert.equal(result.sessions.other, saved);
+    assert.deepEqual(result.task, workflow.task);
+    assert.equal(result.completedRuns, 3);
+    assert.equal(result.browserPreSubmitRetry?.includes("browser"), false);
+    assert.equal(f.sends(), 1);
+  });
+}
+
+test("safe fresh retry permission is consumed before another executor attempt can submit", async () => {
+  const workflow = recoveryWorkflow();
+  const store = new RecoveryStateStore({ currentWorkerId: "browser", completedRuns: 0, sessions: {}, browserWorkersStarted: ["browser"], browserPreSubmitRetry: ["browser"], task: workflow.task });
+  let permissionAtEntry: boolean | undefined;
+  const executor: Executor = { kind: "chatgpt_browser", async run() {
+    permissionAtEntry = (await store.load())?.browserPreSubmitRetry?.includes("browser");
+    throw new Error("unknown after execution begins");
+  } };
+  await assert.rejects(new Orchestrator({ projectRoot: "/project", workflow, executors: new Map([["chatgpt_browser", executor]]), stateStore: store }).run(), /unknown after execution/);
+  assert.equal(permissionAtEntry, false, "a process interruption cannot leave permission to replay an ambiguous attempt");
+});
+
+test("possible submission without a saved URL revokes safe retry and cannot create a replacement", async () => {
+  const options = { status: 403, sendError: true, noConversation: true };
+  const f = fixture(options);
+  const workflow = recoveryWorkflow();
+  const store = new RecoveryStateStore();
+  const runOptions = { projectRoot: "/project", workflow, executors: new Map([["chatgpt_browser", f.executor]]), stateStore: store };
+  await assert.rejects(new Orchestrator(runOptions).run(), /HTTP 403/);
+  options.status = 200;
+  await assert.rejects(new Orchestrator(runOptions).run(), /post-submit.*not replayed/);
+  assert.notEqual(store.state?.browserPreSubmitRetry?.includes("browser"), true);
+  assert.equal(store.state?.sessions.browser, undefined);
+  await assert.rejects(new Orchestrator(runOptions).run(), /Missing saved browser session/);
+  assert.deepEqual(f.urls, [project, project]);
   assert.equal(f.sends(), 1);
 });
