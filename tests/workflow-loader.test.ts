@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseWorkflow } from "../src/workflow-loader.js";
 
-test("parses needs_host routes in a valid workflow", () => {
+test("parses needs_local_worker routes in a valid workflow", () => {
   assert.deepEqual(
     parseWorkflow({
       version: 1,
@@ -13,7 +13,7 @@ test("parses needs_host routes in a valid workflow", () => {
           id: "developer",
           executor: "chatgpt_browser",
           prompt: "Attempt the task.",
-          on: { done: "reviewer", needs_host: "host", failed: null },
+          on: { done: "reviewer", needs_local_worker: "host", failed: null },
         },
         {
           id: "host",
@@ -38,7 +38,7 @@ test("parses needs_host routes in a valid workflow", () => {
           id: "developer",
           executor: "chatgpt_browser",
           prompt: "Attempt the task.",
-          on: { done: "reviewer", needs_host: "host", failed: null },
+          on: { done: "reviewer", needs_local_worker: "host", failed: null },
         },
         {
           id: "host",
@@ -168,7 +168,7 @@ test("rejects undeclared host fallback workers", () => {
             id: "developer",
             executor: "chatgpt_browser",
             prompt: "Attempt the task.",
-            on: { done: null, needs_host: "local_developer" },
+            on: { done: null, needs_local_worker: "local_developer" },
           },
         ],
       }),
