@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 import { loadChatGptBrowserConfig } from "./browser-config.js";
 import { ChatGptBrowserExecutor } from "./chatgpt-browser-executor.js";
 import { CodexExecutor } from "./codex-executor.js";
-import { LocalCommandRunner } from "./command-runner.js";\nimport { debugLog } from "./debug-log.js";
+import { LocalCommandRunner } from "./command-runner.js";
+import { debugLog } from "./debug-log.js";
 import type { Executor } from "./executor.js";
 import { JsonStateStore } from "./json-state-store.js";
 import {
@@ -66,6 +67,15 @@ export async function runWorkflow(
   cwd: string,
   config?: ProjectConfig,
 ): Promise<RunState> {
+  if (process.env.DEVOS_DEBUG === "1") {
+    process.env.DEVOS_DEBUG_FILE = join(
+      cwd,
+      ".devos",
+      "debug",
+      `${encodeURIComponent(workflow.task.repo)}-issue-${workflow.task.issue}.jsonl`,
+    );
+    debugLog("cli.run", { projectRoot: cwd, task: workflow.task, mode });
+  }
   const commandRunner = new LocalCommandRunner();
   const codex = new CodexExecutor(commandRunner);
   const chatgpt = new ChatGptBrowserExecutor(
@@ -193,6 +203,8 @@ export function formatOrchestrationEvent(event: OrchestrationEvent): string {
       return `[${event.workerId}] ${event.executor} — ${event.status}\n`;
     case "transition":
       return `→ ${event.to}\n`;
+    case "worker_session_recovered":
+      return `[${event.workerId}] ${event.executor} — saved session unusable; starting fresh in project root\n`;
     case "owner_handoff":
       return "Owner handoff\n";
   }
