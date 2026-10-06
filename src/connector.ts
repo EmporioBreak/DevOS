@@ -684,9 +684,25 @@ export async function connector(
         currentRuntime = runtime;
         currentPid = runtime.pid;
         currentPublicUrl = undefined;
-        const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((ok) => {
-          runtime.once("error", () => ok({ code: -1, signal: null }));
-          runtime.once("exit", (code, signal) => ok({ code, signal }));
+        let failure: { component?: string; message?: string } | undefined;
+        runtime.on("message", message => {
+          if (
+            typeof message === "object" &&
+            message &&
+            "failure" in message &&
+            typeof message.failure === "object" &&
+            message.failure
+          ) {
+            const record = message.failure as { component?: unknown; message?: unknown };
+            failure = {
+              ...(typeof record.component === "string" ? { component: record.component } : {}),
+              ...(typeof record.message === "string" ? { message: record.message } : {}),
+            };
+          }
+        });
+        const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null; component?: string; message?: string }>((ok) => {
+          runtime.once("error", () => ok({ code: -1, signal: null, ...failure }));
+          runtime.once("exit", (code, signal) => ok({ code, signal, ...failure }));
         });
         const ready = new Promise<{ pid: number; publicUrl: string }>((ok, fail) => {
           const timeout = setTimeout(
@@ -710,8 +726,12 @@ export async function connector(
           void exit.then(result => {
             clearTimeout(timeout);
             fail(Object.assign(
-              new Error("Connector startup/runtime failed; check local ports, ngrok credentials and Desktop Commander."),
-              { exitCode: result.code, exitSignal: result.signal },
+              new Error(result.message ?? "Connector startup/runtime failed; check local ports, ngrok credentials and Desktop Commander."),
+              {
+                exitCode: result.code,
+                exitSignal: result.signal,
+                component: result.component,
+              },
             ));
           });
         });
@@ -747,6 +767,7 @@ export async function connectorRuntime(root: string) {
   const config = await readConfig(root);
   const dir = join(root, ".devos/connector");
   let stopping = false,
+    failureComponent: "desktop_commander" | "ngrok" | "runtime" | undefined,
     child: ReturnType<typeof spawn> | undefined,
     gateway: Awaited<ReturnType<typeof startGateway>> | undefined;
   const stop = () => {
@@ -759,14 +780,29 @@ export async function connectorRuntime(root: string) {
   process.on("SIGINT", stop);
   process.on("disconnect", stop);
   try {
-    gateway = await startGateway({
+    try {
+      gateway = await startGateway({
       root: softwareRoot,
       port: config.gatewayPort,
       ownerSecret: ownerAuth(process.env.DEVOS_CONNECTOR_OWNER_SECRET),
       oauthClientsPath: join(root, ".devos/connector/oauth-clients.json"),
       oauthStatePath: join(root, ".devos/connector/oauth-state.enc"),
-      onFailure: stop,
-    });
+      onFailure: component => {
+        failureComponent = component;
+        stop();
+      },
+      });
+    } catch (error) {
+      throw Object.assign(
+        error instanceof Error ? error : new Error("Gateway startup failed."),
+        { component: "desktop_commander" },
+      );
+    }
+    if (stopping && failureComponent) {
+      throw Object.assign(new Error("Desktop Commander transport closed unexpectedly."), {
+        component: failureComponent,
+      });
+    }
     if (stopping) return;
     await writeFile(
       join(dir, "ngrok.yml"),
@@ -804,12 +840,30 @@ export async function connectorRuntime(root: string) {
       if (url) break;
       await delay(100);
     }
-    if (!url || stopping || exited)
-      throw new Error("Connector runtime startup failed.");
+    if (!url || stopping || exited) {
+      const component = failureComponent ?? "ngrok";
+      throw Object.assign(
+        new Error(
+          component === "desktop_commander"
+            ? "Desktop Commander transport closed unexpectedly."
+            : "ngrok startup/registration failed.",
+        ),
+        { component },
+      );
+    }
     gateway.setPublicUrl(url);
     process.send?.({ publicUrl: url });
     await exit;
-    if (!stopping) throw new Error("ngrok exited unexpectedly.");
+    if (!stopping) {
+      throw Object.assign(new Error("ngrok exited unexpectedly."), {
+        component: "ngrok",
+      });
+    }
+    if (failureComponent) {
+      throw Object.assign(new Error("Connector child transport exited unexpectedly."), {
+        component: failureComponent,
+      });
+    }
   } finally {
     stop();
     await gateway?.close();
