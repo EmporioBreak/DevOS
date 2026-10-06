@@ -60,8 +60,14 @@ export interface ChatGptProjectScope {
 
 export function getChatGptProjectScope(value: string): ChatGptProjectScope | null {
   const url = validateChatGptUrl(value);
-  const match = /^\/g\/([^/]+)\/c(?:\/|$)/.exec(url.pathname);
-  if (!match?.[1]) return null;
+  if (url.pathname === "/") return null;
+
+  const match = /^\/g\/([^/]+)\/c\/?$/.exec(url.pathname);
+  if (!match?.[1]) {
+    throw new Error(
+      "Invalid configured ChatGPT Project URL; expected /g/<project-id>/c/",
+    );
+  }
   return { origin: url.origin, projectId: match[1] };
 }
 

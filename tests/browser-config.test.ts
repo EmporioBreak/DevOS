@@ -47,6 +47,13 @@ test("extracts project identity from the configured project new-chat URL", () =>
   assert.equal(getChatGptProjectScope("https://chatgpt.com/"), null);
 });
 
+test("rejects a configured ChatGPT Project URL that cannot enforce project scope", () => {
+  assert.throws(
+    () => getChatGptProjectScope("https://chatgpt.com/g/g-p-project/"),
+    /Invalid configured ChatGPT Project URL/,
+  );
+});
+
 test("accepts only conversations in the configured ChatGPT Project", () => {
   assert.equal(
     assertChatGptProjectScope(
