@@ -281,6 +281,7 @@ test("approved public OAuth client and bearer state survive connector restart", 
   const statePath = join(dir, "oauth-state.enc");
   let first: Awaited<ReturnType<typeof start>> | undefined;
   let second: Awaited<ReturnType<typeof start>> | undefined;
+  let third: Awaited<ReturnType<typeof start>> | undefined;
   try {
     first = await start({
       root: process.cwd(),
@@ -362,9 +363,46 @@ test("approved public OAuth client and bearer state survive connector restart", 
     assert.equal(callback.origin, "http://127.0.0.1:54321");
     assert.equal(callback.searchParams.get("state"), "restart-state");
     assert.ok(callback.searchParams.get("code"));
+
+    await second.close();
+    second = undefined;
+    third = await start({
+      root: process.cwd(),
+      port: 0,
+      ownerSecret: secret,
+      publicUrl: issuer,
+      oauthClientsPath: clientsPath,
+      oauthStatePath: statePath,
+    });
+    const thirdBase = "http://127.0.0.1:" + third.address.port;
+    const replayAfterRestart = await fetch(thirdBase + "/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: client.client_id,
+        refresh_token: tokens.refresh_token,
+        resource: issuer + "/mcp",
+      }),
+    });
+    assert.equal(
+      replayAfterRestart.status,
+      400,
+      "consumed refresh token stays consumed across restart",
+    );
+    assert.equal(
+      (
+        await fetch(thirdBase + "/mcp", {
+          headers: { Authorization: "Bearer " + rotated.access_token },
+        })
+      ).status,
+      401,
+      "replay after restart revokes the rotated family",
+    );
   } finally {
     await first?.close();
     await second?.close();
+    await third?.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -793,9 +831,58 @@ test("connector hardening keeps recovery and credentials out of CLI argv", async
   const runner = await readFile(new URL("../src/connector-runner.ts", import.meta.url), "utf8");
   assert.match(source, /find-generic-password/);
   assert.match(source, /add-generic-password/);
+  assert.match(source, /value \+ "\\n" \+ value \+ "\\n"/);
+  assert.match(source, /Desktop Commander transport closed unexpectedly/);
   assert.match(source, /backgroundOwned/);
   assert.match(source, /atomicWrite/);
   assert.doesNotMatch(source, /\["--[^"]*(secret|token)/i);
   assert.match(runner, /const backoff = \[500, 1500, 4000\]/);
   assert.match(runner, /status: "failed"/);
+});
+
+
+test("unreadable OAuth state fails closed with non-secret diagnostic", async () => {
+  const start = connectorModule.startGateway;
+  const dir = await mkdtemp(join(tmpdir(), "devos-oauth-invalid-"));
+  const clientsPath = join(dir, "clients.json");
+  const statePath = join(dir, "oauth-state.enc");
+  let first: Awaited<ReturnType<typeof start>> | undefined;
+  let second: Awaited<ReturnType<typeof start>> | undefined;
+  const rotatedOwner = "synthetic-rotated-owner-" + randomBytes(32).toString("hex");
+  try {
+    first = await start({
+      root: process.cwd(),
+      port: 0,
+      ownerSecret: secret,
+      publicUrl: issuer,
+      oauthClientsPath: clientsPath,
+      oauthStatePath: statePath,
+    });
+    const { tokens } = await oauthToken(
+      "http://127.0.0.1:" + first.address.port,
+      secret,
+    );
+    await first.close();
+    first = undefined;
+
+    second = await start({
+      root: process.cwd(),
+      port: 0,
+      ownerSecret: rotatedOwner,
+      publicUrl: issuer,
+      oauthClientsPath: clientsPath,
+      oauthStatePath: statePath,
+    });
+    const diagnostic = await readFile(join(dir, "auth-diagnostic.json"), "utf8");
+    assert.match(diagnostic, /"layer":"auth"/);
+    assert.match(diagnostic, /"status":"invalidated"/);
+    assert.doesNotMatch(diagnostic, new RegExp(secret));
+    assert.doesNotMatch(diagnostic, new RegExp(rotatedOwner));
+    assert.doesNotMatch(diagnostic, new RegExp(tokens.access_token));
+    assert.doesNotMatch(diagnostic, new RegExp(tokens.refresh_token));
+  } finally {
+    await first?.close();
+    await second?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
