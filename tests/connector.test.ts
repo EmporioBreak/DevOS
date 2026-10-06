@@ -771,3 +771,23 @@ test("gateway stays closed before public HTTPS identity is ready", async () => {
     await g.close();
   }
 });
+
+
+test("background ownership rejects PID reuse and project mismatch", () => {
+  const identity = { pid: 123, startTime: "start", executable: "/usr/bin/node" };
+  assert.equal(connectorModule.backgroundOwnershipMatches(
+    { pid: 123, projectRoot: "/project", identity },
+    identity,
+    "/project",
+  ), true);
+  assert.equal(connectorModule.backgroundOwnershipMatches(
+    { pid: 123, projectRoot: "/project", identity },
+    { ...identity, startTime: "later" },
+    "/project",
+  ), false);
+  assert.equal(connectorModule.backgroundOwnershipMatches(
+    { pid: 123, projectRoot: "/other", identity },
+    identity,
+    "/project",
+  ), false);
+});
