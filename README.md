@@ -59,6 +59,104 @@ devos restart .devos/workflow.json
 
 Сам способ передать готовый workflow из главного ChatGPT на локальный Mac и стартовать этот one-shot процесс — отдельный транспортный слой. Он не должен превращать DevOS в постоянно работающий polling-сервис.
 
+## DevOS как локальная программка проекта
+
+DevOS не нужно устанавливать глобально на компьютер.
+
+В корне проекта лежит один launcher:
+
+```text
+my-project/
+├─ devos
+├─ src/
+├─ ...
+└─ .devos/
+```
+
+После копирования launcher-а в проект:
+
+```bash
+chmod +x devos
+./devos
+```
+
+При первом запуске launcher локально разворачивает runtime в `.devos/runtime/`. Никакого `npm -g`, системного daemon-а или общей установки DevOS на компьютер нет. Runtime и состояние принадлежат только этому проекту.
+
+Repo проекта определяется из локального `git remote origin` и сохраняется в `.devos/config.json`.
+
+Обычный запуск:
+
+```bash
+./devos
+```
+
+DevOS один раз получает из GitHub открытые Issues текущего пользователя, выбирает только Issues с готовым `DEVOS_TASK_V1` workflow и показывает меню:
+
+```text
+Ready DevOS tasks for owner/product:
+
+1. #35 Build homepage
+2. #36 Add profile settings
+
+Select task: 1
+
+Starting #35: Build homepage
+...
+DevOS complete: #35, 4 worker runs.
+```
+
+После завершения workflow процесс DevOS заканчивается. В фоне ничего не остаётся и GitHub больше не опрашивается.
+
+### Готовая задача
+
+Главный агент помечает подготовленную Issue блоком:
+
+```text
+<!-- DEVOS_TASK_V1 -->
+```
+
+Сразу после marker идёт JSON с полным заранее составленным workflow:
+
+```json
+{
+  "version": 1,
+  "mode": "run",
+  "workflow": {
+    "version": 1,
+    "task": {
+      "repo": "owner/product",
+      "issue": 35
+    },
+    "start": "developer",
+    "workers": []
+  }
+}
+```
+
+В реальном workflow `workers` не пустой. DevOS проверяет, что repo и Issue внутри workflow совпадают с выбранной GitHub Issue.
+
+### Запуск через local Codex
+
+Local Codex не обязан показывать интерактивное меню. Если номер уже подготовленной задачи известен, он запускает тот же project-local DevOS напрямую:
+
+```bash
+./devos run 35
+```
+
+После явного replan:
+
+```bash
+./devos restart 35
+```
+
+Файловый режим остаётся доступен:
+
+```bash
+./devos run .devos/workflow.json
+```
+
+Во всех случаях используется один и тот же one-shot orchestrator: процесс существует только пока выполняется конкретная пользовательская задача.
+
 ## GitHub как общая память
 
 Для каждой задачи используются две естественные сущности GitHub.
