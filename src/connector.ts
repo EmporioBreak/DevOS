@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
   access,
@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadConnectorSecrets, type ConnectorSecrets } from "./connector-env.js";
+import { captureProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "./process-identity.js";
 import {
   startGateway,
   ownerAuth,
@@ -277,14 +278,35 @@ async function health(port: number) {
 }
 const backgroundStateName = "background.json";
 
-async function backgroundState(root: string): Promise<{ pid?: number }> {
+export interface ConnectorBackgroundState {
+  pid?: number;
+  startedAt?: string;
+  projectRoot?: string;
+  ownershipToken?: string;
+  identity?: ProcessIdentity;
+}
+
+async function backgroundState(root: string): Promise<ConnectorBackgroundState> {
   try {
     return JSON.parse(
       await readFile(join(root, ".devos/connector", backgroundStateName), "utf8"),
-    ) as { pid?: number };
+    ) as ConnectorBackgroundState;
   } catch {
     return {};
   }
+}
+
+export function backgroundOwnershipMatches(
+  state: ConnectorBackgroundState,
+  actual: ProcessIdentity,
+  root: string,
+): boolean {
+  return (
+    !!state.identity &&
+    state.projectRoot === root &&
+    state.pid === actual.pid &&
+    sameProcessIdentity(state.identity, actual)
+  );
 }
 
 function processAlive(pid: number | undefined): boolean {
@@ -300,7 +322,9 @@ function processAlive(pid: number | undefined): boolean {
 export async function connectorBackgroundRunning(root: string): Promise<boolean> {
   root = await realpath(root);
   const state = await backgroundState(root);
-  return processAlive(state.pid);
+  if (!processAlive(state.pid) || !state.pid) return false;
+  const actual = await captureProcessIdentity(state.pid);
+  return !!actual && backgroundOwnershipMatches(state, actual, root);
 }
 
 async function startBackground(root: string, config: {
@@ -310,9 +334,15 @@ async function startBackground(root: string, config: {
   const dir = join(root, ".devos/connector");
   const serviceFile = join(dir, backgroundStateName);
   const existing = await backgroundState(root);
-  if (processAlive(existing.pid)) {
-    process.stdout.write("DevOS is already running in background.\n");
-    return;
+  if (processAlive(existing.pid) && existing.pid) {
+    const actual = await captureProcessIdentity(existing.pid);
+    if (!actual) {
+      throw new Error("Cannot prove ownership of the existing DevOS background PID; refusing to replace it.");
+    }
+    if (backgroundOwnershipMatches(existing, actual, root)) {
+      process.stdout.write("DevOS is already running in background.\n");
+      return;
+    }
   }
   await rm(serviceFile, { force: true });
   await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -328,9 +358,20 @@ async function startBackground(root: string, config: {
       DEVOS_CONNECTOR_OWNER_SECRET: secrets.ownerSecret,
     },
   });
+  const childIdentity = child.pid ? await captureProcessIdentity(child.pid) : null;
+  if (!child.pid || !childIdentity) {
+    child.kill("SIGTERM");
+    throw new Error("DevOS could not prove ownership of the background connector process.");
+  }
   await writeFile(
     serviceFile,
-    JSON.stringify({ pid: child.pid, startedAt: new Date().toISOString() }) + "\n",
+    JSON.stringify({
+      pid: child.pid,
+      startedAt: new Date().toISOString(),
+      projectRoot: root,
+      ownershipToken: randomUUID(),
+      identity: childIdentity,
+    }) + "\n",
     { mode: 0o600 },
   );
   child.unref();
@@ -373,14 +414,23 @@ async function stopBackground(root: string) {
   const dir = join(root, ".devos/connector");
   const serviceFile = join(dir, backgroundStateName);
   const state = await backgroundState(root);
-  if (!processAlive(state.pid)) {
+  if (!processAlive(state.pid) || !state.pid) {
     await rm(serviceFile, { force: true });
     process.stdout.write("DevOS background is already stopped.\n");
     return;
   }
+  const actual = await captureProcessIdentity(state.pid);
+  if (!actual) {
+    throw new Error("Cannot prove DevOS background process ownership; refusing to signal the stored PID.");
+  }
+  if (!backgroundOwnershipMatches(state, actual, root)) {
+    await rm(serviceFile, { force: true });
+    process.stdout.write("DevOS background ownership state was stale; no process was signaled.\n");
+    return;
+  }
 
   try {
-    process.kill(state.pid!, "SIGTERM");
+    process.kill(state.pid, "SIGTERM");
   } catch {}
   const gracefulDeadline = Date.now() + 5000;
   while (processAlive(state.pid) && Date.now() < gracefulDeadline) {
