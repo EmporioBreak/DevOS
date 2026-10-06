@@ -4,7 +4,16 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium, type BrowserContext } from 'playwright';
-import { ChatGptBrowserExecutor } from '../src/chatgpt-browser-executor.js';
+import { ChatGptBrowserExecutor, persistentChromeIgnoreDefaultArgs } from '../src/chatgpt-browser-executor.js';
+
+
+test('persistent Chrome preserves native macOS credential storage', () => {
+  assert.deepEqual(persistentChromeIgnoreDefaultArgs('darwin'), [
+    '--use-mock-keychain',
+    '--password-store=basic',
+  ]);
+  assert.equal(persistentChromeIgnoreDefaultArgs('linux'), undefined);
+});
 
 for (const mode of ['headed', 'headless', 'lookup-failure', 'invalid-id', 'set-failure', 'unconfirmed', 'no-page', 'late-lookup'] as const) {
   test(`owned-window minimization: ${mode}`, async t => {
