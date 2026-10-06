@@ -1,3 +1,4 @@
+import { isCodexResumeUnavailableError } from "./codex-executor.js";
 import type { Executor } from "./executor.js";
 import { parseDevosResult } from "./result.js";
 import type { ExecutorKind, TaskRef, WorkerOutput, WorkerStatus, Workflow, WorkerSpec } from "./workflow.js";
@@ -195,7 +196,7 @@ export class Orchestrator {
           : {}),
         });
       } catch (error) {
-        if (worker.executor !== "codex" || !sessionId) throw error;
+        if (worker.executor !== "codex" || !sessionId || !isCodexResumeUnavailableError(error)) throw error;
         const sessions = { ...state.sessions };
         const sessionProjectRoots = { ...(state.sessionProjectRoots ?? {}) };
         delete sessions[worker.id];
