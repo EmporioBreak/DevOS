@@ -129,3 +129,35 @@ test("formats parent-process final review handoff as structured stdout", () => {
     'DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED","task":{"repo":"owner/product","issue":39,"pr":41}}\n',
   );
 });
+
+
+test("parent-process handoff uses PR resolved during execution", () => {
+  const line = formatRunResult(
+    {
+      version: 1,
+      task: { repo: "owner/product", issue: 39 },
+      owner: { mode: "parent_process" },
+      start: "reviewer",
+      workers: [
+        {
+          id: "reviewer",
+          executor: "chatgpt_browser",
+          prompt: "Review.",
+          on: { approved: null },
+        },
+      ],
+    },
+    {
+      currentWorkerId: "reviewer",
+      completedRuns: 1,
+      sessions: { reviewer: "https://chatgpt.com/c/review" },
+      task: { repo: "owner/product", issue: 39, pr: 40 },
+      ownerReviewPending: true,
+    },
+  );
+
+  assert.equal(
+    line,
+    'DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED","task":{"repo":"owner/product","issue":39,"pr":40}}\n',
+  );
+});
