@@ -112,7 +112,11 @@ export class Orchestrator {
       }
 
       if (nextWorkerId === null || nextWorkerId === undefined) {
-        if (state.task?.pr === undefined && this.options.resolveTask) {
+        if (
+          workflow.owner &&
+          state.task?.pr === undefined &&
+          this.options.resolveTask
+        ) {
           const task = await this.options.resolveTask(state.task ?? workflow.task);
           state = { ...state, task };
           await stateStore.save(state);
