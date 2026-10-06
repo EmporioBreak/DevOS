@@ -6,6 +6,7 @@ export interface RunState {
   currentWorkerId: string;
   completedRuns: number;
   sessions: Record<string, string>;
+  browserWorkersStarted?: string[];
   task?: TaskRef;
   ownerReviewPending?: boolean;
 }
@@ -92,6 +93,9 @@ export class Orchestrator {
           currentWorkerId: state.currentWorkerId,
           completedRuns: state.completedRuns,
           sessions: state.sessions,
+          ...(state.browserWorkersStarted
+            ? { browserWorkersStarted: state.browserWorkersStarted }
+            : {}),
           task: state.task ?? workflow.task,
         };
         await this.emitTaskStatus(completed, "completed");
@@ -104,6 +108,9 @@ export class Orchestrator {
         currentWorkerId: workflow.start,
         completedRuns: state.completedRuns,
         sessions: state.sessions,
+        ...(state.browserWorkersStarted
+          ? { browserWorkersStarted: state.browserWorkersStarted }
+          : {}),
         task: state.task ?? workflow.task,
       };
       await stateStore.save(state);
@@ -121,6 +128,26 @@ export class Orchestrator {
       if (!executor) throw new Error(`Missing executor: ${worker.executor}`);
 
       const sessionId = state.sessions[worker.id];
+      const browserWorkerAlreadyStarted =
+        worker.executor === "chatgpt_browser" &&
+        state.browserWorkersStarted?.includes(worker.id) === true;
+      if (browserWorkerAlreadyStarted && !sessionId) {
+        await stateStore.save(state);
+        throw new Error(
+          `Missing saved browser session for previously started worker: ${worker.id}`,
+        );
+      }
+      if (worker.executor === "chatgpt_browser" && !browserWorkerAlreadyStarted) {
+        state = {
+          ...state,
+          browserWorkersStarted: [
+            ...(state.browserWorkersStarted ?? []),
+            worker.id,
+          ],
+        };
+        await stateStore.save(state);
+      }
+
       await this.emit({
         type: "worker_started",
         workerId: worker.id,
@@ -132,12 +159,35 @@ export class Orchestrator {
         projectRoot: this.options.projectRoot,
         prompt: buildWorkerPrompt(activeWorkflow, worker),
         ...(sessionId ? { sessionId } : {}),
+        ...(worker.executor === "chatgpt_browser"
+          ? {
+              enforceProjectScope: true,
+              onSession: async (reportedSessionId: string) => {
+                state = {
+                  ...state,
+                  sessions: {
+                    ...state.sessions,
+                    [worker.id]: reportedSessionId,
+                  },
+                };
+                await stateStore.save(state);
+              },
+            }
+          : {}),
       });
 
       const sessions =
         output.sessionId === undefined
           ? state.sessions
           : { ...state.sessions, [worker.id]: output.sessionId };
+
+      if (
+        worker.executor === "chatgpt_browser" &&
+        output.sessionId !== undefined
+      ) {
+        state = { ...state, sessions };
+        await stateStore.save(state);
+      }
 
       const result = parseDevosResult(output.text);
       state = {
@@ -207,6 +257,9 @@ export class Orchestrator {
           currentWorkerId: workflow.start,
           completedRuns: state.completedRuns,
           sessions: state.sessions,
+          ...(state.browserWorkersStarted
+            ? { browserWorkersStarted: state.browserWorkersStarted }
+            : {}),
           task: state.task ?? workflow.task,
         };
         await stateStore.save(state);

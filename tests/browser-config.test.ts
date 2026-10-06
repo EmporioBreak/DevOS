@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadChatGptBrowserConfig, validateChatGptUrl } from "../src/browser-config.js";
+import {
+  assertChatGptProjectScope,
+  getChatGptProjectScope,
+  loadChatGptBrowserConfig,
+  validateChatGptUrl,
+} from "../src/browser-config.js";
 
 test("loads deterministic browser defaults", () => {
   const config = loadChatGptBrowserConfig({
@@ -31,4 +36,73 @@ test("only accepts ChatGPT https hosts", () => {
   assert.equal(validateChatGptUrl("https://chatgpt.com/c/abc").hostname, "chatgpt.com");
   assert.throws(() => validateChatGptUrl("https://example.com/"), /Invalid ChatGPT URL/);
   assert.throws(() => validateChatGptUrl("http://chatgpt.com/"), /Invalid ChatGPT URL/);
+});
+
+
+test("extracts project identity from the configured project new-chat URL", () => {
+  assert.deepEqual(
+    getChatGptProjectScope("https://chatgpt.com/g/g-p-project/c/"),
+    { origin: "https://chatgpt.com", projectId: "g-p-project" },
+  );
+  assert.equal(getChatGptProjectScope("https://chatgpt.com/"), null);
+});
+
+test("accepts the configured ChatGPT Project landing URL", () => {
+  const projectUrl = "https://chatgpt.com/g/g-p-project-denis-devos/";
+  assert.deepEqual(getChatGptProjectScope(projectUrl), {
+    origin: "https://chatgpt.com",
+    projectId: "g-p-project-denis-devos",
+  });
+  assert.equal(
+    assertChatGptProjectScope(
+      projectUrl,
+      "https://chatgpt.com/g/g-p-project-denis-devos/",
+    ).pathname,
+    "/g/g-p-project-denis-devos/",
+  );
+  assert.equal(
+    assertChatGptProjectScope(
+      projectUrl,
+      "https://chatgpt.com/g/g-p-project-denis-devos/c/conversation-1",
+      true,
+    ).pathname,
+    "/g/g-p-project-denis-devos/c/conversation-1",
+  );
+});
+
+test("rejects a configured ChatGPT URL that cannot enforce project scope", () => {
+  assert.throws(
+    () => getChatGptProjectScope("https://chatgpt.com/c/standalone"),
+    /Invalid configured ChatGPT Project URL/,
+  );
+});
+
+test("accepts only conversations in the configured ChatGPT Project", () => {
+  assert.equal(
+    assertChatGptProjectScope(
+      "https://chatgpt.com/g/g-p-project/c/",
+      "https://chatgpt.com/g/g-p-project/c/conversation-1",
+      true,
+    ).pathname,
+    "/g/g-p-project/c/conversation-1",
+  );
+
+  assert.throws(
+    () =>
+      assertChatGptProjectScope(
+        "https://chatgpt.com/g/g-p-project/c/",
+        "https://chatgpt.com/c/standalone",
+        true,
+      ),
+    /escaped the configured Project/,
+  );
+  assert.throws(
+    () =>
+      assertChatGptProjectScope(
+        "https://chatgpt.com/g/g-p-project/c/",
+        "https://chatgpt.com/g/g-p-other/c/conversation-2",
+        true,
+      ),
+    /escaped the configured Project/,
+  );
 });

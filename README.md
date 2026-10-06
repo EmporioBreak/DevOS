@@ -94,7 +94,7 @@ Repo проекта определяется из локального `git remo
 }
 ```
 
-Для новых `chatgpt_browser` worker-ов этот project-local URL имеет приоритет над `DEVOS_CHATGPT_PROJECT_URL`. Переменная окружения остаётся fallback-ом.
+Для новых `chatgpt_browser` worker-ов этот project-local URL имеет приоритет над `DEVOS_CHATGPT_PROJECT_URL`. Переменная окружения остаётся fallback-ом. URL может быть ссылкой на Project `https://chatgpt.com/g/<project-id>/` или его new-chat route `/g/<project-id>/c/`. Browser worker перед отправкой проверяет, что страница не вышла из этого Project, а после создания разговора сохраняет только URL вида `/g/<тот-же-project-id>/c/<conversation-id>`. Standalone `/c/<id>` и разговор из другого Project считаются ошибкой, а не допустимым fallback.
 
 Обычный запуск:
 
@@ -279,7 +279,7 @@ Worker может запускаться разными способами.
 
 Это полноценный ChatGPT-агент, открытый DevOS через Playwright в постоянной браузерной сессии. В архитектуре DevOS считается, что он имеет тот же набор возможностей и инструментов, что и главный ChatGPT-агент.
 
-Conversation URL worker-а хранится только в state текущей GitHub Issue, в `sessions[workerId]`. Поэтому повторный вход того же worker-а в рамках одной задачи открывает тот же conversation URL, а другая Issue начинает с пустого session map и создаёт новый разговор внутри настроенного ChatGPT Project. Глобального worker-session registry нет.
+Conversation URL worker-а хранится только в state текущей GitHub Issue, в `sessions[workerId]`. Поэтому повторный вход того же worker-а в рамках одной задачи открывает тот же conversation URL, а другая Issue начинает с пустого session map и создаёт новый разговор внутри настроенного ChatGPT Project. Для нового browser-разговора DevOS сохраняет validated Project conversation URL сразу после его появления, не дожидаясь завершения ответа агента, поэтому сбой response loading после создания чата не теряет identity разговора. Перед первым запуском browser worker-а state также фиксирует, что этот worker уже стартовал. Если DevOS позже видит тот же task + worker без сохранённого conversation URL, он останавливается с явной ошибкой вместо молчаливого создания нового чата; намеренно начать заново можно только через явный `restart`. Глобального worker-session registry нет.
 
 Он может использовать доступные ему:
 

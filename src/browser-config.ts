@@ -51,3 +51,47 @@ export function validateChatGptUrl(value: string): URL {
 
   return url;
 }
+
+
+export interface ChatGptProjectScope {
+  origin: string;
+  projectId: string;
+}
+
+export function getChatGptProjectScope(value: string): ChatGptProjectScope | null {
+  const url = validateChatGptUrl(value);
+  if (url.pathname === "/") return null;
+
+  const match = /^\/g\/([^/]+)(?:\/c)?\/?$/.exec(url.pathname);
+  if (!match?.[1]) {
+    throw new Error(
+      "Invalid configured ChatGPT Project URL; expected /g/<project-id>/ or /g/<project-id>/c/",
+    );
+  }
+  return { origin: url.origin, projectId: match[1] };
+}
+
+export function assertChatGptProjectScope(
+  projectUrl: string,
+  candidateUrl: string,
+  requireConversation = false,
+): URL {
+  const candidate = validateChatGptUrl(candidateUrl);
+  const scope = getChatGptProjectScope(projectUrl);
+  if (!scope) return candidate;
+
+  const match = /^\/g\/([^/]+)(?:\/c(?:\/([^/]+))?)?\/?$/.exec(
+    candidate.pathname,
+  );
+  const projectId = match?.[1];
+  const conversationId = match?.[2];
+
+  if (candidate.origin !== scope.origin || projectId !== scope.projectId) {
+    throw new Error("ChatGPT browser escaped the configured Project");
+  }
+  if (requireConversation && !conversationId) {
+    throw new Error("ChatGPT Project conversation URL did not appear");
+  }
+
+  return candidate;
+}

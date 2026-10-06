@@ -48,6 +48,7 @@ function validateState(value: unknown): RunState {
   const record = value as Record<string, unknown>;
   const task = record.task;
   const ownerReviewPending = record.ownerReviewPending;
+  const browserWorkersStarted = record.browserWorkersStarted;
 
   if (task !== undefined && !isTaskRef(task)) {
     throw new Error("Invalid DevOS state");
@@ -58,6 +59,12 @@ function validateState(value: unknown): RunState {
   ) {
     throw new Error("Invalid DevOS state");
   }
+  if (
+    browserWorkersStarted !== undefined &&
+    !isWorkerIdList(browserWorkersStarted)
+  ) {
+    throw new Error("Invalid DevOS state");
+  }
 
   if (
     Object.keys(record).some(
@@ -65,6 +72,7 @@ function validateState(value: unknown): RunState {
         key !== "currentWorkerId" &&
         key !== "completedRuns" &&
         key !== "sessions" &&
+        key !== "browserWorkersStarted" &&
         key !== "task" &&
         key !== "ownerReviewPending",
     ) ||
@@ -82,6 +90,9 @@ function validateState(value: unknown): RunState {
     currentWorkerId: record.currentWorkerId,
     completedRuns: record.completedRuns,
     sessions: { ...record.sessions },
+    ...(browserWorkersStarted === undefined
+      ? {}
+      : { browserWorkersStarted: [...browserWorkersStarted] }),
     ...(task === undefined ? {} : { task }),
     ...(ownerReviewPending === undefined ? {} : { ownerReviewPending }),
   };
@@ -113,6 +124,16 @@ function isSessionMap(value: unknown): value is Record<string, string> {
       workerId.trim().length > 0 &&
       typeof sessionId === "string" &&
       sessionId.trim().length > 0,
+  );
+}
+
+function isWorkerIdList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    new Set(value).size === value.length &&
+    value.every(
+      workerId => typeof workerId === "string" && workerId.trim().length > 0,
+    )
   );
 }
 

@@ -3,6 +3,8 @@ import { chromium, type BrowserContext, type Page } from "playwright";
 import type { Executor, WorkerRequest } from "./executor.js";
 import type { WorkerOutput } from "./workflow.js";
 import {
+  assertChatGptProjectScope,
+  getChatGptProjectScope,
   loadChatGptBrowserConfig,
   validateChatGptUrl,
   type ChatGptBrowserConfig,
@@ -37,17 +39,41 @@ export class ChatGptBrowserExecutor implements Executor {
     const page = await context.newPage();
 
     try {
+      const projectScope = request.enforceProjectScope
+        ? getChatGptProjectScope(this.config.projectUrl)
+        : null;
       const url = request.sessionId ?? this.config.projectUrl;
       validateChatGptUrl(url);
+      if (projectScope && request.sessionId) {
+        assertChatGptProjectScope(this.config.projectUrl, request.sessionId, true);
+      }
+
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: this.timeoutMs });
       await page.locator(COMPOSER).first().waitFor({
         state: "visible",
         timeout: this.timeoutMs,
       });
+      if (projectScope) {
+        assertChatGptProjectScope(
+          this.config.projectUrl,
+          page.url(),
+          request.sessionId !== undefined,
+        );
+      }
 
-      const text = await sendAndRead(page, request.prompt, this.timeoutMs);
+      const response = sendAndRead(page, request.prompt, this.timeoutMs).then(
+        text => ({ text } as const),
+        error => ({ error } as const),
+      );
       const sessionId = await waitForConversationUrl(page, this.timeoutMs);
-      return { text, sessionId };
+      if (projectScope) {
+        assertChatGptProjectScope(this.config.projectUrl, sessionId, true);
+      }
+      await request.onSession?.(sessionId);
+
+      const outcome = await response;
+      if ("error" in outcome) throw outcome.error;
+      return { text: outcome.text, sessionId };
     } finally {
       await page.close().catch(() => undefined);
     }
