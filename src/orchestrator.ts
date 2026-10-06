@@ -1,11 +1,12 @@
 import type { Executor } from "./executor.js";
 import { parseDevosResult } from "./result.js";
-import type { Workflow, WorkerSpec } from "./workflow.js";
+import type { TaskRef, Workflow, WorkerSpec } from "./workflow.js";
 
 export interface RunState {
   currentWorkerId: string;
   completedRuns: number;
   sessions: Record<string, string>;
+  task?: TaskRef;
   ownerReviewPending?: boolean;
 }
 
@@ -21,6 +22,7 @@ export interface OrchestratorOptions {
   executors: Map<string, Executor>;
   stateStore: StateStore;
   ownerDecision?: "approved" | "changes_requested";
+  resolveTask?: (task: TaskRef) => Promise<TaskRef>;
 }
 
 export class Orchestrator {
@@ -34,7 +36,12 @@ export class Orchestrator {
         currentWorkerId: workflow.start,
         completedRuns: 0,
         sessions: {},
+        task: workflow.task,
       };
+
+    if (!state.task) {
+      state = { ...state, task: workflow.task };
+    }
 
     if (state.ownerReviewPending) {
       const decision = this.options.ownerDecision;
@@ -45,6 +52,7 @@ export class Orchestrator {
           currentWorkerId: state.currentWorkerId,
           completedRuns: state.completedRuns,
           sessions: state.sessions,
+          task: state.task,
         };
         await stateStore.clear();
         return completed;
@@ -66,9 +74,10 @@ export class Orchestrator {
       if (!executor) throw new Error(`Missing executor: ${worker.executor}`);
 
       const sessionId = state.sessions[worker.id];
+      const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
       const output = await executor.run({
         projectRoot: this.options.projectRoot,
-        prompt: buildWorkerPrompt(workflow, worker),
+        prompt: buildWorkerPrompt(activeWorkflow, worker),
         ...(sessionId ? { sessionId } : {}),
       });
 
@@ -102,6 +111,12 @@ export class Orchestrator {
       }
 
       if (nextWorkerId === null || nextWorkerId === undefined) {
+        if (state.task?.pr === undefined && this.options.resolveTask) {
+          const task = await this.options.resolveTask(state.task ?? workflow.task);
+          state = { ...state, task };
+          await stateStore.save(state);
+        }
+
         const ownerResult = await this.handoffToOwner(state);
         if (ownerResult === "approved") {
           await stateStore.clear();
@@ -118,6 +133,7 @@ export class Orchestrator {
           currentWorkerId: workflow.start,
           completedRuns: state.completedRuns,
           sessions: state.sessions,
+          task: state.task,
         };
         await stateStore.save(state);
         continue;
@@ -137,6 +153,7 @@ export class Orchestrator {
   ): Promise<"approved" | "changes_requested" | "final_review_required"> {
     const { workflow } = this.options;
     const owner = workflow.owner;
+    const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
 
     if (!owner) return "approved";
     if (owner.mode === "parent_process") return "final_review_required";
@@ -146,7 +163,7 @@ export class Orchestrator {
 
     const output = await executor.run({
       projectRoot: this.options.projectRoot,
-      prompt: buildOwnerPrompt(workflow),
+      prompt: buildOwnerPrompt(activeWorkflow),
       sessionId: owner.conversationUrl,
     });
     const result = parseDevosResult(output.text);
