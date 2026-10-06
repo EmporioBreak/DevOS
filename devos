@@ -30,6 +30,8 @@ is_self_host_checkout() {
   esac
 }
 
+SELF_HOST_UPDATED=0
+
 sync_self_host_checkout() {
   BRANCH=$(git -C "$ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   if [ "$BRANCH" != "main" ]; then
@@ -60,6 +62,7 @@ sync_self_host_checkout() {
   if git -C "$ROOT" merge-base --is-ancestor HEAD origin/main; then
     echo "Updating DevOS self-host checkout to origin/main..."
     git -C "$ROOT" merge --ff-only origin/main >/dev/null
+    SELF_HOST_UPDATED=1
     return 0
   fi
 
@@ -77,7 +80,7 @@ build_self_host() {
     exit 1
   fi
 
-  if [ ! -d "$ROOT/node_modules" ]; then
+  if [ "$SELF_HOST_UPDATED" = "1" ] || [ ! -d "$ROOT/node_modules" ]; then
     echo "Installing DevOS dependencies for self-hosting..."
     (cd "$ROOT" && npm install --no-package-lock >/dev/null)
   fi
