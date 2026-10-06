@@ -109,9 +109,14 @@ export class ChatGptBrowserExecutor implements Executor {
       );
       const first = await Promise.race([response, session]);
       if ("error" in first) throw first.error;
-      const sessionId = first.kind === "session"
-        ? first.sessionId
-        : (await session).sessionId;
+      let sessionId: string;
+      if (first.kind === "session") {
+        sessionId = first.sessionId;
+      } else {
+        const sessionOutcome = await session;
+        if ("error" in sessionOutcome) throw sessionOutcome.error;
+        sessionId = sessionOutcome.sessionId;
+      }
       if (projectScope) {
         assertChatGptProjectScope(this.config.projectUrl, sessionId, true);
       }
