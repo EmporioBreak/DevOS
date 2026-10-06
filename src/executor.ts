@@ -4,7 +4,7 @@ export interface WorkerRequest {
   projectRoot: string;
   prompt: string;
   sessionId?: string;
-  requireProject?: boolean;
+  enforceProjectScope?: boolean;
 }
 
 export interface Executor {
