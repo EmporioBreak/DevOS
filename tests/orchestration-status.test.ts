@@ -86,7 +86,7 @@ test("emits worker result before routing and marks browser session re-entry", as
   ]);
 });
 
-test("makes needs_host to local Codex routing explicit", async () => {
+test("makes needs_local_worker to local Codex routing explicit", async () => {
   const workflow: Workflow = {
     version: 1,
     task: { repo: "owner/product", issue: 41 },
@@ -96,7 +96,7 @@ test("makes needs_host to local Codex routing explicit", async () => {
         id: "reviewer",
         executor: "chatgpt_browser",
         prompt: "Review.",
-        on: { needs_host: "local_reviewer" },
+        on: { needs_local_worker: "local_reviewer" },
       },
       {
         id: "local_reviewer",
@@ -113,7 +113,7 @@ test("makes needs_host to local Codex routing explicit", async () => {
     workflow,
     executors: new Map([
       ["chatgpt_browser", new QueueExecutor("chatgpt_browser", [
-        { text: 'DEVOS_RESULT {"status":"needs_host"}', sessionId: "review-session" },
+        { text: 'DEVOS_RESULT {"status":"needs_local_worker"}', sessionId: "review-session" },
       ])],
       ["codex", new QueueExecutor("codex", [
         { text: 'DEVOS_RESULT {"status":"approved"}' },
@@ -124,7 +124,7 @@ test("makes needs_host to local Codex routing explicit", async () => {
   }).run();
 
   const needsHost = events.findIndex(
-    event => event.type === "worker_result" && event.status === "needs_host",
+    event => event.type === "worker_result" && event.status === "needs_local_worker",
   );
   const transition = events.findIndex(
     event => event.type === "transition" && event.to === "local_reviewer",
@@ -187,9 +187,9 @@ test("CLI renders concise lifecycle lines without exposing session ids", () => {
       type: "worker_result",
       workerId: "reviewer",
       executor: "chatgpt_browser",
-      status: "needs_host",
+      status: "needs_local_worker",
     }),
-    "[reviewer] chatgpt_browser — needs_host\n",
+    "[reviewer] chatgpt_browser — needs_local_worker\n",
   );
   assert.equal(
     formatOrchestrationEvent({ type: "transition", from: "reviewer", to: "local_reviewer" }),
