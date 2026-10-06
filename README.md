@@ -129,14 +129,14 @@ Task #41 — running (start)
 → reviewer
 [reviewer] chatgpt_browser — resuming existing session
 [reviewer] chatgpt_browser — approved
-Owner handoff
+Main agent handoff
 Task #41 — final_review_required
 DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED","task":{"repo":"owner/product","issue":41,"pr":57}}
 ```
 
 Для нового browser-разговора видно `starting fresh conversation`; при повторном входе того же worker-а в task-scoped session — `resuming existing session`. Переходы `needs_local_worker → local_*` и `changes_requested → developer` печатаются тем же способом: сначала возвращённый статус worker-а, затем строка `→ next_worker`. Ошибка worker-а по-прежнему завершает процесс с ненулевым кодом; перед ошибкой в stdout уже виден его статус `failed`.
 
-Существующая строка `DEVOS_OWNER_HANDOFF ...` остаётся отдельным machine-readable результатом для `parent_process`; человекочитаемая строка лишь делает момент handoff заметным в терминале.
+Строка `DEVOS_OWNER_HANDOFF ...` остаётся отдельным machine-readable результатом для `main_agent`; человекочитаемая строка лишь делает момент handoff заметным в терминале.
 
 После завершения workflow процесс DevOS заканчивается. В фоне ничего не остаётся и GitHub больше не опрашивается.
 
@@ -323,38 +323,25 @@ Conversation URL worker-а хранится только в state текущей
 
 DevOS не определяет сам, нужен ли host. Он только следует статусу worker-а и переходам, которые заранее заданы главным агентом.
 
-## Финальный handoff владельцу задачи
+## Финальный handoff главному агенту
 
-Workflow может явно указать владельца исходной задачи:
-
-```json
-{
-  "owner": {
-    "mode": "chatgpt_conversation",
-    "conversationUrl": "https://chatgpt.com/c/main-task-conversation"
-  }
-}
-```
-
-или:
+Workflow может явно передать финальную проверку главному агенту:
 
 ```json
 {
   "owner": {
-    "mode": "parent_process"
+    "mode": "main_agent"
   }
 }
 ```
 
-В режиме `chatgpt_conversation` DevOS после terminal review открывает именно указанный основной conversation URL в той же аутентифицированной браузерной сессии и отправляет короткий machine-oriented запрос на финальную проверку с URL Issue и PR, если он известен. Если workflow стартовал только с Issue, перед handoff DevOS один раз разрешает однозначно связанный PR из GitHub и сохраняет его в том же task-local state, чтобы следующий owner/worker pass использовал тот же task reference. Ответ `approved` завершает задачу; `changes_requested` возвращает workflow к его заранее объявленному `start` worker-у, при этом task-scoped `sessions` сохраняются.
-
-В режиме `parent_process` DevOS не создаёт отдельного acceptance worker-а. Он сохраняет state и завершает worker phase структурированной строкой:
+В режиме `main_agent` DevOS не создаёт отдельного acceptance worker-а и не открывает отдельный ChatGPT conversation для владельца. Если workflow стартовал только с Issue, перед handoff DevOS один раз разрешает однозначно связанный PR из GitHub и сохраняет его в том же task-local state. После worker-ов DevOS сохраняет state и завершает выполнение структурированной строкой:
 
 ```text
 DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED","task":{"repo":"owner/product","issue":42,"pr":57}}
 ```
 
-После финальной проверки parent process может продолжить ту же задачу без потери worker conversations:
+После финальной проверки главный агент может продолжить ту же задачу без потери worker conversations:
 
 ```bash
 DEVOS_OWNER_RESULT=changes_requested ./devos run 42
@@ -366,7 +353,9 @@ DEVOS_OWNER_RESULT=changes_requested ./devos run 42
 DEVOS_OWNER_RESULT=approved ./devos run 42
 ```
 
-Это остаётся one-shot handoff: никакого callback daemon, watcher или polling service не появляется.
+`approved` завершает задачу; `changes_requested` возвращает workflow к его заранее объявленному `start` worker-у и сохраняет task-scoped `sessions`. Это остаётся one-shot handoff: никакого callback daemon, watcher или polling service не появляется. Для уже сохранённого handoff старое внутреннее поле состояния читается и преобразуется при следующем сохранении.
+
+Для новых workflow единственный допустимый owner mode — `main_agent`. Устаревшие `chatgpt_conversation` и `parent_process` конфигурации отклоняются с подсказкой использовать `main_agent`.
 
 ## Результат worker-а
 
@@ -490,7 +479,7 @@ devos restart .devos/workflow.json
 
 DevOS не выбирает роли или executor-ы из этого файла. Он только исполняет уже заданный workflow.
 
-Незавершённое состояние хранится отдельно для каждой GitHub Issue в `.devos/state/`. Worker conversations являются частью этого task-local state и индексируются только по worker ID внутри конкретной Issue. После финального `approved` состояние этой задачи удаляется; при ошибке, owner handoff или `changes_requested` оно остаётся для продолжения.
+Незавершённое состояние хранится отдельно для каждой GitHub Issue в `.devos/state/`. Worker conversations являются частью этого task-local state и индексируются только по worker ID внутри конкретной Issue. После финального `approved` состояние этой задачи удаляется; при ошибке, main-agent handoff или `changes_requested` оно остаётся для продолжения.
 Локальные `codex` worker-сессии привязаны к project root задачи. DevOS передаёт этот root одновременно как cwd процесса и через `codex exec -C` для fresh/resume запусков; сохранённая сессия с другим root не возобновляется. Если Codex до начала выполнения явно сообщает, что сохранённый thread/session недоступен для resume, DevOS сбрасывает только session id текущего worker и один раз продолжает fresh-сессией в правильном project root, сохраняя task state и сессии остальных workers. Ошибки после начала execution/output parsing не переигрывают worker prompt автоматически: исходная session сохраняется, чтобы не дублировать уже возможные side effects. `codex` worker уже является локальным и поэтому не может вернуть `needs_local_worker`; такая попытка завершается точной executor/status ошибкой. Browser worker по-прежнему может использовать `needs_local_worker`, если fallback объявлен workflow.
 
 Для форензики одного запуска можно явно включить `DEVOS_DEBUG=1 ./devos run <issue>`. DevOS создаёт локальный append-only JSONL в `.devos/debug/<repo>-issue-<issue>.jsonl` и пишет туда CLI/project-root контекст, ordered orchestration lifecycle, browser fresh/resume/navigation/session URLs и локальные process start/end события с cwd, аргументами, stdout/stderr, exit code, termination signal и elapsed time. Поля credential-типа и очевидные auth/token значения редактируются; обычные prompts/output/path/repository context сохраняются. Режим выключен по умолчанию, ничего не отправляет наружу и не создаёт daemon/watcher/background collector.
