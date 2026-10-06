@@ -16,8 +16,22 @@ export interface StateStore {
   clear(): Promise<void>;
 }
 
+export type TaskLifecycleStatus =
+  | "ready"
+  | "running"
+  | "final_review_required"
+  | "changes_requested"
+  | "completed"
+  | "blocked"
+  | "failed";
+
 export type OrchestrationEvent =
-  | { type: "task_started"; task: TaskRef; resumed: boolean }
+  | {
+      type: "task_status";
+      task: TaskRef;
+      status: TaskLifecycleStatus;
+      resumed?: boolean;
+    }
   | {
       type: "worker_started";
       workerId: string;
@@ -62,19 +76,10 @@ export class Orchestrator {
       state = { ...state, task: workflow.task };
     }
 
-    await this.emit({
-      type: "task_started",
-      task: state.task ?? workflow.task,
-      resumed: persistedState !== null,
-    });
-
     if (state.ownerReviewPending) {
       const decision = this.options.ownerDecision;
       if (!decision) {
-        await this.emit({
-          type: "owner_handoff",
-          task: state.task ?? workflow.task,
-        });
+        await this.emitTaskStatus(state, "final_review_required");
         return state;
       }
 
@@ -85,10 +90,12 @@ export class Orchestrator {
           sessions: state.sessions,
           task: state.task ?? workflow.task,
         };
+        await this.emitTaskStatus(completed, "completed");
         await stateStore.clear();
         return completed;
       }
 
+      await this.emitTaskStatus(state, "changes_requested");
       state = {
         currentWorkerId: workflow.start,
         completedRuns: state.completedRuns,
@@ -97,6 +104,9 @@ export class Orchestrator {
       };
       await stateStore.save(state);
       await this.emit({ type: "transition", from: "owner", to: workflow.start });
+      await this.emitTaskStatus(state, "running", true);
+    } else {
+      await this.emitTaskStatus(state, "running", persistedState !== null);
     }
 
     while (true) {
@@ -140,6 +150,7 @@ export class Orchestrator {
 
       if (result.status === "failed") {
         await stateStore.save(state);
+        await this.emitTaskStatus(state, "failed");
         throw new Error(`Worker failed: ${worker.id}`);
       }
 
@@ -150,6 +161,7 @@ export class Orchestrator {
         (nextWorkerId === null || nextWorkerId === undefined)
       ) {
         await stateStore.save(state);
+        await this.emitTaskStatus(state, "blocked");
         throw new Error(
           `Worker ${worker.id} returned unroutable status: ${result.status}`,
         );
@@ -174,6 +186,7 @@ export class Orchestrator {
         }
         const ownerResult = await this.handoffToOwner(state);
         if (ownerResult === "approved") {
+          await this.emitTaskStatus(state, "completed");
           await stateStore.clear();
           return state;
         }
@@ -181,9 +194,11 @@ export class Orchestrator {
         if (ownerResult === "final_review_required") {
           state = { ...state, ownerReviewPending: true };
           await stateStore.save(state);
+          await this.emitTaskStatus(state, "final_review_required");
           return state;
         }
 
+        await this.emitTaskStatus(state, "changes_requested");
         state = {
           currentWorkerId: workflow.start,
           completedRuns: state.completedRuns,
@@ -192,6 +207,7 @@ export class Orchestrator {
         };
         await stateStore.save(state);
         await this.emit({ type: "transition", from: "owner", to: workflow.start });
+        await this.emitTaskStatus(state, "running", true);
         continue;
       }
 
@@ -207,6 +223,19 @@ export class Orchestrator {
 
   private async emit(event: OrchestrationEvent): Promise<void> {
     await this.options.onEvent?.(event);
+  }
+
+  private async emitTaskStatus(
+    state: RunState,
+    status: TaskLifecycleStatus,
+    resumed?: boolean,
+  ): Promise<void> {
+    await this.emit({
+      type: "task_status",
+      task: state.task ?? this.options.workflow.task,
+      status,
+      ...(status === "running" ? { resumed: resumed ?? false } : {}),
+    });
   }
 
   private async handoffToOwner(
