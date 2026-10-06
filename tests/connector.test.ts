@@ -841,6 +841,8 @@ test("connector hardening keeps recovery and credentials out of CLI argv", async
   assert.match(source, /atomicWrite/);
   assert.doesNotMatch(source, /\["--[^"]*(secret|token)/i);
   assert.match(runner, /const backoff = \[500, 1500, 4000\]/);
+  assert.match(runner, /failureLayer/);
+  assert.match(runner, /port-ownership/);
   assert.match(runner, /status: "failed"/);
 });
 
@@ -887,6 +889,83 @@ test("unreadable OAuth state fails closed with non-secret diagnostic", async () 
   } finally {
     await first?.close();
     await second?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("expired OAuth entries are durably pruned across restart", async () => {
+  const start = connectorModule.startGateway;
+  const dir = await mkdtemp(join(tmpdir(), "devos-oauth-prune-"));
+  const clientsPath = join(dir, "clients.json");
+  const statePath = join(dir, "oauth-state.enc");
+  const realNow = Date.now;
+  const baseNow = realNow();
+  let first: Awaited<ReturnType<typeof start>> | undefined;
+  let second: Awaited<ReturnType<typeof start>> | undefined;
+  let third: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    Date.now = () => baseNow;
+    first = await start({
+      root: process.cwd(),
+      port: 0,
+      ownerSecret: secret,
+      publicUrl: issuer,
+      oauthClientsPath: clientsPath,
+      oauthStatePath: statePath,
+    });
+    const { tokens } = await oauthToken(
+      "http://127.0.0.1:" + first.address.port,
+      secret,
+    );
+    await first.close();
+    first = undefined;
+
+    Date.now = () => baseNow + 25 * 3600_000;
+    second = await start({
+      root: process.cwd(),
+      port: 0,
+      ownerSecret: secret,
+      publicUrl: issuer,
+      oauthClientsPath: clientsPath,
+      oauthStatePath: statePath,
+    });
+    assert.equal(
+      (
+        await fetch("http://127.0.0.1:" + second.address.port + "/mcp", {
+          headers: { Authorization: "Bearer " + tokens.access_token },
+        })
+      ).status,
+      401,
+    );
+    await second.close();
+    second = undefined;
+
+    // Roll the synthetic clock back. If the expired entries were only pruned
+    // in memory but left on disk, this restart would incorrectly resurrect them.
+    Date.now = () => baseNow;
+    third = await start({
+      root: process.cwd(),
+      port: 0,
+      ownerSecret: secret,
+      publicUrl: issuer,
+      oauthClientsPath: clientsPath,
+      oauthStatePath: statePath,
+    });
+    assert.equal(
+      (
+        await fetch("http://127.0.0.1:" + third.address.port + "/mcp", {
+          headers: { Authorization: "Bearer " + tokens.access_token },
+        })
+      ).status,
+      401,
+      "expired durable access token must not resurrect after restart",
+    );
+  } finally {
+    Date.now = realNow;
+    await first?.close();
+    await second?.close();
+    await third?.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
