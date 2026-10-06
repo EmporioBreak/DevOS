@@ -73,3 +73,22 @@ test("post-submit identity change fails without safe fresh replay classification
   await assert.rejects(fixture.executor.run({ projectRoot: "/project", prompt: "Work", sessionId: saved }), error => error instanceof Error && !(error instanceof BrowserResumeUnavailableError));
   assert.equal(fixture.sends(), 1);
 });
+
+
+for (const destination of ["https://chatgpt.com/", "https://chatgpt.com/c/outside"]) {
+  test(`resumed preparation navigation to ${destination} preserves safe recovery classification`, async () => {
+    const project = "https://chatgpt.com/g/one/project";
+    const saved = "https://chatgpt.com/g/one/c/saved";
+    const fixture = browserFixture(project, saved, destination);
+    await assert.rejects(
+      fixture.executor.run({
+        projectRoot: "/project",
+        prompt: "Work",
+        sessionId: saved,
+        enforceProjectScope: true,
+      }),
+      error => error instanceof BrowserResumeUnavailableError,
+    );
+    assert.equal(fixture.sends(), 0);
+  });
+}
