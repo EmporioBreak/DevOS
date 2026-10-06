@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { CodexResumeUnavailableError } from "../src/codex-executor.js";
 import type { Executor, WorkerRequest } from "../src/executor.js";
 import { Orchestrator, type RunState, type StateStore } from "../src/orchestrator.js";
 import type { ExecutorKind, WorkerOutput, Workflow } from "../src/workflow.js";
@@ -535,7 +536,7 @@ test("recovers only the current Codex worker when resume fails", async () => {
     kind: "codex",
     async run(request) {
       requests.push(request);
-      if (call++ === 0) throw new Error("resume failed");
+      if (call++ === 0) throw new CodexResumeUnavailableError("broken-thread", "resume thread not found");
       return { text: 'DEVOS_RESULT {"status":"done"}', sessionId: "replacement-thread" };
     },
   };
@@ -549,4 +550,46 @@ test("recovers only the current Codex worker when resume fails", async () => {
   assert.equal(requests[1]?.sessionId, undefined);
   assert.equal(result.sessions.local, "replacement-thread");
   assert.equal(result.sessions.reviewer, "browser-session");
+});
+
+
+test("does not replay a resumed Codex worker after a post-execution error", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 149 },
+    start: "local",
+    workers: [{ id: "local", executor: "codex", prompt: "Continue.", on: { done: null } }],
+  };
+  const store = new MemoryStore();
+  store.state = {
+    currentWorkerId: "local",
+    completedRuns: 2,
+    sessions: { local: "existing-thread", reviewer: "browser-session" },
+    sessionProjectRoots: { local: "/product" },
+    task: workflow.task,
+  };
+  const requests: WorkerRequest[] = [];
+  const codex: Executor = {
+    kind: "codex",
+    async run(request) {
+      requests.push(request);
+      throw new Error("Codex did not emit a final agent message");
+    },
+  };
+
+  await assert.rejects(
+    () => new Orchestrator({
+      projectRoot: "/product",
+      workflow,
+      executors: new Map([["codex", codex]]),
+      stateStore: store,
+    }).run(),
+    /did not emit a final agent message/,
+  );
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.sessionId, "existing-thread");
+  assert.equal(store.state?.sessions.local, "existing-thread");
+  assert.equal(store.state?.sessions.reviewer, "browser-session");
+  assert.equal(store.state?.currentWorkerId, "local");
 });
