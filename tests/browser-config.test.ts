@@ -17,7 +17,7 @@ test("loads deterministic browser defaults", () => {
   assert.equal(config.projectUrl, "https://chatgpt.com/");
   assert.equal(config.browserChannel, "chrome");
   assert.equal(config.profileDir, "/tmp/devos-profile");
-  assert.equal(config.headless, true);
+  assert.equal(config.headless, false);
 });
 
 test("project-local ChatGPT Project URL overrides environment fallback", () => {

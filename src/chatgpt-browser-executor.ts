@@ -1,3 +1,5 @@
+import { profileProcesses, terminateOwnedBrowser, type OwnedBrowserProcess } from "./owned-browser-process.js";
+import { readCompletedTurn, type SubmittedTurn } from "./chatgpt-turn-recovery.js";
 import { mkdir } from "node:fs/promises";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import type { Executor, WorkerRequest } from "./executor.js";
@@ -58,13 +60,32 @@ const SEND = [
 export class ChatGptBrowserExecutor implements Executor {
   readonly kind = "chatgpt_browser" as const;
   private context: BrowserContext | undefined;
+  private ownedProcess: OwnedBrowserProcess | undefined;
+  private launching: Promise<BrowserContext> | undefined;
 
   constructor(
     private readonly config: ChatGptBrowserConfig = loadChatGptBrowserConfig(),
-    private readonly timeoutMs = 10 * 60_000,
+    private readonly timeoutMs = 60 * 60_000,
   ) {}
 
   async run(request: WorkerRequest): Promise<WorkerOutput> {
+    try { return await this.runTurn(request); }
+    finally {
+      // A launch that raced the preparation deadline still belongs to this turn.
+      const launching = this.launching;
+      if (launching) {
+        let settled = false;
+        await closeBeforeDeadline(async () => { await launching; settled = true; }, Date.now() + Math.min(this.timeoutMs, 5_000));
+        if (!settled && this.launching === launching) {
+          void launching.then(() => this.close()).catch(() => debugLog("browser.cleanup", { decision: "late-launch-cleanup-unconfirmed" }));
+          throw new Error("Browser cleanup unconfirmed: browser launch still pending after cleanup deadline");
+        }
+      }
+      await this.close();
+    }
+  }
+
+  private async runTurn(request: WorkerRequest): Promise<WorkerOutput> {
     const projectScope = request.enforceProjectScope
       ? getChatGptProjectScope(this.config.projectUrl)
       : null;
@@ -81,6 +102,34 @@ export class ChatGptBrowserExecutor implements Executor {
       getBackendFailure,
     } = await this.prepare(request, !!projectScope);
     let mayHaveSubmitted = false;
+    let submitted: SubmittedTurn | undefined;
+    let submissionAmbiguous = false;
+    let durableSession = request.sessionId;
+    const rememberSession = async (session: string) => {
+      if (durableSession && !isSameChatGptConversation(durableSession, session)) throw new Error("ChatGPT changed conversation identity");
+      if (projectScope) assertChatGptProjectScope(this.config.projectUrl, session, true);
+      durableSession = session;
+      await request.onSession?.(session);
+    };
+    page.on("request", outgoing => {
+      if (!mayHaveSubmitted) return;
+      try {
+        const target = new URL(outgoing.url());
+        if (target.origin !== new URL(url).origin || !/^\/backend-api\/(?:f\/)?conversation\/?$/.test(target.pathname) || outgoing.method() !== "POST") return;
+        const payload = outgoing.postDataJSON();
+        const user = payload?.messages?.length === 1 ? payload.messages[0] : undefined;
+        if (submitted || !user || user.author?.role !== "user" || typeof user.id !== "string" || !user.id || user.id.length > 200 || user.content?.parts?.join("") !== request.prompt) {
+          submissionAmbiguous = true; return;
+        }
+        submitted = {
+          messageId: user.id,
+          ...(typeof payload.conversation_id === "string" ? { conversationId: payload.conversation_id } : {}),
+          ...(typeof (payload.request_id ?? user.metadata?.request_id) === "string" ? { requestId: payload.request_id ?? user.metadata.request_id } : {}),
+          ...(typeof (payload.turn_exchange_id ?? user.metadata?.turn_exchange_id) === "string" ? { turnExchangeId: payload.turn_exchange_id ?? user.metadata.turn_exchange_id } : {}),
+        };
+        debugLog("browser.submission", { phase: "post-submit", captured: true, submittedMessageId: submitted.messageId, conversationId: submitted.conversationId });
+      } catch { submissionAmbiguous = true; }
+    });
     try {
       let submissionStarted!: () => void;
       const submission = new Promise<void>(resolve => { submissionStarted = resolve; });
@@ -109,8 +158,8 @@ export class ChatGptBrowserExecutor implements Executor {
         if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
         if (!isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation after submission");
         debugLog("browser.session.ready", { sessionId: request.sessionId, actualUrl: page.url() });
-        await request.onSession?.(request.sessionId);
-        debugLog("browser.response", { sessionId: request.sessionId, text: outcome.text });
+        await rememberSession(request.sessionId);
+        debugLog("browser.response", { sessionId: request.sessionId, textLength: outcome.text.length });
         return { text: outcome.text, sessionId: request.sessionId };
       }
 
@@ -118,36 +167,61 @@ export class ChatGptBrowserExecutor implements Executor {
       // preserve a created session even when response loading has already failed.
       const prepared = await Promise.race([submission, response]);
       if (prepared && "error" in prepared) throw prepared.error;
-      const sessionId = await waitForConversationUrl(page, this.timeoutMs);
+      const sessionId = await waitForConversationUrl(page, Math.min(this.timeoutMs, 45_000));
 
       if (projectScope) assertChatGptProjectScope(this.config.projectUrl, sessionId, true);
       debugLog("browser.session.ready", { sessionId, actualUrl: page.url() });
-      await request.onSession?.(sessionId);
+      await rememberSession(sessionId);
 
       const outcome = await response;
       if ("error" in outcome) throw outcome.error;
       if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
       if (!isSameChatGptConversation(sessionId, page.url())) throw new Error("ChatGPT changed fresh conversation after submission");
-      debugLog("browser.response", { sessionId, text: outcome.text });
+      debugLog("browser.response", { sessionId, textLength: outcome.text.length });
       return { text: outcome.text, sessionId };
     } catch (error) {
-      const cause = error instanceof Error ? error.message : String(error);
+      const cause = error instanceof Error ? error.message.split("\n")[0]! : "Browser operation failed";
       if (mayHaveSubmitted) {
-        // Stream state is not durable across reloads. Without a provable matching
-        // completed answer, stop; never re-arm/send or read an arbitrary DOM answer.
-        debugLog("browser.recovery", { attempt: 1, phase: "post-submit", cause, sessionId: request.sessionId ?? page.url(), decision: "stop-no-replay" });
-        throw new Error(`Browser recovery attempt=1 phase=post-submit: prompt not replayed; saved identity preserved; ${cause}`);
+        debugLog("browser.recovery", { attempt: 1, phase: "post-submit", sessionId: durableSession, captured: !!submitted && !submissionAmbiguous, decision: "reload/read-only" });
+        try {
+          if (!submitted || submissionAmbiguous || !durableSession) throw new Error("submitted user/conversation identity absent or ambiguous");
+          const conversationId = /\/c\/([^/?#]+)/.exec(new URL(durableSession).pathname)?.[1];
+          if (!conversationId || (submitted.conversationId && submitted.conversationId !== conversationId)) throw new Error("submitted conversation identity changed");
+          // An observed identity change is definitive; never follow it or mask it.
+          if (!isSameChatGptConversation(durableSession, page.url())) throw new Error("actual conversation identity changed");
+          await rememberSession(durableSession);
+          const text = await this.recoverTurn(durableSession, conversationId, submitted);
+          return { text, sessionId: durableSession };
+        } catch (recoveryError) {
+          const reason = recoveryError instanceof Error ? recoveryError.message.split("\n")[0]! : "read unavailable";
+          debugLog("browser.recovery", { attempt: 1, phase: "post-submit", sessionId: durableSession, decision: "stopped-ambiguous", submittedMessageId: submitted?.messageId, reason });
+          throw new Error(`Browser recovery attempt=1 phase=post-submit: prompt not replayed; saved identity preserved (conversation=${durableSession ?? "unknown"}, user-message=${submitted?.messageId ?? "unknown"}); ${cause}; read-only recovery: ${reason}`);
+        }
       }
       throw error;
     } finally {
-      await page.close().catch(() => undefined);
+      await closeBeforeDeadline(() => page.close(), Date.now() + Math.min(this.timeoutMs, 5_000));
     }
   }
 
   async close(): Promise<void> {
     const context = this.context;
-    this.context = undefined;
-    if (context) await context.close();
+    const owned = this.ownedProcess;
+    if (!context && !owned) return;
+    debugLog("browser.cleanup", { phase: "context", decision: "closing" });
+    let confirmed = false;
+    if (context) await closeBeforeDeadline(async () => { await context.close(); confirmed = true; }, Date.now() + Math.min(this.timeoutMs, 5_000));
+    if (!confirmed && owned) {
+      debugLog("browser.cleanup", { phase: "context", decision: "terminate-owned-process" });
+      confirmed = await terminateOwnedBrowser(owned, this.config.profileDir);
+    }
+    if (!confirmed) {
+      debugLog("browser.cleanup", { phase: "context", decision: "unconfirmed" });
+      throw new Error("Browser cleanup unconfirmed: bounded close failed; no unproven/user Chrome process was killed");
+    }
+    if (this.context === context) this.context = undefined;
+    if (this.ownedProcess === owned) this.ownedProcess = undefined;
+    debugLog("browser.cleanup", { phase: "context", decision: "closed" });
   }
 
   private async prepare(
@@ -171,24 +245,26 @@ export class ChatGptBrowserExecutor implements Executor {
         if (budget <= 0) throw new Error("Timeout: preparation deadline exhausted");
         const preparation = async () => {
           const context = await this.getContext(budget);
-          if (expired) { await context.close().catch(() => undefined); throw new Error("Timeout: preparation deadline exhausted"); }
+          if (expired) { await this.close(); throw new Error("Timeout: preparation deadline exhausted"); }
           phase = "new-page";
-          page = await context.newPage();
+          page = context.pages?.().find(candidate => !candidate.isClosed?.()) ?? await context.newPage();
           if (expired) { await page.close(); throw new Error("Timeout: preparation deadline exhausted"); }
           const currentPage = page;
           currentPage.on("response", response => {
             const target = new URL(response.url());
             const status = response.status();
+            if (target.origin === new URL(url).origin && target.pathname.startsWith("/backend-api/") && status >= 500) backendFailure = new Error(`Transient backend HTTP ${status}`);
             if (target.origin === new URL(url).origin && target.pathname.startsWith("/backend-api/") && (status === 401 || status === 403)) {
               const challenge = (response.headers()["content-type"] ?? "").includes("text/html");
-              backendFailure = new Error(`ChatGPT ${challenge ? "authentication/challenge" : "authentication/access"} blocked backend (HTTP ${status})`);
+              backendFailure = new Error(`ChatGPT ${challenge ? "authentication/challenge" : "authentication/access"} blocked backend (HTTP ${status})${status === 401 ? "; visible login/debug run needed (DEVOS_BROWSER_HEADLESS=0)" : ""}`);
             }
           });
           phase = "navigation";
           const response = await currentPage.goto(url, { waitUntil: "domcontentloaded", timeout: budget });
+          if (expired) throw new Error("Timeout: preparation deadline exhausted");
           debugLog("browser.navigation", { requestedUrl: url, actualUrl: currentPage.url(), attempt });
           const status = response?.status();
-          if (status === 401 || status === 403) throw new Error(`ChatGPT authentication/challenge blocked navigation (HTTP ${status})`);
+          if (status === 401 || status === 403) throw new Error(`ChatGPT authentication/challenge blocked navigation (HTTP ${status})${status === 401 ? "; visible login/debug run needed (DEVOS_BROWSER_HEADLESS=0)" : ""}`);
           if (status === 404 || status === 410) throw new Error(`ChatGPT conversation unavailable (HTTP ${status})`);
           if (status && status >= 500) throw new Error(`Transient navigation HTTP ${status}`);
           if (status && status >= 400) throw new Error(`ChatGPT navigation rejected (HTTP ${status})`);
@@ -197,6 +273,9 @@ export class ChatGptBrowserExecutor implements Executor {
             // Conversation history can discuss login/challenge errors. Only
             // classify actual page surfaces, never text from earlier turns.
             const turns = '[data-message-author-role], [data-testid^="conversation-turn"]';
+            const login = Array.from(document.querySelectorAll('a[href*="/auth/login"], a[href*="/auth/signin"], [data-testid="login-button"]'))
+              .some(node => !node.closest(turns) && (node as HTMLElement).getClientRects().length > 0);
+            if (login) return "DEVOS_SIGNED_OUT";
             if (!document.querySelector(turns)) return document.body?.innerText ?? "";
             return Array.from(document.querySelectorAll('[role="alert"], [role="dialog"], main h1, main h2'))
               .filter(node => !node.closest(turns))
@@ -205,15 +284,15 @@ export class ChatGptBrowserExecutor implements Executor {
           if (typeof body === "string") {
             if (/cloudflare|verify you are human|just a moment|checking your browser|провер.*человек/i.test(body)) throw new Error("ChatGPT authentication/challenge required");
             if (/unable to load conversation|conversation (?:not found|unavailable)|не удалось загрузить (?:разговор|чат)/i.test(body)) throw new Error("ChatGPT conversation unavailable");
-            if (/log in to chatgpt|sign in to chatgpt|необходимо войти/i.test(body)) throw new Error("ChatGPT authentication required");
+            if (/DEVOS_SIGNED_OUT|log in to chatgpt|sign in to chatgpt|необходимо войти/i.test(body)) throw new Error("ChatGPT authentication required; visible login/debug run needed (DEVOS_BROWSER_HEADLESS=0)");
           }
           const actual = validateChatGptUrl(currentPage.url());
-          if (/^\/(?:auth|login|signin)(?:\/|$)/i.test(actual.pathname)) throw new Error("ChatGPT authentication required");
+          if (/^\/(?:auth|login|signin)(?:\/|$)/i.test(actual.pathname)) throw new Error("ChatGPT authentication required; visible login/debug run needed (DEVOS_BROWSER_HEADLESS=0)");
           // A root redirect without a composer can be transient during account
           // loading. Other wrong routes/scopes are definitive before waiting.
           const rootRedirect = enforceScope && actual.pathname === "/";
           if (!rootRedirect) this.assertIdentity(request, currentPage, enforceScope);
-          phase = "composer";
+          phase = rootRedirect ? "account-loading" : "composer";
           if (backendFailure) throw backendFailure;
           try {
             await currentPage.locator(COMPOSER).first().waitFor({ state: "visible", timeout: budget });
@@ -223,6 +302,7 @@ export class ChatGptBrowserExecutor implements Executor {
           if (backendFailure) throw backendFailure;
           this.assertIdentity(request, currentPage, enforceScope);
           phase = "prepare-message";
+          if (expired) throw new Error("Timeout: preparation deadline exhausted");
           const prepared = await prepareMessage(currentPage, request.prompt, budget);
           if (backendFailure) throw backendFailure;
           this.assertIdentity(request, currentPage, enforceScope);
@@ -241,7 +321,7 @@ export class ChatGptBrowserExecutor implements Executor {
       } catch (error) {
         expired = true;
         const effectiveError = backendFailure ?? error;
-        const cause = effectiveError instanceof Error ? effectiveError.message : String(effectiveError);
+        const cause = effectiveError instanceof Error ? effectiveError.message.split("\n")[0]! : "Browser operation failed";
         const transient = isTransientBrowserFailure(effectiveError);
         await closeBeforeDeadline(() => page?.close() ?? Promise.resolve(), deadline);
         if (/closed|crashed|disconnected/i.test(cause)) {
@@ -261,6 +341,61 @@ export class ChatGptBrowserExecutor implements Executor {
     throw new Error("Browser preparation exhausted");
   }
 
+  private async recoverTurn(session: string, conversationId: string, turn: SubmittedTurn): Promise<string> {
+    const deadline = Date.now() + Math.min(this.timeoutMs, 3 * 60_000);
+    let attempt = 0;
+    while (Date.now() < deadline) {
+      attempt++;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let expired = false;
+      const budget = Math.min(15_000, deadline - Date.now());
+      try {
+        const observe = async () => {
+          if (this.context?.pages?.().every(candidate => candidate.isClosed())) await this.close();
+          const context = await this.getContext(budget);
+          if (expired) throw new Error("Timeout: read-only recovery deadline exhausted");
+          const page = context.pages?.().find(candidate => !candidate.isClosed?.()) ?? await context.newPage();
+          if (expired) throw new Error("Timeout: read-only recovery deadline exhausted");
+          // Listen before navigating; the authenticated frontend performs the read.
+          const read = page.waitForResponse(response => {
+            const target = new URL(response.url());
+            return target.origin === new URL(session).origin && target.pathname === `/backend-api/conversations/${conversationId}`;
+          }, { timeout: budget });
+          void read.catch(() => undefined);
+          const navigation = await page.goto(session, { waitUntil: "domcontentloaded", timeout: budget });
+          if (expired) throw new Error("Timeout: read-only recovery deadline exhausted");
+          if (!isSameChatGptConversation(session, page.url())) throw new Error("Recovery conversation identity changed");
+          const status = navigation?.status() ?? 200;
+          if (status >= 500) throw new Error(`Transient navigation HTTP ${status}`);
+          if (status >= 400) throw new Error(`Recovery navigation unavailable HTTP ${status}`);
+          const response = await read;
+          if (response.status() >= 500) throw new Error(`Transient navigation HTTP ${response.status()}`);
+          if (response.status() !== 200) throw new Error(`Recovery read unavailable HTTP ${response.status()}`);
+          const data: unknown = await response.json().catch(() => { throw new Error("Recovery conversation data is not structured JSON"); });
+          if (expired) throw new Error("Timeout: read-only recovery deadline exhausted");
+          if (!isSameChatGptConversation(session, page.url())) throw new Error("Recovery conversation identity changed during read");
+          const text = readCompletedTurn(data, conversationId, turn);
+          debugLog("browser.recovery", { phase: "post-submit", attempt, requestedUrl: session, actualUrl: page.url(), decision: text ? "completed" : "still-running" });
+          return text;
+        };
+        const text = await Promise.race([
+          observe(),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => { expired = true; reject(new Error("Timeout: read-only recovery deadline exhausted")); }, budget); }),
+        ]);
+        if (text) return text;
+      } catch (error) {
+        if (!isTransientBrowserFailure(error)) throw error;
+        debugLog("browser.recovery", { phase: "post-submit", attempt, decision: "read-transient" });
+        await this.close();
+      } finally {
+        expired = true;
+        if (timer) clearTimeout(timer);
+      }
+      await new Promise(resolve => setTimeout(resolve, Math.min(1_000, Math.max(0, deadline - Date.now()))));
+    }
+    throw new Error("read-only recovery deadline expired; matching turn still-running or inaccessible");
+  }
+
   private assertIdentity(request: WorkerRequest, page: Page, enforceScope: boolean): void {
     if (enforceScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), request.sessionId !== undefined);
     if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT redirected to a different conversation while resuming");
@@ -268,27 +403,34 @@ export class ChatGptBrowserExecutor implements Executor {
 
   private async getContext(timeout = 15_000): Promise<BrowserContext> {
     if (this.context) return this.context;
+    if (this.launching) return this.launching;
+    if (this.ownedProcess) await this.close();
+    const launch = this.launchContext(timeout);
+    this.launching = launch;
+    try { return await launch; }
+    finally { if (this.launching === launch) this.launching = undefined; }
+  }
+
+  private async launchContext(timeout: number): Promise<BrowserContext> {
 
     await mkdir(this.config.profileDir, { recursive: true });
+    debugLog("browser.context", { phase: "launch", headless: this.config.headless, browserMode: this.config.headless ? "headless" : "headed" });
+    const baseline = await profileProcesses(this.config.profileDir).catch(() => undefined);
     const context = await chromium.launchPersistentContext(this.config.profileDir, {
       timeout,
       channel: this.config.browserChannel,
       headless: this.config.headless,
       viewport: null,
-      args: ["--disable-blink-features=AutomationControlled"],
-      ignoreDefaultArgs: ["--enable-automation"],
     });
 
     this.context = context;
+    const launched = baseline ? (await profileProcesses(this.config.profileDir).catch(() => [])).filter(candidate => !baseline.some(existing => existing.pid === candidate.pid)) : [];
+    this.ownedProcess = launched.length === 1 ? launched[0] : undefined;
     context.on("close", () => { if (this.context === context) this.context = undefined; });
     try {
-      await context.addInitScript({
-        content: "Object.defineProperty(navigator, 'webdriver', { get: function () { return undefined; } });",
-      });
       await context.addInitScript({ content: CHATGPT_RESPONSE_LOADER_SOURCE });
     } catch (error) {
-      if (this.context === context) this.context = undefined;
-      await context.close().catch(() => undefined);
+      await this.close();
       throw error;
     }
     return context;
@@ -333,7 +475,7 @@ async function prepareMessage(page: Page, prompt: string, timeoutMs: number): Pr
 
 export function isTransientBrowserFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /Timeout|net::ERR_(?:CONNECTION_RESET|CONNECTION_CLOSED|TIMED_OUT|NETWORK_CHANGED|INTERNET_DISCONNECTED)|Execution context was destroyed|Cannot find context with specified id|Target (?:page|browser|context).*closed|(?:page|browser).*crashed|browser.*disconnected|Transient navigation HTTP 5\d\d/i.test(message);
+  return /Timeout|net::ERR_(?:CONNECTION_RESET|CONNECTION_CLOSED|TIMED_OUT|NETWORK_CHANGED|INTERNET_DISCONNECTED)|Execution context was destroyed|Cannot find context with specified id|Target (?:page|browser|context).*closed|(?:page|browser).*crashed|browser.*disconnected|Transient (?:navigation|backend) HTTP 5\d\d/i.test(message);
 }
 
 export async function sendAndRead(
@@ -349,26 +491,28 @@ export async function sendAndRead(
   const send = page.locator(SEND).first();
   if (message.useButton) {
     beforeSubmit?.();
-    await send.click({ timeout: timeoutMs });
+    await send.click({ timeout: Math.min(timeoutMs, 15_000) });
   } else {
     beforeSubmit?.();
-    await composer.press("Enter", { timeout: timeoutMs });
+    await composer.press("Enter", { timeout: Math.min(timeoutMs, 15_000) });
   }
 
+  const startedAt = Date.now();
   await page.waitForFunction(
-    token => {
+    ({ token, startedAt, idleMs }) => {
       const state = (
         window as unknown as {
           __DEVOS_STREAM_STATE__?: {
             request: number;
             text: string | null;
             failed: boolean;
+            lastActivityAt?: number;
           };
         }
       ).__DEVOS_STREAM_STATE__;
-      return state?.request === token && (state.text !== null || state.failed);
+      return state?.request === token && (state.text !== null || state.failed || Date.now() - (state.lastActivityAt ?? startedAt) >= idleMs);
     },
-    request,
+    { token: request, startedAt, idleMs: Math.min(timeoutMs, 5 * 60_000) },
     { timeout: timeoutMs, polling: 500 },
   );
 
@@ -383,6 +527,7 @@ export async function sendAndRead(
     ).__DEVOS_STREAM_STATE__,
   );
 
+  if (!state.failed && state.text === null) throw new Error("ChatGPT response idle timeout; read-only recovery required");
   if (state.failed || !state.text?.trim()) {
     throw new Error("ChatGPT response failed or did not complete");
   }

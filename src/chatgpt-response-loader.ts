@@ -6,9 +6,9 @@
 export const CHATGPT_RESPONSE_LOADER_SOURCE = String.raw`
 (function () {
   if (window.__DEVOS_ARM_STREAM__) return;
-  var state = window.__DEVOS_STREAM_STATE__ = { request: 0, armed: false, started: false, text: null, failed: false, messageId: null, submissionClaimed: false };
+  var state = window.__DEVOS_STREAM_STATE__ = { request: 0, armed: false, started: false, text: null, failed: false, messageId: null, submissionClaimed: false, lastActivityAt: Date.now() };
   window.__DEVOS_ARM_STREAM__ = function () {
-    state = window.__DEVOS_STREAM_STATE__ = { request: state.request + 1, armed: true, started: false, text: null, failed: false, messageId: null, submissionClaimed: false };
+    state = window.__DEVOS_STREAM_STATE__ = { request: state.request + 1, armed: true, started: false, text: null, failed: false, messageId: null, submissionClaimed: false, lastActivityAt: Date.now() };
     return state.request;
   };
   var originalFetch = window.fetch;
@@ -111,6 +111,7 @@ export const CHATGPT_RESPONSE_LOADER_SOURCE = String.raw`
       try {
         while (true) {
           var chunk = await reader.read();
+          if (pending === state && !chunk.done) pending.lastActivityAt = Date.now();
           buffer += chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
           var events = buffer.split(/\r?\n\r?\n/); buffer = events.pop();
           for (var event of events) { readEvent(event); if (complete) break; }
