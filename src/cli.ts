@@ -19,9 +19,12 @@ import {
   type StateStore,
 } from "./orchestrator.js";
 import {
+  clearTaskCompletion,
+  isTaskCompleted,
   listReadyTasks,
   loadOrCreateProjectConfig,
   loadReadyTask,
+  markTaskCompleted,
   type ProjectConfig,
   type ReadyTask,
 } from "./ready-tasks.js";
@@ -114,6 +117,32 @@ export async function runWorkflow(
   }
 }
 
+export async function prepareTaskRun(
+  mode: "run" | "restart",
+  projectRoot: string,
+  issue: number,
+): Promise<void> {
+  if (mode === "restart") {
+    await clearTaskCompletion(projectRoot, issue);
+    return;
+  }
+  if (await isTaskCompleted(projectRoot, issue)) {
+    throw new Error(
+      `Issue #${issue} has already completed. Use ./devos restart ${issue} after an explicit replan.`,
+    );
+  }
+}
+
+export async function recordTaskCompletion(
+  projectRoot: string,
+  workflow: Workflow,
+  state: RunState,
+): Promise<void> {
+  if (!state.ownerReviewPending) {
+    await markTaskCompleted(projectRoot, workflow.task.issue);
+  }
+}
+
 export function chooseReadyTask(
   tasks: ReadyTask[],
   answer: string,
@@ -160,7 +189,9 @@ export async function main(
     }
 
     process.stdout.write(`\nStarting #${task.issue}: ${task.title}\n`);
+    await prepareTaskRun(task.mode, cwd, task.issue);
     const state = await runWorkflow(task.workflow, task.mode, cwd, config);
+    await recordTaskCompletion(cwd, task.workflow, state);
     writeRunResult(task.workflow, state, `#${task.issue}`);
     return;
   }
@@ -176,12 +207,15 @@ export async function main(
       cwd,
       runner,
       ownerDecision !== undefined,
+      command.mode === "restart",
     );
     if (ownerDecision !== undefined) {
       const pendingState = await new JsonStateStore(cwd, task.workflow.task).load();
       assertOwnerDecisionPending(pendingState);
     }
+    await prepareTaskRun(command.mode, cwd, task.issue);
     const state = await runWorkflow(task.workflow, command.mode, cwd, config);
+    await recordTaskCompletion(cwd, task.workflow, state);
     writeRunResult(task.workflow, state, `#${task.issue}`);
     return;
   }
@@ -190,7 +224,9 @@ export async function main(
   const config = await loadOrCreateProjectConfig(cwd, runner);
   const workflowPath = resolve(cwd, command.target);
   const workflow = await loadWorkflow(workflowPath);
+  await prepareTaskRun(command.mode, cwd, workflow.task.issue);
   const state = await runWorkflow(workflow, command.mode, cwd, config);
+  await recordTaskCompletion(cwd, workflow, state);
   writeRunResult(workflow, state);
 }
 
