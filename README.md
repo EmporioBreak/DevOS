@@ -76,9 +76,10 @@ my-project/
 После копирования launcher-а в проект:
 
 ```bash
-chmod +x devos
 ./devos
 ```
+
+Файл поставляется как executable. Если конкретный способ скачивания сбросил executable bit, достаточно один раз выполнить `chmod +x devos`.
 
 При первом запуске launcher локально разворачивает runtime в `.devos/runtime/`. Никакого `npm -g`, системного daemon-а или общей установки DevOS на компьютер нет. Runtime и состояние принадлежат только этому проекту.
 
@@ -128,12 +129,21 @@ DevOS complete: #35, 4 worker runs.
       "issue": 35
     },
     "start": "developer",
-    "workers": []
+    "workers": [
+      {
+        "id": "developer",
+        "executor": "chatgpt_browser",
+        "prompt": "Implement the task described in this GitHub Issue.",
+        "on": {
+          "done": null
+        }
+      }
+    ]
   }
 }
 ```
 
-В реальном workflow `workers` не пустой. DevOS проверяет, что repo и Issue внутри workflow совпадают с выбранной GitHub Issue.
+DevOS проверяет, что repo и Issue внутри workflow совпадают с выбранной GitHub Issue.
 
 ### Запуск через local Codex
 
