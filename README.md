@@ -527,20 +527,16 @@ Config от прежнего transport-эксперимента нужно за�
 
 Публичный `/mcp` всегда защищён OAuth: authorization-code + PKCE S256, protected-resource/authorization-server discovery, dynamic client registration, одноразовый code, access token на час и rotating refresh token до 24 часов. Повторное использование refresh token отзывает всё его семейство. Активное bearer-state шифруется AES-256-GCM ключом, производным от owner secret, хранится project-local в `.devos/connector/oauth-state.enc` с правами 0600 и привязано к точному публичному `/mcp`; поэтому обычный restart DevOS не требует повторного OAuth. Смена owner secret, публичного MCP resource, повреждение state или истечение/revoke токенов требуют новой авторизации. MCP-сессия привязана к зарегистрированному клиенту. Анонимный/неверный bearer получает 401; до настройки HTTPS issuer gateway закрыт. Не используйте URL как пароль.
 
-`NGROK_AUTHTOKEN` — токен аккаунта ngrok для транспорта. `DEVOS_CONNECTOR_OWNER_SECRET` — **другой**, случайный секрет владельца, минимум 32 байта: он подтверждает выдачу доступа ко всем инструментам Mac на OAuth-странице. Сгенерируйте его в password manager и введите локально; не отправляйте в чат/GitHub. Для zsh безопасный ввод без shell history/argv:
+`NGROK_AUTHTOKEN` — токен аккаунта ngrok для транспорта. `DEVOS_CONNECTOR_OWNER_SECRET` — **другой**, случайный секрет владельца, минимум 32 байта: он подтверждает выдачу доступа ко всем инструментам Mac на OAuth-странице. Храните оба значения в project-local `.env` (файл игнорируется git) и не отправляйте их в чат/GitHub:
 
-```zsh
-read -rs 'NGROK_AUTHTOKEN?ngrok auth token: '; printf '\n'
-export NGROK_AUTHTOKEN
-read -rs 'DEVOS_CONNECTOR_OWNER_SECRET?Owner secret (32+ bytes): '; printf '\n'
-export DEVOS_CONNECTOR_OWNER_SECRET
-./devos connector doctor
-./devos connector run
-# После остановки:
-unset NGROK_AUTHTOKEN DEVOS_CONNECTOR_OWNER_SECRET
+```dotenv
+NGROK_AUTHTOKEN=...
+DEVOS_CONNECTOR_OWNER_SECRET=...
 ```
 
-Вывод run содержит только публичный **`https://…/mcp`** и фиксированные диагностики. Секреты остаются в окружении владельца текущего запуска; токены и регистрации — в памяти gateway. Desktop Commander и его инструменты получают очищенное окружение без этих секретов, telemetry отключена. Bootstrap/build также получает минимальное окружение, stdout/stderr зависимостей подавляются. Upstream/ngrok output не пересылается, ngrok request inspector выключен. При остановке временный ngrok config удаляется; никакие credentials не записываются в Git/config/logs.
+Переменные реального process environment имеют приоритет над `.env`, поэтому их можно использовать как временный override. `.env` читается как простой `KEY=value` файл и не исполняется как shell script.
+
+Вывод run содержит только публичный **`https://…/mcp`** и фиксированные диагностики. Секреты остаются только в process environment / project-local `.env`; токены и регистрации — в памяти gateway. Desktop Commander и его инструменты получают очищенное окружение без этих секретов, telemetry отключена. Bootstrap/build также получает минимальное окружение, stdout/stderr зависимостей подавляются. Upstream/ngrok output не пересылается, ngrok request inspector выключен. При остановке временный ngrok config удаляется; никакие credentials не записываются в Git/config/logs.
 
 ### Подключение клиентов
 
@@ -571,9 +567,9 @@ opencode mcp auth devos
 
 ### Время жизни и проверки
 
-Обычный `./devos` использует project-local background supervisor: после готовности он отсоединяется от терминала, а gateway/ngrok/Desktop Commander продолжают работать до явного Stop DevOS. `connector start|stop|status` дают тот же lifecycle без меню; `connector run` сохранён как foreground diagnostic mode, где Ctrl+C/SIGTERM и EOF владельца завершают весь принадлежащий запуску стек. Supervisor удерживает loopback mutex по каноническому пути проекта; второй stack того же проекта запрещён. При остановке потомки получают ограниченное время для завершения, затем принудительно убиваются. Не запускайте отдельную копию gateway/ngrok вручную.
+Обычный `./devos` использует project-local background supervisor: после готовности он отсоединяется от терминала, а gateway/ngrok/Desktop Commander продолжают работать до явного Stop DevOS. При неожиданном падении runtime supervisor делает только ограниченное число повторных запусков с backoff; после исчерпания бюджета состояние становится `terminal_failed`, бесконечного restart loop нет. `connector start|stop|status` дают тот же lifecycle без меню; `connector run` сохранён как foreground diagnostic mode, где Ctrl+C/SIGTERM и EOF владельца завершают весь принадлежащий запуску стек. Supervisor удерживает loopback mutex по каноническому пути проекта; второй stack того же проекта запрещён. При остановке потомки получают ограниченное время для завершения, затем принудительно убиваются только после проверки ownership. Не запускайте отдельную копию gateway/ngrok вручную.
 
-`doctor` проверяет точные локальные версии/hash, config, наличие auth и lock; действительность ngrok credentials и сеть он не подтверждает. `status` отдельно показывает здоровье локального gateway и регистрацию HTTPS endpoint в локальном ngrok API; внешнюю достижимость не утверждает. Секреты в диагностике отсутствуют. `npx tsx tests/connector-local.smoke.ts` проверяет настоящий локальный stdio/gateway, OAuth, discovery и чтение файла с fake ngrok, без реального публичного endpoint.
+`doctor` проверяет точные локальные версии/hash, config, наличие auth и lock; действительность ngrok credentials и сеть он не подтверждает. `status` отдельно показывает lifecycle supervisor, runtime, здоровье локального gateway, регистрацию HTTPS endpoint, restart attempt и последнюю известную причину падения; внешнюю достижимость не утверждает. Bounded diagnostics пишутся в `.devos/logs/connector.jsonl`. Секреты и request payloads туда не попадают. `npx tsx tests/connector-local.smoke.ts` проверяет настоящий локальный stdio/gateway, OAuth, discovery и чтение файла с fake ngrok, без реального публичного endpoint.
 
 Main agent/пользователь после независимого review настраивает ngrok локально, запускает run и проверяет ChatGPT Server URL/OAuth: список tools, `pwd`, `git status` DevOS, чтение файла и безопасное создание/чтение/удаление временного файла. Нужно также подтвердить второй remote-клиент. Только после live успеха отключается старый hosted connector. Worker smoke не заменяет эту проверку. Дополнительный `npx tsx tests/connector-oauth-browser.smoke.ts` проверяет consent в системном Chrome с полностью контролируемым HTTPS origin и loopback callback, не затрагивая worker-сессии.
 
