@@ -92,3 +92,22 @@ for (const destination of ["https://chatgpt.com/", "https://chatgpt.com/c/outsid
     assert.equal(fixture.sends(), 0);
   });
 }
+
+test("fresh response failure still persists a conversation created during submission", async () => {
+  const project = "https://chatgpt.com/g/one/project";
+  const created = "https://chatgpt.com/g/one/c/created";
+  let url = project;
+  let saved: string | undefined;
+  const locator = {
+    first() { return this; }, async waitFor() {}, async fill() {}, async isVisible() { return true; },
+    async click() { url = created; }, async press() { url = created; },
+  };
+  const page = {
+    url: () => url, async goto() {}, locator: () => locator,
+    async evaluate() { return 1; }, async waitForFunction() { throw new Error("response failed after submission"); }, async close() {},
+  };
+  const executor = new ChatGptBrowserExecutor({ projectUrl: project, profileDir: "/unused", browserChannel: "chrome", headless: false }, 1000);
+  Object.assign(executor, { context: { async newPage() { return page; } } });
+  await assert.rejects(executor.run({ projectRoot: "/project", prompt: "Work", enforceProjectScope: true, onSession: id => { saved = id; } }), /response failed after submission/);
+  assert.equal(saved, created);
+});

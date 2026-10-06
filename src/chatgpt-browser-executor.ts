@@ -90,10 +90,13 @@ export class ChatGptBrowserExecutor implements Executor {
         throw error;
       }
 
+      let submissionStarted!: () => void;
+      const submission = new Promise<void>(resolve => { submissionStarted = resolve; });
       const assertSubmissionScope = () => {
         try {
           if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), request.sessionId !== undefined);
           if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation before submission");
+          submissionStarted();
         } catch (error) {
           if (request.sessionId) throw new BrowserResumeUnavailableError(request.sessionId, error instanceof Error ? error.message : String(error));
           throw error;
@@ -115,21 +118,11 @@ export class ChatGptBrowserExecutor implements Executor {
         return { text: outcome.text, sessionId: request.sessionId };
       }
 
-      const session = waitForConversationUrl(page, this.timeoutMs).then(
-        sessionId => ({ sessionId } as const),
-        error => ({ error } as const),
-      );
-      const first = await Promise.race([response, session]);
-      if ("error" in first) throw first.error;
-
-      let sessionId: string;
-      if ("sessionId" in first) {
-        sessionId = first.sessionId;
-      } else {
-        const sessionOutcome = await session;
-        if ("error" in sessionOutcome) throw sessionOutcome.error;
-        sessionId = sessionOutcome.sessionId;
-      }
+      // Surface preparation failures before starting URL discovery. After submission,
+      // preserve a created session even when response loading has already failed.
+      const prepared = await Promise.race([submission, response]);
+      if (prepared && "error" in prepared) throw prepared.error;
+      const sessionId = await waitForConversationUrl(page, this.timeoutMs);
 
       if (projectScope) assertChatGptProjectScope(this.config.projectUrl, sessionId, true);
       debugLog("browser.session.ready", { sessionId, actualUrl: page.url() });
