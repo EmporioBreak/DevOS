@@ -25,6 +25,27 @@ async function atomicJson(name: string, value: unknown) {
   await rename(tmp, target);
 }
 
+function failureLayer(reason: string) {
+  const value = reason.toLowerCase();
+  if (value.includes("ngrok")) return "ngrok";
+  if (value.includes("desktop commander")) return "desktop-commander";
+  if (
+    value.includes("owner credential") ||
+    value.includes("owner auth") ||
+    value.includes("oauth") ||
+    value.includes("credential")
+  )
+    return "auth";
+  if (
+    value.includes("lock port") ||
+    value.includes("duplicate active connector") ||
+    value.includes("address already in use")
+  )
+    return "port-ownership";
+  if (value.includes("gateway")) return "gateway";
+  return "transport";
+}
+
 async function runBackground() {
   const backoff = [500, 1500, 4000];
   let last = "connector runtime failed";
@@ -46,7 +67,7 @@ async function runBackground() {
     if (attempt === backoff.length) break;
     await atomicJson("diagnostic.json", {
       version: 1,
-      layer: "supervisor",
+      layer: failureLayer(last),
       status: "recovering",
       attempt: attempt + 1,
       reason: last.slice(0, 512),
@@ -63,7 +84,7 @@ async function runBackground() {
     });
     await atomicJson("diagnostic.json", {
       version: 1,
-      layer: "supervisor",
+      layer: failureLayer(last),
       status: "failed",
       reason: last.slice(0, 512),
       at: new Date().toISOString(),
