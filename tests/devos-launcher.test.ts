@@ -45,21 +45,21 @@ async function fixture(options: { selfHost?: boolean; runtimeHead?: string } = {
     `echo "git:$*" >> "$DEVOS_TEST_LOG"
 if [ "$1" = "-C" ] && [ "$3 $4" = "rev-parse --show-toplevel" ]; then
   [ "$DEVOS_SELF_HOST" = "1" ] && printf '%s\\n' "$2"
-elif [ "$1" = "-C" ] && [ "$3 $4 $5" = "remote get-url origin" ]; then
+elif [ "$1" = "-C" ] && [ "$3 $4 \${5-}" = "remote get-url origin" ]; then
   printf '%s\\n' "https://github.com/EmporioBreak/DevOS.git"
-elif [ "$1" = "-C" ] && [ "$3 $4 $5" = "symbolic-ref --quiet --short" ]; then
+elif [ "$1" = "-C" ] && [ "$3 $4 \${5-}" = "symbolic-ref --quiet --short" ]; then
   [ "$DEVOS_SELF_BRANCH" != "detached" ] && printf '%s\\n' "$DEVOS_SELF_BRANCH"
 elif [ "$1" = "-C" ] && [ "$3 $4" = "status --porcelain" ]; then
   [ "$DEVOS_SELF_DIRTY" = "1" ] && printf '%s\\n' " M README.md"
-elif [ "$1" = "-C" ] && [ "$3 $4 $5 $6" = "rev-parse --abbrev-ref --symbolic-full-name @{u}" ]; then
+elif [ "$1" = "-C" ] && [ "$3 $4 \${5-} $6" = "rev-parse --abbrev-ref --symbolic-full-name @{u}" ]; then
   printf '%s\\n' "$DEVOS_SELF_UPSTREAM"
 elif [ "$1" = "-C" ] && [ "$3 $4" = "rev-parse HEAD" ]; then
   if [ "$DEVOS_SELF_HOST" = "1" ]; then printf '%s\\n' "$DEVOS_SELF_LOCAL_HEAD"; else printf '%s\\n' "$DEVOS_RUNTIME_HEAD"; fi
 elif [ "$1" = "-C" ] && [ "$3 $4" = "rev-parse origin/main" ]; then
   printf '%s\\n' "$DEVOS_SELF_REMOTE_HEAD"
-elif [ "$1" = "-C" ] && [ "$3 $4 $5 $6" = "merge-base --is-ancestor HEAD origin/main" ]; then
+elif [ "$1" = "-C" ] && [ "$3 $4 \${5-} $6" = "merge-base --is-ancestor HEAD origin/main" ]; then
   [ "$DEVOS_SELF_RELATION" = "behind" ]
-elif [ "$1" = "-C" ] && [ "$3 $4 $5 $6" = "merge-base --is-ancestor origin/main HEAD" ]; then
+elif [ "$1" = "-C" ] && [ "$3 $4 \${5-} $6" = "merge-base --is-ancestor origin/main HEAD" ]; then
   [ "$DEVOS_SELF_RELATION" = "ahead" ]
 fi`,
   );
