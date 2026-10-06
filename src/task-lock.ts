@@ -62,8 +62,9 @@ export async function acquireTaskLock(
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const existing = await readTaskLock(path);
       if (!existing) {
-        await rm(path, { force: true });
-        continue;
+        throw new Error(
+          `Task #${task.issue} has an existing lock whose ownership cannot be validated; refusing to remove it automatically`,
+        );
       }
       const live = await processExists(existing.pid);
       if (!live) {
