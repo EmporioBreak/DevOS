@@ -493,3 +493,47 @@ DevOS не выбирает роли или executor-ы из этого файл
 `./devos restart .devos/workflow.json`, в том числе для закрытой ready Issue. Если финализация прервана, обычный `run` завершает запись marker и очистку state без повторного запуска workers. Перед продолжением финального ревью
 completion не записывается: `FINAL_REVIEW_REQUIRED` оставляет задачу ожидающей
 решения владельца.
+
+## Локальный MCP connector
+
+Новый путь: **ChatGPT → OpenAI Secure MCP Tunnel → project-local tunnel-client → stdio Desktop Commander → локальный Mac**. Desktop Commander исполняет файловые и терминальные инструменты локально. Vendor-hosted Remote MCP, его account/device pairing и квота запросов не участвуют. Tunnel — транспорт OpenAI с исходящим HTTPS на `api.openai.com:443`; публичный входящий MCP endpoint не нужен. Доступ к Secure MCP Tunnel должен быть включён для вашей организации/ChatGPT: [официальная инструкция](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
+
+```bash
+./devos connector setup
+./devos connector setup --tunnel-id tunnel_0123456789abcdef0123456789abcdef
+./devos connector doctor
+./devos connector run
+# В другом терминале:
+./devos connector status
+```
+
+`setup` не требует credentials. Используются точные версии `@wonderwhy-er/desktop-commander@0.2.52` (npm lockfile) и OpenAI `tunnel-client v0.0.15`. Go собирает официальный `cmd/client-runtime` с build flavor `runtime`, без cloudflared, в `.devos/tools/tunnel-client`; затем DevOS проверяет `--version`. Нужны Node ≥22, npm и Go с `GOTOOLCHAIN=auto`: этот release требует Go ≥1.27, toolchain автоматически скачивается в `.devos/go`. Go build cache также project-local; глобальные Go/Homebrew настройки не меняются. Бинарники, config и состояние `.devos/` игнорируются Git. Никакой глобальной установки нет.
+
+Tunnel ID имеет приоритет: `--tunnel-id`, затем `CONTROL_PLANE_TUNNEL_ID`, затем `.devos/connector/config.json`. `setup --tunnel-id` сохраняет только такой config:
+
+```json
+{
+  "version": 1,
+  "tunnelId": "tunnel_0123456789abcdef0123456789abcdef"
+}
+```
+
+Runtime API key допускается **только** через `CONTROL_PLANE_API_KEY`. В config нет полей для секретов; неизвестные поля отклоняются. Ключ не передаётся в argv, отчёты или logs. Окружение Desktop Commander и запускаемых им инструментов очищено от tunnel/admin credentials; upstream telemetry отключена. Вывод tunnel/stdio stderr не пересылается в терминал или debug log: DevOS выдаёт собственные диагностики, чтобы даже ошибочный вывод дочернего процесса не раскрыл ключ.
+
+`doctor` проверяет локальные версии, config, наличие ключа и доступность lock-порта; credentials в Platform и сетевую связь он не проверяет. `run` ждёт `/readyz` до 30 секунд и остаётся в foreground. Ctrl+C или SIGTERM завершает tunnel и его MCP process group; после трёх секунд применяется принудительное завершение. `status` показывает stopped/running/ready по PID и локальному `/readyz`; это не подтверждение успешного вызова инструментов из ChatGPT. Повторный DevOS connector с тем же tunnel ID запрещён машинным loopback lock-портом, в том числе из другого проекта. Занятый порт (или hash collision) приводит к отказу; не запускайте тот же ID отдельно через upstream binary на этой или другой машине.
+
+Для live acceptance пользователь самостоятельно создаёт или выбирает Tunnel в OpenAI Platform и runtime key с разрешениями **Tunnels Read + Use**. Не вставляйте ключ в чат, GitHub, shell history или `.env` репозитория. Например, в zsh/macOS можно безопасно прочитать его интерактивно:
+
+```bash
+read -rs 'CONTROL_PLANE_API_KEY?Runtime API key: '; echo
+export CONTROL_PLANE_API_KEY
+./devos connector run
+# После завершения:
+unset CONTROL_PLANE_API_KEY
+```
+
+В ChatGPT создайте custom MCP app с подключением **Tunnel** и тем же tunnel ID. Main agent/пользователь проверяет список tools, `pwd`, `git status` DevOS, чтение файла и безопасное создание/чтение/удаление временного файла. Только после этой проверки отключайте старый hosted connector. Worker-тесты используют контролируемый fake transport и не заменяют эту live acceptance.
+
+Автоматический запуск/остановка connector вместе с обычным `./devos run` **отложен**. Connector запускается отдельно и не меняет run/restart workflow. В source checkout явные connector-команды используют текущую ветку без auto-update; обычный task launcher сохраняет clean-main правила.
+
+Атрибуция: Desktop Commander — MIT, © 2024–2025 Eduard Ruzga and Desktop Commander Contributors ([upstream](https://github.com/wonderwhy-er/DesktopCommanderMCP)); Secure MCP Tunnel client — Apache-2.0 ([upstream](https://github.com/openai/tunnel-client/tree/v0.0.15)). Полные лицензии остаются в установленном npm package и официальном Go module. В цепочке Desktop Commander 0.2.52 `npm audit` сообщает 6 moderate и 5 high уязвимостей (включая файловые/PDF/image зависимости); review этого pinned dependency и live acceptance остаются обязательными перед использованием с реальными credentials.

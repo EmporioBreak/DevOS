@@ -203,3 +203,14 @@ for (const selfHost of [false, true]) {
     assert.ok(log.includes(`node:${f.project}/${selfHost ? "dist" : ".devos/runtime/dist"}/src/cli.js run 62`));
   });
 }
+
+test('explicit connector uses current checkout on a dirty task branch without gh/update/runtime clone',async()=>{
+  const f=await fixture({selfHost:true});
+  await writeFile(path.join(f.project,'package.json'),'{}');
+  await writeFile(path.join(f.project,'src/connector.ts'),'');
+  const result=spawnSync(path.join(f.project,'devos'),['connector','status'],{cwd:f.project,env:{...f.env,DEVOS_SELF_BRANCH:'codex/issue-68',DEVOS_SELF_DIRTY:'1'},encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);
+  const log=await readFile(f.log,'utf8');
+  assert.match(log,/node:.*dist\/src\/cli.js connector status/);
+  assert.doesNotMatch(log,/gh:|git:|repo clone/);
+});

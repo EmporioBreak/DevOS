@@ -15,6 +15,7 @@
     "dev": "tsx src/cli.ts"
   },
   "dependencies": {
+    "@wonderwhy-er/desktop-commander": "0.2.52",
     "playwright": "1.63.0"
   },
   "devDependencies": {

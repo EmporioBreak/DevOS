@@ -12,6 +12,21 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+# Explicit connector operations use this software checkout as-is, including a task
+# branch. Ordinary task launch retains its existing clean-main/update semantics.
+if [ "${1-}" = "connector" ] && [ -f "$ROOT/src/connector.ts" ] && [ -f "$ROOT/package.json" ]; then
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "DevOS connector requires npm." >&2
+    exit 1
+  fi
+  if [ ! -d "$ROOT/node_modules" ]; then
+    (cd "$ROOT" && npm ci --ignore-scripts >/dev/null)
+  fi
+  (cd "$ROOT" && npm run build >/dev/null)
+  cd "$ROOT"
+  exec node "$SELF_CLI" "$@"
+fi
+
 if ! command -v gh >/dev/null 2>&1; then
   echo "DevOS requires the GitHub CLI (gh) authenticated for this project's repository." >&2
   exit 1
