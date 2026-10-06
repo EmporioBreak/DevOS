@@ -336,7 +336,18 @@ async function health(port: number) {
 }
 const backgroundStateName = "background.json";
 
-type BackgroundState = { pid?: number; identity?: string; startedAt?: string };
+type BackgroundState = {
+  pid?: number;
+  identity?: string;
+  fingerprint?: string;
+  startedAt?: string;
+};
+type RuntimeState = {
+  pid?: number;
+  identity?: string;
+  fingerprint?: string;
+  publicUrl?: string;
+};
 async function backgroundState(root: string): Promise<BackgroundState> {
   try {
     return JSON.parse(
@@ -357,16 +368,50 @@ function processAlive(pid: number | undefined): boolean {
   }
 }
 
-function backgroundOwned(root: string, state: BackgroundState): boolean {
-  if (!processAlive(state.pid) || state.identity !== projectIdentity(root)) return false;
-  const ps = spawnSync("/bin/ps", ["-p", String(state.pid), "-o", "command="], {
+function processCommand(pid: number | undefined): string | undefined {
+  if (!processAlive(pid)) return undefined;
+  const ps = spawnSync("/bin/ps", ["-p", String(pid), "-o", "command="], {
     encoding: "utf8",
     env: safeEnvironment(process.env),
   });
-  return ps.status === 0 &&
-    ps.stdout.includes("connector-runner") &&
-    ps.stdout.includes(root) &&
-    ps.stdout.includes("--background");
+  return ps.status === 0 ? ps.stdout.trim() : undefined;
+}
+
+function processFingerprint(pid: number | undefined): string | undefined {
+  if (!processAlive(pid)) return undefined;
+  const ps = spawnSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
+    encoding: "utf8",
+    env: safeEnvironment(process.env),
+  });
+  return ps.status === 0 && ps.stdout.trim() ? ps.stdout.trim() : undefined;
+}
+
+function ownedCommand(
+  root: string,
+  pid: number | undefined,
+  identity: string | undefined,
+  fingerprint: string | undefined,
+  executableMarker: string,
+  extraMarker?: string,
+): boolean {
+  if (identity !== projectIdentity(root) || !fingerprint) return false;
+  const command = processCommand(pid);
+  return !!command &&
+    processFingerprint(pid) === fingerprint &&
+    command.includes(executableMarker) &&
+    command.includes(root) &&
+    (!extraMarker || command.includes(extraMarker));
+}
+
+function backgroundOwned(root: string, state: BackgroundState): boolean {
+  return ownedCommand(
+    root,
+    state.pid,
+    state.identity,
+    state.fingerprint,
+    "connector-runner",
+    "--background",
+  );
 }
 
 export async function connectorBackgroundRunning(root: string): Promise<boolean> {
@@ -387,6 +432,7 @@ async function startBackground(root: string, config: {
   }
   await rm(serviceFile, { force: true });
   await mkdir(dir, { recursive: true, mode: 0o700 });
+  await cleanupOwnedRuntime(root);
 
   const runner = join(softwareRoot, "dist/src/connector-runner.js");
   await access(runner);
@@ -404,6 +450,7 @@ async function startBackground(root: string, config: {
     JSON.stringify({
       pid: child.pid,
       identity: projectIdentity(root),
+      fingerprint: processFingerprint(child.pid),
       startedAt: new Date().toISOString(),
     }) + "\n",
   );
@@ -443,42 +490,76 @@ async function startBackground(root: string, config: {
   throw new Error("DevOS background startup failed.");
 }
 
+async function runtimeState(root: string): Promise<RuntimeState> {
+  try {
+    return JSON.parse(
+      await readFile(join(root, ".devos/connector/state.json"), "utf8"),
+    ) as RuntimeState;
+  } catch {
+    return {};
+  }
+}
+
+function runtimeOwned(root: string, state: RuntimeState): boolean {
+  return ownedCommand(
+    root,
+    state.pid,
+    state.identity,
+    state.fingerprint,
+    "connector-runtime",
+  );
+}
+
+async function cleanupOwnedRuntime(root: string) {
+  const stateFile = join(root, ".devos/connector/state.json");
+  const state = await runtimeState(root);
+  if (!runtimeOwned(root, state)) {
+    if (!processAlive(state.pid)) await rm(stateFile, { force: true });
+    return;
+  }
+  try { process.kill(-state.pid!, "SIGTERM"); } catch {}
+  const gracefulDeadline = Date.now() + 3000;
+  while (runtimeOwned(root, state) && Date.now() < gracefulDeadline)
+    await delay(50);
+  if (runtimeOwned(root, state)) {
+    try { process.kill(-state.pid!, "SIGKILL"); } catch {}
+  }
+  const killDeadline = Date.now() + 1000;
+  while (runtimeOwned(root, state) && Date.now() < killDeadline)
+    await delay(25);
+  if (!runtimeOwned(root, state)) await rm(stateFile, { force: true });
+}
+
 async function stopBackground(root: string) {
   const dir = join(root, ".devos/connector");
   const serviceFile = join(dir, backgroundStateName);
   const state = await backgroundState(root);
-  if (!backgroundOwned(root, state)) {
-    await rm(serviceFile, { force: true });
-    process.stdout.write("DevOS background is already stopped.\n");
-    return;
+  const supervisorOwned = backgroundOwned(root, state);
+
+  if (supervisorOwned) {
+    try {
+      process.kill(state.pid!, "SIGTERM");
+    } catch {}
+    const gracefulDeadline = Date.now() + 5000;
+    while (backgroundOwned(root, state) && Date.now() < gracefulDeadline) {
+      await delay(50);
+    }
+    if (backgroundOwned(root, state)) {
+      try {
+        process.kill(state.pid!, "SIGKILL");
+      } catch {}
+    }
   }
 
-  try {
-    process.kill(state.pid!, "SIGTERM");
-  } catch {}
-  const gracefulDeadline = Date.now() + 5000;
-  while (processAlive(state.pid) && Date.now() < gracefulDeadline) {
-    await delay(50);
-  }
-  if (processAlive(state.pid)) {
-    try {
-      process.kill(state.pid!, "SIGKILL");
-    } catch {}
-  }
-
-  const cleanupDeadline = Date.now() + 3000;
-  while (Date.now() < cleanupDeadline) {
-    let runtime: { pid?: number } = {};
-    try {
-      runtime = JSON.parse(
-        await readFile(join(dir, "state.json"), "utf8"),
-      ) as { pid?: number };
-    } catch {}
-    if (!processAlive(runtime.pid)) break;
-    await delay(50);
-  }
+  await cleanupOwnedRuntime(root);
   await rm(serviceFile, { force: true });
-  process.stdout.write("DevOS background stopped; owned connector processes cleaned up.\n");
+  await rm(join(dir, "supervisor.json"), { force: true });
+  if (!supervisorOwned && !(await runtimeState(root)).pid)
+    process.stdout.write("DevOS background is already stopped.\n");
+  else
+    process.stdout.write(
+      "DevOS background stopped; owned connector processes cleaned up.\n",
+    );
 }
 
 async function superviseRun(root: string) {
@@ -559,14 +640,14 @@ export async function connector(
     return;
   }
   if (action === "status") {
-    let state: { pid?: number; publicUrl?: string } = {};
+    let state: RuntimeState = {};
     let supervisor: { status?: string; attempt?: number } = {};
     let diagnostic: { layer?: string; reason?: string } = {};
     try { state = JSON.parse(await readFile(stateFile, "utf8")); } catch {}
     try { supervisor = JSON.parse(await readFile(join(dir, "supervisor.json"), "utf8")); } catch {}
     try { diagnostic = JSON.parse(await readFile(join(dir, "diagnostic.json"), "utf8")); } catch {}
     const owned = backgroundOwned(root, await backgroundState(root));
-    const runtimeAlive = processAlive(state.pid);
+    const runtimeAlive = runtimeOwned(root, state);
     const local = runtimeAlive && (await health(config.gatewayPort));
     const url = runtimeAlive ? await publicEndpoint(config.ngrokApiPort, config.gatewayPort) : undefined;
     const healthy = owned && local && !!url && url === state.publicUrl;
@@ -703,11 +784,16 @@ export async function connector(
         );
       });
     });
-    await atomicWrite(stateFile, JSON.stringify({ pid: runtime.pid }) + "\n");
+    const runtimeIdentity = {
+      pid: runtime.pid,
+      identity: projectIdentity(root),
+      fingerprint: processFingerprint(runtime.pid),
+    };
+    await atomicWrite(stateFile, JSON.stringify(runtimeIdentity) + "\n");
     const url = await ready;
     await atomicWrite(
       stateFile,
-      JSON.stringify({ pid: runtime.pid, publicUrl: url }) + "\n",
+      JSON.stringify({ ...runtimeIdentity, publicUrl: url }) + "\n",
     );
     await atomicWrite(
       join(dir, "supervisor.json"),
