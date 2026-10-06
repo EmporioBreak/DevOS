@@ -104,7 +104,12 @@ export async function runBoundedConnectorSupervisor<T>(options: {
         lastExitSignal: detail.exitSignal,
         lastFailureMessage: detail.message,
       });
-      await sleep(CONNECTOR_RESTART_DELAYS_MS[failures - 1]!);
+      const continued = await sleepUntilRetry(
+        CONNECTOR_RESTART_DELAYS_MS[failures - 1]!,
+        sleep,
+        options.signal,
+      );
+      if (!continued) return;
     } finally {
       options.signal?.removeEventListener("abort", abort);
     }
@@ -115,4 +120,30 @@ export async function runBoundedConnectorSupervisor<T>(options: {
     restartAttempt: failures,
     maxRestartAttempts,
   });
+}
+
+
+async function sleepUntilRetry(
+  ms: number,
+  sleep: (ms: number) => Promise<void>,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (!signal) {
+    await sleep(ms);
+    return true;
+  }
+  if (signal.aborted) return false;
+  let onAbort: (() => void) | undefined;
+  try {
+    await Promise.race([
+      sleep(ms),
+      new Promise<void>(resolve => {
+        onAbort = resolve;
+        signal.addEventListener("abort", resolve, { once: true });
+      }),
+    ]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+  return !signal.aborted;
 }
