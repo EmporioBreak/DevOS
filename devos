@@ -85,7 +85,10 @@ build_self_host() {
     (cd "$ROOT" && npm install --no-package-lock >/dev/null)
   fi
 
-  (cd "$ROOT" && npm run build >/dev/null)
+  if ! BUILD_OUTPUT=$(cd "$ROOT" && npm run build 2>&1); then
+    printf '%s\n' "$BUILD_OUTPUT" >&2
+    exit 1
+  fi
 }
 
 install_runtime() {
