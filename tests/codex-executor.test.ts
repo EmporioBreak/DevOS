@@ -187,6 +187,7 @@ test("finishes a Codex JSONL worker turn while its child remains alive", async (
       turnCompletedEvent(),
     ].join("\n") + "\n";
     const childScript = [
+      "setTimeout(() => { if (process.platform !== 'win32') process.kill(-process.pid, 'SIGKILL'); else process.exit(1); }, 3000).unref();",
       `require("node:child_process").spawn(${JSON.stringify(process.execPath)}, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] });`,
       `process.stdout.write(${JSON.stringify(jsonl)});`,
       "setInterval(() => {}, 1000);",
@@ -226,6 +227,7 @@ test("waits for turn.completed after the terminal agent message", async () => {
   ].join("\n") + "\n";
   const completed = `${turnCompletedEvent()}\n`;
   const childScript = [
+    "setTimeout(() => { if (process.platform !== 'win32') process.kill(-process.pid, 'SIGKILL'); else process.exit(1); }, 3000).unref();",
     `process.stdout.write(${JSON.stringify(beforeTurnCompleted)});`,
     `setTimeout(() => process.stdout.write(${JSON.stringify(completed)}), 150);`,
     "setInterval(() => {}, 1000);",

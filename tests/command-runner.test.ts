@@ -30,7 +30,7 @@ test("finishes after matching complete stdout and kills the lingering child", as
   const startedAt = Date.now();
   const result = await new LocalCommandRunner().run(
     process.execPath,
-    ["-e", "process.stdout.write('ready\\n'); setInterval(() => {}, 1000)"],
+    ["-e", "process.stdout.write('ready\\n'); setTimeout(() => process.exit(1), 3000).unref(); setInterval(() => {}, 1000)"],
     process.cwd(),
     undefined,
     { completeWhenOutput: stdout => stdout.includes("ready\n") },
