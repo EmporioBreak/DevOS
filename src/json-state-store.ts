@@ -59,8 +59,12 @@ function validateState(value: unknown): RunState {
   const browserSessionRecovery = record.browserSessionRecovery;
   const browserPreSubmitRetry = record.browserPreSubmitRetry;
   const sessionProjectRoots = record.sessionProjectRoots;
+  const startedAt = record.startedAt;
+  const reviewLoops = record.reviewLoops;
 
   if (completionApproved !== undefined && typeof completionApproved !== "boolean") throw new Error("Invalid DevOS state");
+  if (startedAt !== undefined && (typeof startedAt !== "string" || !Number.isFinite(Date.parse(startedAt)))) throw new Error("Invalid DevOS state");
+  if (reviewLoops !== undefined && (typeof reviewLoops !== "number" || !Number.isSafeInteger(reviewLoops) || reviewLoops < 0)) throw new Error("Invalid DevOS state");
   if (completionApproved === true && mainAgentReviewPending === true) throw new Error("Invalid DevOS state");
   if (task !== undefined && !isTaskRef(task)) {
     throw new Error("Invalid DevOS state");
@@ -104,7 +108,9 @@ function validateState(value: unknown): RunState {
         key !== "task" &&
         key !== "ownerReviewPending" &&
         key !== "mainAgentReviewPending" &&
-        key !== "completionApproved",
+        key !== "completionApproved" &&
+        key !== "startedAt" &&
+        key !== "reviewLoops",
     ) ||
     typeof record.currentWorkerId !== "string" ||
     !record.currentWorkerId.trim() ||
@@ -133,6 +139,8 @@ function validateState(value: unknown): RunState {
     ...(completionApproved === undefined ? {} : { completionApproved }),
     ...(task === undefined ? {} : { task }),
     ...(mainAgentReviewPending === undefined ? {} : { mainAgentReviewPending }),
+    ...(startedAt === undefined ? {} : { startedAt }),
+    ...(reviewLoops === undefined ? {} : { reviewLoops }),
   };
 }
 
