@@ -169,6 +169,7 @@ test("finishes a Codex JSONL worker turn while its child remains alive", async (
         type: "item.completed",
         item: { type: "agent_message", text: 'DEVOS_RESULT {"status":"done"}' },
       }),
+      JSON.stringify({ type: "turn.completed", usage: {} }),
     ].join("\n") + "\n";
     const childScript = [
       `require("node:child_process").spawn(${JSON.stringify(process.execPath)}, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] });`,
@@ -197,6 +198,66 @@ test("finishes a Codex JSONL worker turn while its child remains alive", async (
     assert.ok(Date.now() - startedAt < 1_000, "Codex completion should not wait for child exit");
     assert.equal(result.sessionId, threadId);
     assert.equal(result.text, 'DEVOS_RESULT {"status":"done"}');
+  }
+});
+
+test("waits for turn.completed after the terminal agent message", async () => {
+  const beforeTurnCompleted = [
+    JSON.stringify({ type: "thread.started", thread_id: "turn-1" }),
+    JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: 'DEVOS_RESULT {"status":"done"}' },
+    }),
+  ].join("\n") + "\n";
+  const completed = `${JSON.stringify({ type: "turn.completed", usage: {} })}\n`;
+  const childScript = [
+    `process.stdout.write(${JSON.stringify(beforeTurnCompleted)});`,
+    `setTimeout(() => process.stdout.write(${JSON.stringify(completed)}), 150);`,
+    "setInterval(() => {}, 1000);",
+  ].join(" ");
+  const runner: CommandRunner = {
+    run(_command, _args, cwd, stdin, options) {
+      return new LocalCommandRunner().run(process.execPath, ["-e", childScript], cwd, stdin, options);
+    },
+  };
+  const startedAt = Date.now();
+
+  const result = await new CodexExecutor(runner).run({ projectRoot: process.cwd(), prompt: "Continue" });
+
+  assert.ok(Date.now() - startedAt >= 100, "must remain alive until turn.completed arrives");
+  assert.equal(result.sessionId, "turn-1");
+});
+
+test("does not accept turn.failed or error events as successful completion", async () => {
+  for (const failedEvent of [
+    { type: "turn.failed", error: { message: "turn failed" } },
+    { type: "error", message: "stream failed" },
+  ]) {
+    const jsonl = [
+      JSON.stringify({ type: "thread.started", thread_id: "failed-1" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: 'DEVOS_RESULT {"status":"done"}' },
+      }),
+      JSON.stringify(failedEvent),
+      JSON.stringify({ type: "turn.completed", usage: {} }),
+    ].join("\n") + "\n";
+    const runner: CommandRunner = {
+      run(_command, _args, cwd, stdin, options) {
+        return new LocalCommandRunner().run(
+          process.execPath,
+          ["-e", `process.stdout.write(${JSON.stringify(jsonl)}); setTimeout(() => process.exit(1), 100)`],
+          cwd,
+          stdin,
+          options,
+        );
+      },
+    };
+
+    await assert.rejects(
+      () => new CodexExecutor(runner).run({ projectRoot: process.cwd(), prompt: "Continue" }),
+      /Codex exited with code 1/,
+    );
   }
 });
 

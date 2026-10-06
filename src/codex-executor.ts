@@ -80,10 +80,28 @@ function isCompleteWorkerOutput(stdout: string, expectedSessionId?: string): boo
   // still be followed by more output that changes which agent_message is final.
   if (!stdout.endsWith("\n")) return false;
   try {
+    const events = parseEvents(stdout);
     const sessionId = parseThreadId(stdout);
     if (expectedSessionId && sessionId !== expectedSessionId) return false;
-    parseDevosResult(parseFinalAgentMessage(stdout));
-    return true;
+    if (events.some(event => event.type === "turn.failed" || event.type === "error")) return false;
+
+    let finalAgentMessageIndex = -1;
+    let finalAgentMessage: string | undefined;
+    for (const [index, event] of events.entries()) {
+      if (
+        event.type === "item.completed" &&
+        isRecord(event.item) &&
+        event.item.type === "agent_message" &&
+        typeof event.item.text === "string"
+      ) {
+        finalAgentMessageIndex = index;
+        finalAgentMessage = event.item.text;
+      }
+    }
+    if (finalAgentMessage === undefined) return false;
+    parseDevosResult(finalAgentMessage);
+
+    return events.some((event, index) => index > finalAgentMessageIndex && event.type === "turn.completed");
   } catch {
     return false;
   }
