@@ -62,10 +62,10 @@ export function getChatGptProjectScope(value: string): ChatGptProjectScope | nul
   const url = validateChatGptUrl(value);
   if (url.pathname === "/") return null;
 
-  const match = /^\/g\/([^/]+)\/c\/?$/.exec(url.pathname);
+  const match = /^\/g\/([^/]+)(?:\/c)?\/?$/.exec(url.pathname);
   if (!match?.[1]) {
     throw new Error(
-      "Invalid configured ChatGPT Project URL; expected /g/<project-id>/c/",
+      "Invalid configured ChatGPT Project URL; expected /g/<project-id>/ or /g/<project-id>/c/",
     );
   }
   return { origin: url.origin, projectId: match[1] };
@@ -80,7 +80,9 @@ export function assertChatGptProjectScope(
   const scope = getChatGptProjectScope(projectUrl);
   if (!scope) return candidate;
 
-  const match = /^\/g\/([^/]+)\/c(?:\/([^/]+))?\/?$/.exec(candidate.pathname);
+  const match = /^\/g\/([^/]+)(?:\/c(?:\/([^/]+))?)?\/?$/.exec(
+    candidate.pathname,
+  );
   const projectId = match?.[1];
   const conversationId = match?.[2];
 

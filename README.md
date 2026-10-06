@@ -94,7 +94,7 @@ Repo проекта определяется из локального `git remo
 }
 ```
 
-Для новых `chatgpt_browser` worker-ов этот project-local URL имеет приоритет над `DEVOS_CHATGPT_PROJECT_URL`. Переменная окружения остаётся fallback-ом. URL должен быть new-chat URL конкретного ChatGPT Project вида `https://chatgpt.com/g/<project-id>/c/`: browser worker перед отправкой проверяет, что страница не вышла из этого Project, а после создания разговора сохраняет только URL вида `/g/<тот-же-project-id>/c/<conversation-id>`. Standalone `/c/<id>` и разговор из другого Project считаются ошибкой, а не допустимым fallback.
+Для новых `chatgpt_browser` worker-ов этот project-local URL имеет приоритет над `DEVOS_CHATGPT_PROJECT_URL`. Переменная окружения остаётся fallback-ом. URL может быть ссылкой на Project `https://chatgpt.com/g/<project-id>/` или его new-chat route `/g/<project-id>/c/`. Browser worker перед отправкой проверяет, что страница не вышла из этого Project, а после создания разговора сохраняет только URL вида `/g/<тот-же-project-id>/c/<conversation-id>`. Standalone `/c/<id>` и разговор из другого Project считаются ошибкой, а не допустимым fallback.
 
 Обычный запуск:
 

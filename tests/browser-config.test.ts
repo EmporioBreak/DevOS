@@ -47,9 +47,32 @@ test("extracts project identity from the configured project new-chat URL", () =>
   assert.equal(getChatGptProjectScope("https://chatgpt.com/"), null);
 });
 
-test("rejects a configured ChatGPT Project URL that cannot enforce project scope", () => {
+test("accepts the configured ChatGPT Project landing URL", () => {
+  const projectUrl = "https://chatgpt.com/g/g-p-project-denis-devos/";
+  assert.deepEqual(getChatGptProjectScope(projectUrl), {
+    origin: "https://chatgpt.com",
+    projectId: "g-p-project-denis-devos",
+  });
+  assert.equal(
+    assertChatGptProjectScope(
+      projectUrl,
+      "https://chatgpt.com/g/g-p-project-denis-devos/",
+    ).pathname,
+    "/g/g-p-project-denis-devos/",
+  );
+  assert.equal(
+    assertChatGptProjectScope(
+      projectUrl,
+      "https://chatgpt.com/g/g-p-project-denis-devos/c/conversation-1",
+      true,
+    ).pathname,
+    "/g/g-p-project-denis-devos/c/conversation-1",
+  );
+});
+
+test("rejects a configured ChatGPT URL that cannot enforce project scope", () => {
   assert.throws(
-    () => getChatGptProjectScope("https://chatgpt.com/g/g-p-project/"),
+    () => getChatGptProjectScope("https://chatgpt.com/c/standalone"),
     /Invalid configured ChatGPT Project URL/,
   );
 });
