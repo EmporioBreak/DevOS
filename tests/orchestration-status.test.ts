@@ -70,7 +70,7 @@ test("emits worker result before routing and marks browser session re-entry", as
   }).run();
 
   assert.deepEqual(events, [
-    { type: "task_started", task: { repo: "owner/product", issue: 41 }, resumed: false },
+    { type: "task_status", task: { repo: "owner/product", issue: 41 }, status: "running", resumed: false },
     { type: "worker_started", workerId: "developer", executor: "chatgpt_browser", session: "fresh" },
     { type: "worker_result", workerId: "developer", executor: "chatgpt_browser", status: "done" },
     { type: "transition", from: "developer", to: "reviewer" },
@@ -83,6 +83,7 @@ test("emits worker result before routing and marks browser session re-entry", as
     { type: "worker_started", workerId: "reviewer", executor: "chatgpt_browser", session: "resumed" },
     { type: "worker_result", workerId: "reviewer", executor: "chatgpt_browser", status: "approved" },
     { type: "owner_handoff", task: { repo: "owner/product", issue: 41 } },
+    { type: "task_status", task: { repo: "owner/product", issue: 41 }, status: "final_review_required" },
   ]);
 });
 
@@ -164,12 +165,19 @@ test("failed status is emitted before the orchestrator rejects", async () => {
     /Worker failed: developer/,
   );
 
-  assert.deepEqual(events.at(-1), {
-    type: "worker_result",
-    workerId: "developer",
-    executor: "chatgpt_browser",
-    status: "failed",
-  });
+  assert.deepEqual(events.slice(-2), [
+    {
+      type: "worker_result",
+      workerId: "developer",
+      executor: "chatgpt_browser",
+      status: "failed",
+    },
+    {
+      type: "task_status",
+      task: { repo: "owner/product", issue: 41 },
+      status: "failed",
+    },
+  ]);
 });
 
 test("CLI renders concise lifecycle lines without exposing session ids", () => {
@@ -194,6 +202,23 @@ test("CLI renders concise lifecycle lines without exposing session ids", () => {
   assert.equal(
     formatOrchestrationEvent({ type: "transition", from: "reviewer", to: "local_reviewer" }),
     "→ local_reviewer\n",
+  );
+  assert.equal(
+    formatOrchestrationEvent({
+      type: "task_status",
+      task: { repo: "owner/product", issue: 41 },
+      status: "running",
+      resumed: true,
+    }),
+    "Task #41 — running (resume)\n",
+  );
+  assert.equal(
+    formatOrchestrationEvent({
+      type: "task_status",
+      task: { repo: "owner/product", issue: 41 },
+      status: "final_review_required",
+    }),
+    "Task #41 — final_review_required\n",
   );
 });
 
@@ -228,8 +253,9 @@ test("marks a persisted task run as resumed", async () => {
   }).run();
 
   assert.deepEqual(events[0], {
-    type: "task_started",
+    type: "task_status",
     task: { repo: "owner/product", issue: 41 },
+    status: "running",
     resumed: true,
   });
   assert.deepEqual(events[1], {
