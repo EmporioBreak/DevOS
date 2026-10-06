@@ -525,7 +525,7 @@ Config от прежнего transport-эксперимента нужно за�
 
 ### Авторизация и запуск
 
-Публичный `/mcp` всегда защищён OAuth: authorization-code + PKCE S256, protected-resource/authorization-server discovery, dynamic client registration, одноразовый code, access token на час и rotating refresh token до 24 часов. Повторное использование refresh token отзывает всё его семейство. Токены привязаны к публичному `/mcp`, а MCP-сессия — к зарегистрированному клиенту. Анонимный/неверный bearer получает 401; до настройки HTTPS issuer gateway закрыт. Не используйте URL как пароль.
+Публичный `/mcp` всегда защищён OAuth: authorization-code + PKCE S256, protected-resource/authorization-server discovery, dynamic client registration, одноразовый code, access token на час и rotating refresh token до 24 часов. Повторное использование refresh token отзывает всё его семейство. Активное bearer-state шифруется AES-256-GCM ключом, производным от owner secret, хранится project-local в `.devos/connector/oauth-state.enc` с правами 0600 и привязано к точному публичному `/mcp`; поэтому обычный restart DevOS не требует повторного OAuth. Смена owner secret, публичного MCP resource, повреждение state или истечение/revoke токенов требуют новой авторизации. MCP-сессия привязана к зарегистрированному клиенту. Анонимный/неверный bearer получает 401; до настройки HTTPS issuer gateway закрыт. Не используйте URL как пароль.
 
 `NGROK_AUTHTOKEN` — токен аккаунта ngrok для транспорта. `DEVOS_CONNECTOR_OWNER_SECRET` — **другой**, случайный секрет владельца, минимум 32 байта: он подтверждает выдачу доступа ко всем инструментам Mac на OAuth-странице. Сгенерируйте его в password manager и введите локально; не отправляйте в чат/GitHub. Для zsh безопасный ввод без shell history/argv:
 
@@ -567,7 +567,7 @@ OpenCode поддерживает remote MCP и OAuth ([документация
 opencode mcp auth devos
 ```
 
-На consent-странице обоих клиентов используйте тот же локальный owner secret. Это примеры конфигурации; реальные соединения клиентов ещё требуют live acceptance. После restart все регистрации/токены/сессии отозваны, клиенту нужно повторить OAuth, а при смене ngrok URL — обновить конфигурацию.
+На consent-странице обоих клиентов используйте тот же локальный owner secret. Это примеры конфигурации; реальные соединения клиентов ещё требуют live acceptance. Обычный restart сохраняет public client registration и незавершившееся OAuth bearer-state; повторный OAuth нужен после revoke/expiry/security reset или если изменился owner secret либо публичный ngrok resource. При смене ngrok URL обновите конфигурацию клиента.
 
 ### Время жизни и проверки
 

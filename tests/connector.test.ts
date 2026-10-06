@@ -273,11 +273,12 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
     await g.close();
   }
 });
-test("approved public OAuth client survives connector restart while tokens do not", async () => {
+test("approved public OAuth client and bearer state survive connector restart", async () => {
   const start = connectorModule.startGateway;
   assert.equal(typeof start, "function");
   const dir = await mkdtemp(join(tmpdir(), "devos-oauth-clients-"));
   const clientsPath = join(dir, "clients.json");
+  const statePath = join(dir, "oauth-state.enc");
   let first: Awaited<ReturnType<typeof start>> | undefined;
   let second: Awaited<ReturnType<typeof start>> | undefined;
   try {
@@ -287,6 +288,7 @@ test("approved public OAuth client survives connector restart while tokens do no
       ownerSecret: secret,
       publicUrl: issuer,
       oauthClientsPath: clientsPath,
+      oauthStatePath: statePath,
     });
     const firstBase = "http://127.0.0.1:" + first.address.port;
     const { tokens, client } = await oauthToken(firstBase, secret);
@@ -299,6 +301,9 @@ test("approved public OAuth client survives connector restart while tokens do no
     assert.equal(durable.clients[0].client_id, client.client_id);
     assert.equal(durable.clients[0].client_secret, undefined);
     assert.deepEqual(durable.approvedClientIds, [client.client_id]);
+    const encryptedState = await readFile(statePath, "utf8");
+    assert.doesNotMatch(encryptedState, new RegExp(tokens.access_token));
+    assert.doesNotMatch(encryptedState, new RegExp(tokens.refresh_token));
 
     second = await start({
       root: process.cwd(),
@@ -306,9 +311,10 @@ test("approved public OAuth client survives connector restart while tokens do no
       ownerSecret: secret,
       publicUrl: issuer,
       oauthClientsPath: clientsPath,
+      oauthStatePath: statePath,
     });
     const secondBase = "http://127.0.0.1:" + second.address.port;
-    assert.equal(
+    assert.notEqual(
       (
         await fetch(secondBase + "/mcp", {
           method: "GET",
@@ -316,8 +322,23 @@ test("approved public OAuth client survives connector restart while tokens do no
         })
       ).status,
       401,
-      "access tokens remain ephemeral across restart",
+      "unexpired access token must remain valid across restart",
     );
+    const refreshAfterRestart = await fetch(secondBase + "/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: client.client_id,
+        refresh_token: tokens.refresh_token,
+        resource: issuer + "/mcp",
+      }),
+    });
+    assert.equal(refreshAfterRestart.status, 200);
+    const rotated: any = await refreshAfterRestart.json();
+    assert.ok(rotated.access_token);
+    assert.ok(rotated.refresh_token);
+    assert.notEqual(rotated.refresh_token, tokens.refresh_token);
 
     const verifier = randomBytes(32).toString("base64url");
     const challenge = createHash("sha256")

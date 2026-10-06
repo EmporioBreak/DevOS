@@ -1,4 +1,6 @@
 import {
+  createCipheriv,
+  createDecipheriv,
   createHash,
   randomBytes,
   randomUUID,
@@ -50,9 +52,10 @@ type Token = {
   family: string;
 };
 
-// Access/refresh credentials and grants belong to this foreground run. Public
-// dynamic-client registrations are safe to persist locally so ChatGPT can
-// reauthorize after a connector restart without changing its client_id.
+// Public dynamic-client registrations and active bearer state persist locally
+// so trusted clients can survive an ordinary DevOS restart. Bearer state is
+// encrypted at rest with a key derived from the owner secret, bound to the
+// exact public MCP resource, and protected by 0600 file permissions.
 // Every map is bounded, expired entries are pruned before admitting new entries.
 export class ConnectorAuth implements OAuthServerProvider {
   private clients = new Map<string, OAuthClientInformationFull>();
@@ -67,9 +70,149 @@ export class ConnectorAuth implements OAuthServerProvider {
     private resource: URL,
     ownerSecret: string,
     private clientsPath?: string,
+    private statePath?: string,
   ) {
     this.ownerDigest = digest(ownerSecret);
     this.loadPublicClients();
+    this.loadAuthState();
+  }
+
+  private tokenFromDisk(value: unknown): Token | undefined {
+    if (!value || typeof value !== "object") return undefined;
+    const candidate = value as {
+      clientId?: unknown;
+      scopes?: unknown;
+      expires?: unknown;
+      resource?: unknown;
+      family?: unknown;
+    };
+    if (
+      typeof candidate.clientId !== "string" ||
+      !this.clients.has(candidate.clientId) ||
+      !Array.isArray(candidate.scopes) ||
+      candidate.scopes.some((scope) => typeof scope !== "string") ||
+      typeof candidate.expires !== "number" ||
+      !Number.isFinite(candidate.expires) ||
+      candidate.expires <= Date.now() ||
+      candidate.resource !== this.resource.href ||
+      typeof candidate.family !== "string"
+    )
+      return undefined;
+    return {
+      clientId: candidate.clientId,
+      scopes: candidate.scopes as string[],
+      expires: candidate.expires,
+      resource: this.resource,
+      family: candidate.family,
+    };
+  }
+
+  private loadAuthState() {
+    if (!this.statePath) return;
+    try {
+      const envelope = JSON.parse(readFileSync(this.statePath, "utf8")) as {
+        version?: unknown;
+        iv?: unknown;
+        tag?: unknown;
+        data?: unknown;
+      };
+      if (
+        envelope.version !== 1 ||
+        typeof envelope.iv !== "string" ||
+        typeof envelope.tag !== "string" ||
+        typeof envelope.data !== "string"
+      )
+        throw new Error("invalid envelope");
+      const decipher = createDecipheriv(
+        "aes-256-gcm",
+        this.ownerDigest,
+        Buffer.from(envelope.iv, "base64url"),
+      );
+      decipher.setAAD(Buffer.from(this.resource.href));
+      decipher.setAuthTag(Buffer.from(envelope.tag, "base64url"));
+      const clear = Buffer.concat([
+        decipher.update(Buffer.from(envelope.data, "base64url")),
+        decipher.final(),
+      ]);
+      const parsed = JSON.parse(clear.toString("utf8")) as {
+        version?: unknown;
+        resource?: unknown;
+        access?: unknown;
+        refresh?: unknown;
+        usedRefresh?: unknown;
+      };
+      if (
+        parsed.version !== 1 ||
+        parsed.resource !== this.resource.href ||
+        !Array.isArray(parsed.access) ||
+        !Array.isArray(parsed.refresh) ||
+        !Array.isArray(parsed.usedRefresh)
+      )
+        throw new Error("invalid state");
+      for (const [target, entries] of [
+        [this.access, parsed.access],
+        [this.refresh, parsed.refresh],
+        [this.usedRefresh, parsed.usedRefresh],
+      ] as const)
+        for (const entry of entries.slice(0, 256)) {
+          if (!Array.isArray(entry) || typeof entry[0] !== "string") continue;
+          const token = this.tokenFromDisk(entry[1]);
+          if (token) target.set(entry[0], token);
+        }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      try {
+        unlinkSync(this.statePath);
+      } catch {}
+    }
+  }
+
+  private persistAuthState() {
+    if (!this.statePath) return;
+    const serialize = (map: Map<string, Token>) =>
+      [...map]
+        .filter(([, token]) => token.expires > Date.now())
+        .map(([key, token]) => [
+          key,
+          {
+            ...token,
+            resource: token.resource.href,
+          },
+        ]);
+    const clear = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        resource: this.resource.href,
+        access: serialize(this.access),
+        refresh: serialize(this.refresh),
+        usedRefresh: serialize(this.usedRefresh),
+      }),
+    );
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", this.ownerDigest, iv);
+    cipher.setAAD(Buffer.from(this.resource.href));
+    const encrypted = Buffer.concat([cipher.update(clear), cipher.final()]);
+    const envelope = JSON.stringify({
+      version: 1,
+      iv: iv.toString("base64url"),
+      tag: cipher.getAuthTag().toString("base64url"),
+      data: encrypted.toString("base64url"),
+    });
+    mkdirSync(dirname(this.statePath), { recursive: true, mode: 0o700 });
+    const tmp =
+      this.statePath + "." + process.pid + "." + randomUUID() + ".tmp";
+    try {
+      writeFileSync(tmp, envelope, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      });
+      renameSync(tmp, this.statePath);
+    } finally {
+      try {
+        unlinkSync(tmp);
+      } catch {}
+    }
   }
 
   private validateClientMetadata(
@@ -333,6 +476,7 @@ export class ConnectorAuth implements OAuthServerProvider {
     clientId: string,
     family: string,
     scopes: string[] = ["mcp:tools"],
+    persist = true,
   ): OAuthTokens {
     this.capacity(this.access);
     this.capacity(this.refresh);
@@ -347,6 +491,7 @@ export class ConnectorAuth implements OAuthServerProvider {
     };
     this.access.set(access, { ...data, expires: Date.now() + 3600_000 });
     this.refresh.set(refresh, { ...data, expires: Date.now() + 24 * 3600_000 });
+    if (persist) this.persistAuthState();
     return {
       access_token: access,
       refresh_token: refresh,
@@ -378,9 +523,11 @@ export class ConnectorAuth implements OAuthServerProvider {
       data.clientId,
       data.family,
       scopes?.length ? scopes : data.scopes,
+      false,
     );
     this.usedRefresh.set(token, data);
     this.refresh.delete(token);
+    this.persistAuthState();
     return tokens;
   }
   async verifyAccessToken(token: string): Promise<AuthInfo> {
@@ -399,6 +546,7 @@ export class ConnectorAuth implements OAuthServerProvider {
     for (const map of [this.access, this.refresh, this.usedRefresh])
       for (const [key, value] of map)
         if (value.family === family) map.delete(key);
+    this.persistAuthState();
   }
   async revokeToken(
     client: OAuthClientInformationFull,

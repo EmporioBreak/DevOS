@@ -239,6 +239,7 @@ export async function startGateway(options: {
   ownerSecret: string;
   publicUrl?: string;
   oauthClientsPath?: string | null;
+  oauthStatePath?: string | null;
   onFailure?: () => void;
 }) {
   ownerAuth(options.ownerSecret);
@@ -314,6 +315,7 @@ export async function startGateway(options: {
         ? undefined
         : options.oauthClientsPath ??
             join(options.root, ".devos", "connector", "oauth-clients.json"),
+      options.oauthStatePath === null ? undefined : options.oauthStatePath,
     );
     authRouter = mcpAuthRouter({
       provider,
