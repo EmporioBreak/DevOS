@@ -1,6 +1,6 @@
 import type { Executor } from "./executor.js";
 import { parseDevosResult } from "./result.js";
-import type { TaskRef, Workflow, WorkerSpec } from "./workflow.js";
+import type { ExecutorKind, TaskRef, WorkerStatus, Workflow, WorkerSpec } from "./workflow.js";
 
 export interface RunState {
   currentWorkerId: string;
@@ -16,6 +16,23 @@ export interface StateStore {
   clear(): Promise<void>;
 }
 
+export type OrchestrationEvent =
+  | { type: "task_started"; task: TaskRef; resumed: boolean }
+  | {
+      type: "worker_started";
+      workerId: string;
+      executor: ExecutorKind;
+      session: "fresh" | "resumed";
+    }
+  | {
+      type: "worker_result";
+      workerId: string;
+      executor: ExecutorKind;
+      status: WorkerStatus;
+    }
+  | { type: "transition"; from: string; to: string }
+  | { type: "owner_handoff"; task: TaskRef };
+
 export interface OrchestratorOptions {
   projectRoot: string;
   workflow: Workflow;
@@ -23,6 +40,7 @@ export interface OrchestratorOptions {
   stateStore: StateStore;
   ownerDecision?: "approved" | "changes_requested";
   resolveTask?: (task: TaskRef) => Promise<TaskRef>;
+  onEvent?: (event: OrchestrationEvent) => void | Promise<void>;
 }
 
 export class Orchestrator {
@@ -31,8 +49,9 @@ export class Orchestrator {
   async run(): Promise<RunState> {
     const { workflow, stateStore } = this.options;
     const workers = new Map(workflow.workers.map((worker) => [worker.id, worker]));
+    const persistedState = await stateStore.load();
     let state =
-      (await stateStore.load()) ?? {
+      persistedState ?? {
         currentWorkerId: workflow.start,
         completedRuns: 0,
         sessions: {},
@@ -43,9 +62,21 @@ export class Orchestrator {
       state = { ...state, task: workflow.task };
     }
 
+    await this.emit({
+      type: "task_started",
+      task: state.task ?? workflow.task,
+      resumed: persistedState !== null,
+    });
+
     if (state.ownerReviewPending) {
       const decision = this.options.ownerDecision;
-      if (!decision) return state;
+      if (!decision) {
+        await this.emit({
+          type: "owner_handoff",
+          task: state.task ?? workflow.task,
+        });
+        return state;
+      }
 
       if (decision === "approved") {
         const completed = {
@@ -65,6 +96,7 @@ export class Orchestrator {
         task: state.task ?? workflow.task,
       };
       await stateStore.save(state);
+      await this.emit({ type: "transition", from: "owner", to: workflow.start });
     }
 
     while (true) {
@@ -75,6 +107,12 @@ export class Orchestrator {
       if (!executor) throw new Error(`Missing executor: ${worker.executor}`);
 
       const sessionId = state.sessions[worker.id];
+      await this.emit({
+        type: "worker_started",
+        workerId: worker.id,
+        executor: worker.executor,
+        session: sessionId ? "resumed" : "fresh",
+      });
       const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
       const output = await executor.run({
         projectRoot: this.options.projectRoot,
@@ -93,6 +131,12 @@ export class Orchestrator {
         sessions,
         completedRuns: state.completedRuns + 1,
       };
+      await this.emit({
+        type: "worker_result",
+        workerId: worker.id,
+        executor: worker.executor,
+        status: result.status,
+      });
 
       if (result.status === "failed") {
         await stateStore.save(state);
@@ -131,6 +175,10 @@ export class Orchestrator {
         if (ownerResult === "final_review_required") {
           state = { ...state, ownerReviewPending: true };
           await stateStore.save(state);
+          await this.emit({
+            type: "owner_handoff",
+            task: state.task ?? workflow.task,
+          });
           return state;
         }
 
@@ -141,6 +189,7 @@ export class Orchestrator {
           task: state.task ?? workflow.task,
         };
         await stateStore.save(state);
+        await this.emit({ type: "transition", from: "owner", to: workflow.start });
         continue;
       }
 
@@ -148,9 +197,14 @@ export class Orchestrator {
         throw new Error(`Worker ${worker.id} routed to unknown worker: ${nextWorkerId}`);
       }
 
+      await this.emit({ type: "transition", from: worker.id, to: nextWorkerId });
       state = { ...state, currentWorkerId: nextWorkerId };
       await stateStore.save(state);
     }
+  }
+
+  private async emit(event: OrchestrationEvent): Promise<void> {
+    await this.options.onEvent?.(event);
   }
 
   private async handoffToOwner(
