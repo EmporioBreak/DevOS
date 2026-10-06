@@ -6,6 +6,7 @@ export interface RunState {
   currentWorkerId: string;
   completedRuns: number;
   sessions: Record<string, string>;
+  sessionProjectRoots?: Record<string, string>;
   browserWorkersStarted?: string[];
   task?: TaskRef;
   ownerReviewPending?: boolean;
@@ -45,7 +46,7 @@ export type OrchestrationEvent =
       executor: ExecutorKind;
       status: WorkerStatus;
     }
-  | { type: "transition"; from: string; to: string }
+  | { type: "transition"; from: string; to: string }\n  | { type: "worker_session_recovered"; workerId: string; executor: ExecutorKind; reason: string }
   | { type: "owner_handoff"; task: TaskRef };
 
 export interface OrchestratorOptions {
@@ -127,7 +128,20 @@ export class Orchestrator {
       const executor = this.options.executors.get(worker.executor);
       if (!executor) throw new Error(`Missing executor: ${worker.executor}`);
 
-      const sessionId = state.sessions[worker.id];
+      let sessionId = state.sessions[worker.id];
+      if (
+        worker.executor === "codex" &&
+        sessionId &&
+        state.sessionProjectRoots?.[worker.id] !== this.options.projectRoot
+      ) {
+        const sessions = { ...state.sessions };
+        const sessionProjectRoots = { ...(state.sessionProjectRoots ?? {}) };
+        delete sessions[worker.id];
+        delete sessionProjectRoots[worker.id];
+        state = { ...state, sessions, sessionProjectRoots };
+        sessionId = undefined;
+        await stateStore.save(state);
+      }
       const browserWorkerAlreadyStarted =
         worker.executor === "chatgpt_browser" &&
         state.browserWorkersStarted?.includes(worker.id) === true;
@@ -155,7 +169,9 @@ export class Orchestrator {
         session: sessionId ? "resumed" : "fresh",
       });
       const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
-      const output = await executor.run({
+      let output;
+      try {
+        output = await executor.run({
         projectRoot: this.options.projectRoot,
         prompt: buildWorkerPrompt(activeWorkflow, worker),
         ...(sessionId ? { sessionId } : {}),
@@ -174,7 +190,26 @@ export class Orchestrator {
               },
             }
           : {}),
-      });
+        });
+      } catch (error) {
+        if (worker.executor !== "codex" || !sessionId) throw error;
+        const sessions = { ...state.sessions };
+        const sessionProjectRoots = { ...(state.sessionProjectRoots ?? {}) };
+        delete sessions[worker.id];
+        delete sessionProjectRoots[worker.id];
+        state = { ...state, sessions, sessionProjectRoots };
+        await stateStore.save(state);
+        await this.emit({
+          type: "worker_session_recovered",
+          workerId: worker.id,
+          executor: worker.executor,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        output = await executor.run({
+          projectRoot: this.options.projectRoot,
+          prompt: buildWorkerPrompt(activeWorkflow, worker),
+        });
+      }
 
       const sessions =
         output.sessionId === undefined
@@ -189,10 +224,23 @@ export class Orchestrator {
         await stateStore.save(state);
       }
 
+      const sessionProjectRoots =
+        worker.executor === "codex" && output.sessionId
+          ? { ...(state.sessionProjectRoots ?? {}), [worker.id]: this.options.projectRoot }
+          : state.sessionProjectRoots;
       const result = parseDevosResult(output.text);
+      if (worker.executor === "codex" && result.status === "needs_local_worker") {
+        state = { ...state, sessions, ...(sessionProjectRoots ? { sessionProjectRoots } : {}) };
+        await stateStore.save(state);
+        await this.emitTaskStatus(state, "failed");
+        throw new Error(
+          `Worker ${worker.id} uses codex and cannot return needs_local_worker`,
+        );
+      }
       state = {
         ...state,
         sessions,
+        ...(sessionProjectRoots ? { sessionProjectRoots } : {}),
         completedRuns: state.completedRuns + 1,
       };
       await this.emit({
@@ -340,7 +388,9 @@ export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec): strin
     "Put your meaningful work report in the appropriate GitHub Issue, PR, review, or comment.",
     "Do not invent new workers, roles, or routing during execution. The complete worker graph was declared before DevOS started.",
     `Begin every GitHub report with exactly: **DevOS worker:** \`${worker.id}\` (\`${worker.executor}\`)`,
-    'If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_local_worker instead of failed.',
+    worker.executor === "codex"
+      ? "This worker already runs on the local Codex executor. It must not return needs_local_worker; return failed for an unrecoverable local-executor failure."
+      : "If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_local_worker instead of failed.",
     'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_local_worker|failed"}',
   ].join("\n");
 }
