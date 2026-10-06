@@ -74,7 +74,16 @@ export async function runWorkflow(
       "debug",
       `${encodeURIComponent(workflow.task.repo)}-issue-${workflow.task.issue}.jsonl`,
     );
-    debugLog("cli.run", { projectRoot: cwd, task: workflow.task, mode });
+    const runtimePath = process.argv[1] ?? "";
+    debugLog("cli.run", {
+      projectRoot: cwd,
+      task: workflow.task,
+      mode,
+      runtimePath,
+      runtimeMode: runtimePath.includes("/.devos/runtime/")
+        ? "project_local"
+        : "self_host",
+    });
   }
   const commandRunner = new LocalCommandRunner();
   const codex = new CodexExecutor(commandRunner);
@@ -279,6 +288,7 @@ export function isCliEntrypoint(moduleUrl: string, argvPath: string | undefined)
 if (isCliEntrypoint(import.meta.url, process.argv[1])) {
   main().catch(error => {
     const message = error instanceof Error ? error.message : String(error);
+    debugLog("cli.failure", { message });
     process.stderr.write(`DevOS failed: ${message}\n`);
     process.exitCode = 1;
   });
