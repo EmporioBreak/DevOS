@@ -82,7 +82,7 @@ my-project/
 
 В обычном проекте launcher локально разворачивает runtime в `.devos/runtime/`. При каждом явном запуске он сверяет revision этого runtime с текущим `main` DevOS: актуальный runtime переиспользуется без reinstall/rebuild, а устаревший заменяется перед запуском workflow. Обновляется только `.devos/runtime/`; `.devos/config.json` и `.devos/state/` остаются на месте. Проверка выполняется только по вызову `./devos` — никакого `npm -g`, daemon-а, watcher-а или фонового updater-а нет.
 
-В самом checkout `EmporioBreak/DevOS` launcher работает иначе: он распознаёт self-hosting по Git root и `origin`, собирает текущий checkout и запускает его `dist/src/cli.js` напрямую. Вложенная копия `.devos/runtime/` для self-hosting не создаётся и не используется.
+В самом checkout `EmporioBreak/DevOS` launcher работает иначе: он распознаёт self-hosting по Git root и `origin`, перед запуском сверяет локальный source checkout с `origin/main`, затем собирает checkout и запускает его `dist/src/cli.js` напрямую. Clean `main`, который только отстаёт от `origin/main`, обновляется через fast-forward; уже актуальный checkout не двигается. Dirty checkout, другая ветка, detached HEAD, локальный `main` ahead/diverged или неожиданный upstream останавливают запуск с объяснением — launcher не делает автоматических reset/rebase/stash и не выбрасывает локальную работу. Вложенная копия `.devos/runtime/` для self-hosting не создаётся и не используется. Эта проверка, как и refresh обычного project-local runtime, выполняется только при явном вызове `./devos`.
 
 Repo проекта определяется из локального `git remote origin` и сохраняется в `.devos/config.json`.
 
