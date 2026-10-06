@@ -823,3 +823,30 @@ test("connector status distinguishes recovery and terminal failure", () => {
     "Connector terminal_failed; supervisor foreground-or-absent; runtime stopped; local gateway unavailable; ngrok unavailable; restart 5/5; last failure desktop_commander; public reachability not tested.\n",
   );
 });
+
+
+test("live connector ownership without identity is ambiguous, not stale", () => {
+  assert.equal(
+    connectorModule.backgroundOwnershipIsProvable(
+      { pid: 123, projectRoot: "/project" },
+      "/project",
+    ),
+    false,
+  );
+  assert.equal(
+    connectorModule.backgroundOwnershipIsProvable(
+      {
+        pid: 123,
+        projectRoot: "/project",
+        identity: {
+          pid: 123,
+          startTime: "start",
+          executable: "/usr/bin/node",
+          commandLine: "node connector-runner.js /project --background",
+        },
+      },
+      "/project",
+    ),
+    true,
+  );
+});
