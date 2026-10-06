@@ -223,13 +223,13 @@ test('connector bootstrap/build cannot inherit or print runtime/admin keys or de
       await writeFile(path.join(f.project,'src/connector.ts'),'');
       if(bootstrap) await (await import('node:fs/promises')).rm(path.join(f.project,'node_modules'),{recursive:true});
       await executable(path.join(f.root,'bin/npm'),`echo "npm:$*" >> '${f.log}'
-if [ -n "\${CONTROL_PLANE_API_KEY-}\${OPENAI_API_KEY-}\${OPENAI_ADMIN_KEY-}\${DEVOS_DEBUG-}\${NODE_OPTIONS-}" ]; then
+if [ -n "\${NGROK_AUTHTOKEN-}\${OPENAI_API_KEY-}\${DEVOS_CONNECTOR_OWNER_SECRET-}\${DEVOS_DEBUG-}\${NODE_OPTIONS-}" ]; then
   echo "unsafe-env" >> '${f.log}'
 fi
-printf '%s' "\${CONTROL_PLANE_API_KEY-}" >&2
+printf '%s' "\${NGROK_AUTHTOKEN-}" >&2
 if [ "$1 $2" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi`);
       const synthetic='launcher-fake-only';
-      const result=spawnSync(path.join(f.project,'devos'),['connector','status'],{cwd:f.project,env:{...f.env,CONTROL_PLANE_API_KEY:synthetic,OPENAI_API_KEY:synthetic,OPENAI_ADMIN_KEY:synthetic,DEVOS_DEBUG:'1',NODE_OPTIONS:'--no-warnings'},encoding:'utf8'});
+      const result=spawnSync(path.join(f.project,'devos'),['connector','status'],{cwd:f.project,env:{...f.env,NGROK_AUTHTOKEN:synthetic,OPENAI_API_KEY:synthetic,DEVOS_CONNECTOR_OWNER_SECRET:synthetic,DEVOS_DEBUG:'1',NODE_OPTIONS:'--no-warnings'},encoding:'utf8'});
       const log=await readFile(f.log,'utf8');
       assert.equal(result.status,0);
       assert.doesNotMatch(log,/unsafe-env/);
@@ -245,12 +245,12 @@ test('connector external-project runtime bootstrap isolates gh/npm and suppresse
   const f=await fixture();
   try {
     await executable(path.join(f.root,'bin/gh'),`echo "gh:$*" >> '${f.log}'
-if [ -n "\${CONTROL_PLANE_API_KEY-}\${OPENAI_API_KEY-}\${OPENAI_ADMIN_KEY-}\${DEVOS_DEBUG-}\${NODE_OPTIONS-}" ]; then echo unsafe-env >> '${f.log}'; fi
+if [ -n "\${NGROK_AUTHTOKEN-}\${OPENAI_API_KEY-}\${DEVOS_CONNECTOR_OWNER_SECRET-}\${DEVOS_DEBUG-}\${NODE_OPTIONS-}" ]; then echo unsafe-env >> '${f.log}'; fi
 if [ "$1" = "api" ]; then echo current-sha; else mkdir -p "$4/dist/src"; fi`);
     await executable(path.join(f.root,'bin/npm'),`echo "npm:$*" >> '${f.log}'
-if [ -n "\${CONTROL_PLANE_API_KEY-}\${OPENAI_API_KEY-}\${OPENAI_ADMIN_KEY-}\${DEVOS_DEBUG-}\${NODE_OPTIONS-}" ]; then echo unsafe-env >> '${f.log}'; fi
+if [ -n "\${NGROK_AUTHTOKEN-}\${OPENAI_API_KEY-}\${DEVOS_CONNECTOR_OWNER_SECRET-}\${DEVOS_DEBUG-}\${NODE_OPTIONS-}" ]; then echo unsafe-env >> '${f.log}'; fi
 if [ "$1 $2" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi`);
-    const env={...f.env,CONTROL_PLANE_API_KEY:synthetic,OPENAI_ADMIN_KEY:synthetic,DEVOS_DEBUG:'1'};
+    const env={...f.env,NGROK_AUTHTOKEN:synthetic,DEVOS_CONNECTOR_OWNER_SECRET:synthetic,DEVOS_DEBUG:'1'};
     const success=spawnSync(path.join(f.project,'devos'),['connector','status'],{cwd:f.project,env,encoding:'utf8'});
     assert.equal(success.status,0,success.stderr);
     const log=await readFile(f.log,'utf8');assert.doesNotMatch(log,/unsafe-env/);assert.match(log,/npm:ci --ignore-scripts/);

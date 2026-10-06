@@ -37,7 +37,7 @@ import { loadWorkflow } from "./workflow-loader.js";
 import { connector, type ConnectorAction } from "./connector.js";
 
 export type CliCommand =
-  | { kind: "connector"; action: ConnectorAction; tunnelId?: string }
+  | { kind: "connector"; action: ConnectorAction }
   | { kind: "select" }
   | { kind: "run"; mode: "run" | "restart"; target: string };
 
@@ -47,8 +47,8 @@ export function parseCliArgs(args: string[]): CliCommand {
   }
 
   if (args[0] === "connector" && ["setup", "doctor", "run", "status"].includes(args[1] ?? "") &&
-      (args.length === 2 || (args.length === 4 && args[2] === "--tunnel-id" && !!args[3]?.trim()))) {
-    return { kind: "connector", action: args[1] as ConnectorAction, ...(args[3] ? {tunnelId: args[3]} : {}) };
+      args.length === 2) {
+    return { kind: "connector", action: args[1] as ConnectorAction };
   }
   const mode = args[0];
   if (
@@ -60,7 +60,7 @@ export function parseCliArgs(args: string[]): CliCommand {
   }
 
   throw new Error(
-    "Usage: ./devos | ./devos <run|restart> <workflow.json|issue-number> | ./devos connector <setup|doctor|run|status> [--tunnel-id <id>]",
+    "Usage: ./devos | ./devos <run|restart> <workflow.json|issue-number> | ./devos connector <setup|doctor|run|status>",
   );
 }
 
@@ -157,7 +157,7 @@ export async function main(
   const command = parseCliArgs(args);
 
   if (command.kind === "connector") {
-    await connector(command.action, cwd, command.tunnelId);
+    await connector(command.action, cwd);
     return;
   }
 

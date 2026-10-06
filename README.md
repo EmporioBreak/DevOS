@@ -494,46 +494,82 @@ DevOS не выбирает роли или executor-ы из этого файл
 completion не записывается: `FINAL_REVIEW_REQUIRED` оставляет задачу ожидающей
 решения владельца.
 
-## Локальный MCP connector
+## Локальный remote MCP connector
 
-Новый путь: **ChatGPT → OpenAI Secure MCP Tunnel → project-local tunnel-client → stdio Desktop Commander → локальный Mac**. Desktop Commander исполняет файловые и терминальные инструменты локально. Vendor-hosted Remote MCP, его account/device pairing и квота запросов не участвуют. Tunnel — транспорт OpenAI с исходящим HTTPS на `api.openai.com:443`; публичный входящий MCP endpoint не нужен. Доступ к Secure MCP Tunnel должен быть включён для вашей организации/ChatGPT: [официальная инструкция](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
+Путь соединения: **ChatGPT / Codex / OpenCode → HTTPS ngrok → DevOS Streamable HTTP `/mcp` на `127.0.0.1` → локальный stdio Desktop Commander → Mac**. Выполнение файловых и терминальных инструментов остаётся на Mac. Localhost-only соединение отвергнуто: ChatGPT не может обратиться к нему напрямую. OpenAI Secure MCP Tunnel отвергнут из-за привязки транспорта к провайдеру; tunnel-client, tunnel ID и Platform runtime key больше не используются. Hosted Remote Desktop Commander тоже не участвует.
 
 ```bash
 ./devos connector setup
-./devos connector setup --tunnel-id tunnel_0123456789abcdef0123456789abcdef
 ./devos connector doctor
 ./devos connector run
-# В другом терминале:
+# В другом терминале того же проекта:
 ./devos connector status
 ```
 
-`setup` не требует credentials. Используются точные версии `@wonderwhy-er/desktop-commander@0.2.52` (npm lockfile) и OpenAI `tunnel-client v0.0.15`. Go собирает официальный `cmd/client-runtime` с build flavor `runtime`, без cloudflared, в `.devos/tools/tunnel-client`; затем DevOS проверяет `--version`. Нужны Node ≥22, npm и Go с `GOTOOLCHAIN=auto`: этот release требует Go ≥1.27, toolchain автоматически скачивается в `.devos/go`. Go build cache также project-local; глобальные Go/Homebrew настройки не меняются. Бинарники, config и состояние `.devos/` игнорируются Git. Никакой глобальной установки нет.
+Нужны macOS arm64/x64, Node ≥22, npm, `/usr/bin/unzip` и сеть для setup. Desktop Commander точно закреплён на `0.2.52`, MCP SDK — на `1.32.1`, зависимости воспроизводятся lockfile. `setup` устанавливает ngrok **3.39.11** из versioned official archive, проверяет закреплённый SHA256 ([источник checksum](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/n/ngrok.rb)), `ngrok version` и записывает hash установленного binary. Последующие проверки сверяют version и hash. Всё хранится в игнорируемой `.devos/`, глобальная установка и автообновление ngrok не нужны. Setup не требует секретов.
 
-Tunnel ID имеет приоритет: `--tunnel-id`, затем `CONTROL_PLANE_TUNNEL_ID`, затем `.devos/connector/config.json`. `setup --tunnel-id` сохраняет только такой config:
+Gateway по умолчанию слушает `127.0.0.1:8787`, API агента ngrok — `127.0.0.1:4041`. При конфликте портов можно создать `.devos/connector/config.json`:
 
 ```json
-{
-  "version": 1,
-  "tunnelId": "tunnel_0123456789abcdef0123456789abcdef"
-}
+{ "version": 1, "gatewayPort": 8787, "ngrokApiPort": 4041 }
 ```
 
-Runtime API key допускается **только** через `CONTROL_PLANE_API_KEY`. В config нет полей для секретов; неизвестные поля отклоняются. Ключ не передаётся в argv, отчёты или logs. Bootstrap/build команды launcher-а получают только минимальное окружение без runtime/admin ключей и debug/Node/npm настроек; их stdout/stderr подавляются, ошибки показываются фиксированными сообщениями. Окружение Desktop Commander и запускаемых им инструментов очищено от tunnel/admin credentials; upstream telemetry отключена. Вывод tunnel/stdio stderr не пересылается в терминал или debug log: DevOS выдаёт собственные диагностики, чтобы даже ошибочный вывод дочернего процесса не раскрыл ключ.
+Config от прежнего transport-эксперимента нужно заменить на эту схему. Допускаются только эти поля и различные порты 1024–65535; секреты в config запрещены. Ngrok использует отдельный временный config DevOS с отключёнными inspector/logs и не читает пользовательский ngrok config.
 
-`doctor` проверяет локальные версии, config, наличие ключа и доступность lock-порта; credentials в Platform и сетевую связь он не проверяет. `run` ждёт `/readyz` до 30 секунд и остаётся в foreground. Ctrl+C или SIGTERM завершает tunnel и его MCP process group; всей группе даётся до трёх секунд для cleanup, даже если tunnel parent уже завершился, затем применяется принудительное завершение. `status` показывает stopped/running/ready по PID и локальному `/readyz`; это не подтверждение успешного вызова инструментов из ChatGPT. Повторный DevOS connector с тем же tunnel ID запрещён машинным loopback lock-портом, в том числе из другого проекта. Lock и runtime принадлежат отдельному процессу текущего foreground запуска: закрытие stdin pipe при смерти CLI (включая SIGKILL) запускает cleanup, а lock удерживается до окончания завершения группы. Это связь времени жизни через EOF, без daemon-а или опроса владельца. Занятый порт (или hash collision) приводит к отказу; не запускайте тот же ID отдельно через upstream binary на этой или другой машине.
+### Авторизация и запуск
 
-Для live acceptance пользователь самостоятельно создаёт или выбирает Tunnel в OpenAI Platform и runtime key с разрешениями **Tunnels Read + Use**. Не вставляйте ключ в чат, GitHub, shell history или `.env` репозитория. Например, в zsh/macOS можно безопасно прочитать его интерактивно:
+Публичный `/mcp` всегда защищён OAuth: authorization-code + PKCE S256, protected-resource/authorization-server discovery, dynamic client registration, одноразовый code, access token на час и rotating refresh token до 24 часов. Повторное использование refresh token отзывает всё его семейство. Токены привязаны к публичному `/mcp`, а MCP-сессия — к зарегистрированному клиенту. Анонимный/неверный bearer получает 401; до настройки HTTPS issuer gateway закрыт. Не используйте URL как пароль.
+
+`NGROK_AUTHTOKEN` — токен аккаунта ngrok для транспорта. `DEVOS_CONNECTOR_OWNER_SECRET` — **другой**, случайный секрет владельца, минимум 32 байта: он подтверждает выдачу доступа ко всем инструментам Mac на OAuth-странице. Сгенерируйте его в password manager и введите локально; не отправляйте в чат/GitHub. Для zsh безопасный ввод без shell history/argv:
+
+```zsh
+read -rs 'NGROK_AUTHTOKEN?ngrok auth token: '; printf '\n'
+export NGROK_AUTHTOKEN
+read -rs 'DEVOS_CONNECTOR_OWNER_SECRET?Owner secret (32+ bytes): '; printf '\n'
+export DEVOS_CONNECTOR_OWNER_SECRET
+./devos connector doctor
+./devos connector run
+# После остановки:
+unset NGROK_AUTHTOKEN DEVOS_CONNECTOR_OWNER_SECRET
+```
+
+Вывод run содержит только публичный **`https://…/mcp`** и фиксированные диагностики. Секреты остаются в окружении владельца текущего запуска; токены и регистрации — в памяти gateway. Desktop Commander и его инструменты получают очищенное окружение без этих секретов, telemetry отключена. Bootstrap/build также получает минимальное окружение, stdout/stderr зависимостей подавляются. Upstream/ngrok output не пересылается, ngrok request inspector выключен. При остановке временный ngrok config удаляется; никакие credentials не записываются в Git/config/logs.
+
+### Подключение клиентов
+
+В ChatGPT создайте custom MCP connection с **Server URL** из run и OAuth. При поддержке auto-registration client ID/secret вручную не нужны. В открывшейся OAuth-странице проверьте имя клиента и callback; разрешайте только свой доверенный клиент. Введите локальный owner secret в password field — доступ включает чтение/запись файлов и запуск команд. Не выбирайте no-auth. Если конкретный UI требует заранее зарегистрированный client ID, зарегистрируйте клиента через advertised `/register` с callback из этого UI и `token_endpoint_auth_method: "client_secret_post"`; перенесите полученные credentials локально в UI, без чата и публикации. Автоматические тесты проверяют public и confidential client flows; конкретный ChatGPT UI проверяется при live acceptance. [OAuth требования ChatGPT](https://developers.openai.com/plugins/build/auth).
+
+Codex CLI использует тот же remote URL и стандартный OAuth login ([документация](https://developers.openai.com/codex/mcp/)):
+
+```toml
+[mcp_servers.devos]
+url = "https://YOUR-NGROK-HOST/mcp"
+```
 
 ```bash
-read -rs 'CONTROL_PLANE_API_KEY?Runtime API key: '; echo
-export CONTROL_PLANE_API_KEY
-./devos connector run
-# После завершения:
-unset CONTROL_PLANE_API_KEY
+codex mcp login devos
 ```
 
-В ChatGPT создайте custom MCP app с подключением **Tunnel** и тем же tunnel ID. Main agent/пользователь проверяет список tools, `pwd`, `git status` DevOS, чтение файла и безопасное создание/чтение/удаление временного файла. Только после этой проверки отключайте старый hosted connector. Worker-тесты используют контролируемый fake transport и не заменяют эту live acceptance.
+OpenCode поддерживает remote MCP и OAuth ([документация](https://opencode.ai/docs/mcp-servers/)):
 
-Автоматический запуск/остановка connector вместе с обычным `./devos run` **отложен**. Connector запускается отдельно и не меняет run/restart workflow. В source checkout явные connector-команды используют текущую ветку без auto-update; обычный task launcher сохраняет clean-main правила.
+```json
+{ "mcp": { "devos": { "type": "remote", "url": "https://YOUR-NGROK-HOST/mcp", "enabled": true } } }
+```
 
-Атрибуция: Desktop Commander — MIT, © 2024–2025 Eduard Ruzga and Desktop Commander Contributors ([upstream](https://github.com/wonderwhy-er/DesktopCommanderMCP)); Secure MCP Tunnel client — Apache-2.0 ([upstream](https://github.com/openai/tunnel-client/tree/v0.0.15)). Полные лицензии остаются в установленном npm package и официальном Go module. В цепочке Desktop Commander 0.2.52 `npm audit` сообщает 6 moderate и 5 high уязвимостей (включая файловые/PDF/image зависимости); review этого pinned dependency и live acceptance остаются обязательными перед использованием с реальными credentials.
+```bash
+opencode mcp auth devos
+```
+
+На consent-странице обоих клиентов используйте тот же локальный owner secret. Это примеры конфигурации; реальные соединения клиентов ещё требуют live acceptance. После restart все регистрации/токены/сессии отозваны, клиенту нужно повторить OAuth, а при смене ngrok URL — обновить конфигурацию.
+
+### Время жизни и проверки
+
+`run` работает только в foreground и ждёт готовности до 30 секунд. Ctrl+C/SIGTERM останавливает группу gateway/ngrok/Desktop Commander. Отдельный процесс текущего запуска удерживает loopback mutex по каноническому пути проекта; stdin EOF при смерти CLI, включая SIGKILL, запускает cleanup и удерживает lock до конца. Даже если родитель ngrok вышел первым, потомки получают до трёх секунд для завершения, затем группа принудительно останавливается. Второй DevOS connector того же проекта запрещён; занятый lock-порт тоже приводит к отказу. Не запускайте отдельную копию gateway/ngrok вручную.
+
+`doctor` проверяет точные локальные версии/hash, config, наличие auth и lock; действительность ngrok credentials и сеть он не подтверждает. `status` отдельно показывает здоровье локального gateway и регистрацию HTTPS endpoint в локальном ngrok API; внешнюю достижимость не утверждает. Секреты в диагностике отсутствуют. `npx tsx tests/connector-local.smoke.ts` проверяет настоящий локальный stdio/gateway, OAuth, discovery и чтение файла с fake ngrok, без реального публичного endpoint.
+
+Main agent/пользователь после независимого review настраивает ngrok локально, запускает run и проверяет ChatGPT Server URL/OAuth: список tools, `pwd`, `git status` DevOS, чтение файла и безопасное создание/чтение/удаление временного файла. Нужно также подтвердить второй remote-клиент. Только после live успеха отключается старый hosted connector. Worker smoke не заменяет эту проверку. Дополнительный `npx tsx tests/connector-oauth-browser.smoke.ts` проверяет consent в системном Chrome с полностью контролируемым HTTPS origin и loopback callback, не затрагивая worker-сессии.
+
+Автоматический lifecycle вместе с обычным `./devos run` **отложен**. Connector запускается отдельно; run/restart и сохранённые worker-сессии не меняются. В source checkout connector-команды используют текущую ветку без auto-update.
+
+Атрибуция: Desktop Commander — MIT, © 2024–2025 Eduard Ruzga and Desktop Commander Contributors ([upstream](https://github.com/wonderwhy-er/DesktopCommanderMCP)); MCP TypeScript SDK — MIT ([upstream](https://github.com/modelcontextprotocol/typescript-sdk)); ngrok — proprietary CLI ([условия](https://ngrok.com/terms-of-service)). Лицензии npm-пакетов остаются в установленных зависимостях. В pinned цепочке Desktop Commander `npm audit` сохраняет 11 findings: 6 moderate / 5 high; unrelated force-upgrade/downgrade не выполняется.
