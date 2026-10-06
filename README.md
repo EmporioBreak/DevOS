@@ -325,7 +325,7 @@ Workflow может явно указать владельца исходной 
 }
 ```
 
-В режиме `chatgpt_conversation` DevOS после terminal review открывает именно указанный основной conversation URL в той же аутентифицированной браузерной сессии и отправляет короткий machine-oriented запрос на финальную проверку с URL Issue и PR, если он известен. Ответ `approved` завершает задачу; `changes_requested` возвращает workflow к его заранее объявленному `start` worker-у, при этом task-scoped `sessions` сохраняются.
+В режиме `chatgpt_conversation` DevOS после terminal review открывает именно указанный основной conversation URL в той же аутентифицированной браузерной сессии и отправляет короткий machine-oriented запрос на финальную проверку с URL Issue и PR, если он известен. Если workflow стартовал только с Issue, перед handoff DevOS один раз разрешает однозначно связанный PR из GitHub и сохраняет его в том же task-local state, чтобы следующий owner/worker pass использовал тот же task reference. Ответ `approved` завершает задачу; `changes_requested` возвращает workflow к его заранее объявленному `start` worker-у, при этом task-scoped `sessions` сохраняются.
 
 В режиме `parent_process` DevOS не создаёт отдельного acceptance worker-а. Он сохраняет state и завершает worker phase структурированной строкой:
 
