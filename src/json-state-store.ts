@@ -46,6 +46,19 @@ function validateState(value: unknown): RunState {
   }
 
   const record = value as Record<string, unknown>;
+  const task = record.task;
+  const ownerReviewPending = record.ownerReviewPending;
+
+  if (task !== undefined && !isTaskRef(task)) {
+    throw new Error("Invalid DevOS state");
+  }
+  if (
+    ownerReviewPending !== undefined &&
+    typeof ownerReviewPending !== "boolean"
+  ) {
+    throw new Error("Invalid DevOS state");
+  }
+
   if (
     Object.keys(record).some(
       key =>
@@ -60,10 +73,7 @@ function validateState(value: unknown): RunState {
     typeof record.completedRuns !== "number" ||
     !Number.isSafeInteger(record.completedRuns) ||
     record.completedRuns < 0 ||
-    !isSessionMap(record.sessions) ||
-    (record.task !== undefined && !isTaskRef(record.task)) ||
-    (record.ownerReviewPending !== undefined &&
-      typeof record.ownerReviewPending !== "boolean")
+    !isSessionMap(record.sessions)
   ) {
     throw new Error("Invalid DevOS state");
   }
@@ -72,10 +82,8 @@ function validateState(value: unknown): RunState {
     currentWorkerId: record.currentWorkerId,
     completedRuns: record.completedRuns,
     sessions: { ...record.sessions },
-    ...(record.task === undefined ? {} : { task: { ...record.task } }),
-    ...(record.ownerReviewPending === undefined
-      ? {}
-      : { ownerReviewPending: record.ownerReviewPending }),
+    ...(task === undefined ? {} : { task }),
+    ...(ownerReviewPending === undefined ? {} : { ownerReviewPending }),
   };
 }
 
