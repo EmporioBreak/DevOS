@@ -36,7 +36,7 @@ test("emits worker result before routing and marks browser session re-entry", as
   const workflow: Workflow = {
     version: 1,
     task: { repo: "owner/product", issue: 41 },
-    owner: { mode: "parent_process" },
+    owner: { mode: "main_agent" },
     start: "developer",
     workers: [
       {
@@ -82,7 +82,7 @@ test("emits worker result before routing and marks browser session re-entry", as
     { type: "transition", from: "developer", to: "reviewer" },
     { type: "worker_started", workerId: "reviewer", executor: "chatgpt_browser", session: "resumed" },
     { type: "worker_result", workerId: "reviewer", executor: "chatgpt_browser", status: "approved" },
-    { type: "owner_handoff", task: { repo: "owner/product", issue: 41 } },
+    { type: "main_agent_handoff", task: { repo: "owner/product", issue: 41 } },
     { type: "task_status", task: { repo: "owner/product", issue: 41 }, status: "final_review_required" },
   ]);
 });

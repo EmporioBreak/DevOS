@@ -13,14 +13,9 @@ export interface TaskRef {
   pr?: number;
 }
 
-export type TaskOwner =
-  | {
-      mode: "chatgpt_conversation";
-      conversationUrl: string;
-    }
-  | {
-      mode: "parent_process";
-    };
+export interface TaskOwner {
+  mode: "main_agent";
+}
 
 export interface WorkerSpec {
   id: string;

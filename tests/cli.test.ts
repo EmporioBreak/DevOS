@@ -6,13 +6,13 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import type { RunState, StateStore } from "../src/orchestrator.js";
 import {
-  assertOwnerDecisionPending,
+  assertMainAgentDecisionPending,
   chooseReadyTask,
   formatRunResult,
   isCliEntrypoint,
   parseCliArgs,
   parseIssueNumber,
-  parseParentOwnerDecision,
+  parseMainAgentDecision,
   prepareRunState,
 } from "../src/cli.js";
 import type { ReadyTask } from "../src/ready-tasks.js";
@@ -87,26 +87,26 @@ test("recognizes a symlinked package bin as the CLI entry point", async () => {
 });
 
 
-test("parses parent-process final review decisions", () => {
-  assert.equal(parseParentOwnerDecision(undefined), undefined);
-  assert.equal(parseParentOwnerDecision("approved"), "approved");
+test("parses main-agent final review decisions", () => {
+  assert.equal(parseMainAgentDecision(undefined), undefined);
+  assert.equal(parseMainAgentDecision("approved"), "approved");
   assert.equal(
-    parseParentOwnerDecision("changes_requested"),
+    parseMainAgentDecision("changes_requested"),
     "changes_requested",
   );
   assert.throws(
-    () => parseParentOwnerDecision("done"),
+    () => parseMainAgentDecision("done"),
     /DEVOS_OWNER_RESULT must be approved or changes_requested/,
   );
 });
 
 
-test("formats parent-process final review handoff as structured stdout", () => {
+test("formats main-agent final review handoff as structured stdout", () => {
   const line = formatRunResult(
     {
       version: 1,
       task: { repo: "owner/product", issue: 39, pr: 41 },
-      owner: { mode: "parent_process" },
+      owner: { mode: "main_agent" },
       start: "reviewer",
       workers: [
         {
@@ -121,7 +121,7 @@ test("formats parent-process final review handoff as structured stdout", () => {
       currentWorkerId: "reviewer",
       completedRuns: 1,
       sessions: { reviewer: "https://chatgpt.com/c/review" },
-      ownerReviewPending: true,
+      mainAgentReviewPending: true,
     },
   );
 
@@ -132,12 +132,12 @@ test("formats parent-process final review handoff as structured stdout", () => {
 });
 
 
-test("parent-process handoff uses PR resolved during execution", () => {
+test("main-agent handoff uses PR resolved during execution", () => {
   const line = formatRunResult(
     {
       version: 1,
       task: { repo: "owner/product", issue: 39 },
-      owner: { mode: "parent_process" },
+      owner: { mode: "main_agent" },
       start: "reviewer",
       workers: [
         {
@@ -153,7 +153,7 @@ test("parent-process handoff uses PR resolved during execution", () => {
       completedRuns: 1,
       sessions: { reviewer: "https://chatgpt.com/c/review" },
       task: { repo: "owner/product", issue: 39, pr: 40 },
-      ownerReviewPending: true,
+      mainAgentReviewPending: true,
     },
   );
 
@@ -164,14 +164,14 @@ test("parent-process handoff uses PR resolved during execution", () => {
 });
 
 
-test("owner decision requires an existing final-review handoff", () => {
+test("main-agent decision requires an existing final-review handoff", () => {
   assert.throws(
-    () => assertOwnerDecisionPending(null),
+    () => assertMainAgentDecisionPending(null),
     /requires an existing task waiting for final review/,
   );
   assert.throws(
     () =>
-      assertOwnerDecisionPending({
+      assertMainAgentDecisionPending({
         currentWorkerId: "reviewer",
         completedRuns: 1,
         sessions: {},
@@ -180,11 +180,11 @@ test("owner decision requires an existing final-review handoff", () => {
   );
 
   assert.doesNotThrow(() =>
-    assertOwnerDecisionPending({
+    assertMainAgentDecisionPending({
       currentWorkerId: "reviewer",
       completedRuns: 1,
       sessions: {},
-      ownerReviewPending: true,
+      mainAgentReviewPending: true,
     }),
   );
 });

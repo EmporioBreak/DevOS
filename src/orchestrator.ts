@@ -12,7 +12,7 @@ export interface RunState {
   browserWorkersStarted?: string[];
   browserSessionRecovery?: string[];
   task?: TaskRef;
-  ownerReviewPending?: boolean;
+  mainAgentReviewPending?: boolean;
 }
 
 export interface StateStore {
@@ -51,14 +51,14 @@ export type OrchestrationEvent =
     }
   | { type: "transition"; from: string; to: string }
   | { type: "worker_session_recovered"; workerId: string; executor: ExecutorKind; reason: string }
-  | { type: "owner_handoff"; task: TaskRef };
+  | { type: "main_agent_handoff"; task: TaskRef };
 
 export interface OrchestratorOptions {
   projectRoot: string;
   workflow: Workflow;
   executors: Map<string, Executor>;
   stateStore: StateStore;
-  ownerDecision?: "approved" | "changes_requested";
+  mainAgentDecision?: "approved" | "changes_requested";
   resolveTask?: (task: TaskRef) => Promise<TaskRef>;
   onEvent?: (event: OrchestrationEvent) => void | Promise<void>;
 }
@@ -82,11 +82,11 @@ export class Orchestrator {
       state = { ...state, task: workflow.task };
     }
 
-    if (state.ownerReviewPending) {
-      const decision = this.options.ownerDecision;
+    if (state.mainAgentReviewPending) {
+      const decision = this.options.mainAgentDecision;
       if (!decision) {
         await this.emit({
-          type: "owner_handoff",
+          type: "main_agent_handoff",
           task: state.task ?? workflow.task,
         });
         await this.emitTaskStatus(state, "final_review_required");
@@ -127,7 +127,7 @@ export class Orchestrator {
         task: state.task ?? workflow.task,
       };
       await stateStore.save(state);
-      await this.emit({ type: "transition", from: "owner", to: workflow.start });
+      await this.emit({ type: "transition", from: "main_agent", to: workflow.start });
       await this.emitTaskStatus(state, "running", true);
     } else {
       await this.emitTaskStatus(state, "running", persistedState !== null);
@@ -347,11 +347,11 @@ export class Orchestrator {
 
         if (workflow.owner) {
           await this.emit({
-            type: "owner_handoff",
+            type: "main_agent_handoff",
             task: state.task ?? workflow.task,
           });
         }
-        const ownerResult = await this.handoffToOwner(state);
+        const ownerResult = workflow.owner ? "final_review_required" : "approved";
         if (ownerResult === "approved") {
           await this.emitTaskStatus(state, "completed");
           await stateStore.clear();
@@ -359,7 +359,7 @@ export class Orchestrator {
         }
 
         if (ownerResult === "final_review_required") {
-          state = { ...state, ownerReviewPending: true };
+          state = { ...state, mainAgentReviewPending: true };
           await stateStore.save(state);
           await this.emitTaskStatus(state, "final_review_required");
           return state;
@@ -380,7 +380,7 @@ export class Orchestrator {
           task: state.task ?? workflow.task,
         };
         await stateStore.save(state);
-        await this.emit({ type: "transition", from: "owner", to: workflow.start });
+        await this.emit({ type: "transition", from: "main_agent", to: workflow.start });
         await this.emitTaskStatus(state, "running", true);
         continue;
       }
@@ -412,35 +412,6 @@ export class Orchestrator {
     });
   }
 
-  private async handoffToOwner(
-    state: RunState,
-  ): Promise<"approved" | "changes_requested" | "final_review_required"> {
-    const { workflow } = this.options;
-    const owner = workflow.owner;
-    const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
-
-    if (!owner) return "approved";
-    if (owner.mode === "parent_process") return "final_review_required";
-
-    const executor = this.options.executors.get("chatgpt_browser");
-    if (!executor) throw new Error("Missing executor: chatgpt_browser");
-
-    const output = await executor.run({
-      projectRoot: this.options.projectRoot,
-      prompt: buildOwnerPrompt(activeWorkflow),
-      sessionId: owner.conversationUrl,
-    });
-    const result = parseDevosResult(output.text);
-
-    if (result.status === "approved" || result.status === "changes_requested") {
-      return result.status;
-    }
-
-    await this.options.stateStore.save(state);
-    throw new Error(
-      `Task owner returned unsupported final-review status: ${result.status}`,
-    );
-  }
 }
 
 export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec): string {
@@ -461,21 +432,5 @@ export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec): strin
       ? "This worker already runs on the local Codex executor. It must not return needs_local_worker; return failed for an unrecoverable local-executor failure."
       : "If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_local_worker instead of failed.",
     'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_local_worker|failed"}',
-  ].join("\n");
-}
-
-export function buildOwnerPrompt(workflow: Workflow): string {
-  const issueUrl = `https://github.com/${workflow.task.repo}/issues/${workflow.task.issue}`;
-  const prUrl = workflow.task.pr
-    ? `https://github.com/${workflow.task.repo}/pull/${workflow.task.pr}`
-    : null;
-
-  return [
-    "DevOS worker phase is ready for final task-level review.",
-    `Issue: ${issueUrl}`,
-    ...(prUrl ? [`PR: ${prUrl}`] : []),
-    "Perform final acceptance in this owning conversation.",
-    "Return changes_requested if more work is required; otherwise return approved.",
-    'End your response with exactly one line: DEVOS_RESULT {"status":"approved|changes_requested"}',
   ].join("\n");
 }

@@ -37,7 +37,7 @@ test("resolves a PR created after an Issue-only workflow started", async () => {
     "--repo",
     "owner/product",
     "--state",
-    "all",
+    "open",
     "--search",
     "#39 in:body",
     "--limit",
@@ -85,6 +85,38 @@ test("does not guess when several non-closing PRs mention the Issue", async () =
     ),
     { repo: "owner/product", issue: 39 },
   );
+});
+
+test("selects the open task PR instead of a merged stale incidental mention", async () => {
+  const calls: string[][] = [];
+  const runner: CommandRunner = {
+    async run(_command, args) {
+      calls.push(args);
+      const state = args[args.indexOf("--state") + 1];
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify(
+          state === "open"
+            ? [{ number: 56, body: "Implements the requested owner handoff. Related to #42." }]
+            : [
+                { number: 53, body: "Started while investigating #42; unrelated bootstrap fix." },
+                { number: 56, body: "Implements the requested owner handoff. Related to #42." },
+              ],
+        ),
+        stderr: "",
+      };
+    },
+  };
+
+  assert.deepEqual(
+    await resolveTaskReference(
+      { repo: "EmporioBreak/DevOS", issue: 42 },
+      "/project",
+      runner,
+    ),
+    { repo: "EmporioBreak/DevOS", issue: 42, pr: 56 },
+  );
+  assert.equal(calls[0]?.[calls[0]?.indexOf("--state") + 1], "open");
 });
 
 test("keeps a preconfigured PR without querying GitHub", async () => {

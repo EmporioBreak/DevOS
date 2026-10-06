@@ -57,7 +57,7 @@ test("parses needs_local_worker routes in a valid workflow", () => {
   );
 });
 
-test("parses both task owner modes", () => {
+test("parses main_agent as the task owner", () => {
   const base = {
     version: 1,
     task: { repo: "owner/product", issue: 7 },
@@ -73,46 +73,32 @@ test("parses both task owner modes", () => {
   };
 
   assert.deepEqual(
-    parseWorkflow({
-      ...base,
-      owner: {
-        mode: "chatgpt_conversation",
-        conversationUrl: "https://chatgpt.com/c/main-task",
-      },
-    }).owner,
-    {
-      mode: "chatgpt_conversation",
-      conversationUrl: "https://chatgpt.com/c/main-task",
-    },
-  );
-
-  assert.deepEqual(
-    parseWorkflow({ ...base, owner: { mode: "parent_process" } }).owner,
-    { mode: "parent_process" },
+    parseWorkflow({ ...base, owner: { mode: "main_agent" } }).owner,
+    { mode: "main_agent" },
   );
 });
 
-test("rejects a ChatGPT owner URL that is not a conversation", () => {
+test("rejects legacy owner modes with a migration hint", () => {
+  const base = {
+    version: 1,
+    task: { repo: "owner/product", issue: 7 },
+    start: "developer",
+    workers: [
+      {
+        id: "developer",
+        executor: "chatgpt_browser",
+        prompt: "Implement.",
+        on: { done: null },
+      },
+    ],
+  };
   assert.throws(
-    () =>
-      parseWorkflow({
-        version: 1,
-        task: { repo: "owner/product", issue: 7 },
-        owner: {
-          mode: "chatgpt_conversation",
-          conversationUrl: "https://chatgpt.com/",
-        },
-        start: "developer",
-        workers: [
-          {
-            id: "developer",
-            executor: "chatgpt_browser",
-            prompt: "Implement.",
-            on: { done: null },
-          },
-        ],
-      }),
-    /must identify a ChatGPT conversation/,
+    () => parseWorkflow({ ...base, owner: { mode: "chatgpt_conversation", conversationUrl: "https://chatgpt.com/c/main-task" } }),
+    /unsupported mode: chatgpt_conversation.*main_agent/,
+  );
+  assert.throws(
+    () => parseWorkflow({ ...base, owner: { mode: "parent_process" } }),
+    /unsupported mode: parent_process.*main_agent/,
   );
 });
 

@@ -1,5 +1,4 @@
 import { readFile } from "node:fs/promises";
-import { validateChatGptUrl } from "./browser-config.js";
 import type {
   ExecutorKind,
   TaskOwner,
@@ -92,34 +91,14 @@ function parseOwner(value: unknown): TaskOwner {
   const record = asRecord(value, "Workflow owner");
   const mode = requireNonEmptyString(record.mode, "Workflow owner mode");
 
-  if (mode === "parent_process") {
+  if (mode === "main_agent") {
     if (Object.keys(record).some(key => key !== "mode")) {
-      throw new Error("Workflow parent_process owner has unsupported fields");
+      throw new Error("Workflow main_agent owner has unsupported fields");
     }
     return { mode };
   }
 
-  if (mode === "chatgpt_conversation") {
-    if (
-      Object.keys(record).some(
-        key => key !== "mode" && key !== "conversationUrl",
-      )
-    ) {
-      throw new Error("Workflow chatgpt_conversation owner has unsupported fields");
-    }
-
-    const conversationUrl = requireNonEmptyString(
-      record.conversationUrl,
-      "Workflow owner conversationUrl",
-    );
-    const url = validateChatGptUrl(conversationUrl);
-    if (!/\/c\/[^/?#]+/.test(url.pathname)) {
-      throw new Error("Workflow owner conversationUrl must identify a ChatGPT conversation");
-    }
-    return { mode, conversationUrl: url.href };
-  }
-
-  throw new Error(`Workflow owner has unsupported mode: ${mode}`);
+  throw new Error(`Workflow owner has unsupported mode: ${mode}; use main_agent`);
 }
 
 function parseWorker(value: unknown): WorkerSpec {

@@ -30,7 +30,7 @@ test("FINAL_REVIEW_REQUIRED leaves completion unmarked until approval", async ()
       currentWorkerId: "reviewer",
       completedRuns: 1,
       sessions: {},
-      ownerReviewPending: true,
+      mainAgentReviewPending: true,
     };
     await recordTaskCompletion(root, 37, pendingReview);
     assert.equal(await isTaskCompleted(root, 37), false);

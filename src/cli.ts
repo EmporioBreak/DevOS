@@ -104,8 +104,8 @@ export async function runWorkflow(
       `Issue #${workflow.task.issue} is already completed; use restart to replan and run it again`,
     );
   }
-  const ownerDecision = workflow.owner?.mode === "parent_process"
-    ? parseParentOwnerDecision(process.env.DEVOS_OWNER_RESULT)
+  const mainAgentDecision = workflow.owner?.mode === "main_agent"
+    ? parseMainAgentDecision(process.env.DEVOS_OWNER_RESULT)
     : undefined;
 
   try {
@@ -117,7 +117,7 @@ export async function runWorkflow(
         ["chatgpt_browser", chatgpt],
       ]),
       stateStore,
-      ...(ownerDecision ? { ownerDecision } : {}),
+      ...(mainAgentDecision ? { mainAgentDecision } : {}),
       resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
       onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
     }).run();
@@ -183,18 +183,18 @@ export async function main(
   if (issue !== null) {
     const runner = new LocalCommandRunner();
     const config = await loadOrCreateProjectConfig(cwd, runner);
-    const ownerDecision = parseParentOwnerDecision(process.env.DEVOS_OWNER_RESULT);
+    const mainAgentDecision = parseMainAgentDecision(process.env.DEVOS_OWNER_RESULT);
     const task = await loadReadyTask(
       config,
       issue,
       cwd,
       runner,
-      ownerDecision !== undefined,
+      mainAgentDecision !== undefined,
       command.mode === "restart",
     );
-    if (ownerDecision !== undefined) {
+    if (mainAgentDecision !== undefined) {
       const pendingState = await new JsonStateStore(cwd, task.workflow.task).load();
-      assertOwnerDecisionPending(pendingState);
+      assertMainAgentDecisionPending(pendingState);
     }
     const state = await runWorkflow(task.workflow, command.mode, cwd, config);
     writeRunResult(task.workflow, state, `#${task.issue}`);
@@ -231,8 +231,8 @@ export function formatOrchestrationEvent(event: OrchestrationEvent): string {
       return event.executor === "chatgpt_browser"
         ? `[${event.workerId}] ${event.executor} — saved session unusable; recovering in configured Project\n`
         : `[${event.workerId}] ${event.executor} — saved session unusable; starting fresh in project root\n`;
-    case "owner_handoff":
-      return "Owner handoff\n";
+    case "main_agent_handoff":
+      return "Main agent handoff\n";
   }
 }
 
@@ -245,7 +245,7 @@ export function formatRunResult(
   state: RunState,
   label?: string,
 ): string {
-  if (state.ownerReviewPending) {
+  if (state.mainAgentReviewPending) {
     return `DEVOS_OWNER_HANDOFF ${JSON.stringify({
       status: "FINAL_REVIEW_REQUIRED",
       task: state.task ?? workflow.task,
@@ -264,7 +264,7 @@ export function writeRunResult(
   process.stdout.write(formatRunResult(workflow, state, label));
 }
 
-export function parseParentOwnerDecision(
+export function parseMainAgentDecision(
   value: string | undefined,
 ): "approved" | "changes_requested" | undefined {
   const decision = value?.trim();
@@ -275,8 +275,8 @@ export function parseParentOwnerDecision(
   throw new Error("DEVOS_OWNER_RESULT must be approved or changes_requested");
 }
 
-export function assertOwnerDecisionPending(state: RunState | null): void {
-  if (!state?.ownerReviewPending) {
+export function assertMainAgentDecisionPending(state: RunState | null): void {
+  if (!state?.mainAgentReviewPending) {
     throw new Error(
       "DEVOS_OWNER_RESULT requires an existing task waiting for final review",
     );

@@ -38,7 +38,7 @@ export async function clearTaskCompleted(
 }
 
 export function isTerminallyApproved(state: RunState): boolean {
-  return state.ownerReviewPending !== true;
+  return state.mainAgentReviewPending !== true;
 }
 
 export async function recordTaskCompletion(

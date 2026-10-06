@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -81,7 +81,7 @@ test("persists a PR resolved during task execution", async () => {
         reviewer: "https://chatgpt.com/c/review",
       },
       task: { repo: "owner/product", issue: 39, pr: 40 },
-      ownerReviewPending: true,
+      mainAgentReviewPending: true,
     });
 
     assert.deepEqual(await store.load(), {
@@ -92,8 +92,38 @@ test("persists a PR resolved during task execution", async () => {
         reviewer: "https://chatgpt.com/c/review",
       },
       task: { repo: "owner/product", issue: 39, pr: 40 },
-      ownerReviewPending: true,
+      mainAgentReviewPending: true,
     });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loads a saved legacy owner handoff as a main-agent handoff", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-state-"));
+
+  try {
+    const store = new JsonStateStore(root, { repo: "owner/product", issue: 42 });
+    await mkdir(join(root, ".devos", "state"), { recursive: true });
+    await writeFile(
+      store.path,
+      JSON.stringify({
+        currentWorkerId: "reviewer",
+        completedRuns: 1,
+        sessions: { reviewer: "review-session" },
+        ownerReviewPending: true,
+      }),
+    );
+
+    assert.deepEqual(await store.load(), {
+      currentWorkerId: "reviewer",
+      completedRuns: 1,
+      sessions: { reviewer: "review-session" },
+      mainAgentReviewPending: true,
+    });
+    await store.save((await store.load())!);
+    assert.match(await readFile(store.path, "utf8"), /"mainAgentReviewPending": true/);
+    assert.doesNotMatch(await readFile(store.path, "utf8"), /"ownerReviewPending"/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
