@@ -81,7 +81,7 @@ export function connectorConfig(config: unknown): {
     ("version" in config && config.version !== 1)
   )
     throw new Error(
-      "Invalid connector config; allowed fields: version: 1, gatewayPort, ngrokApiPort. Secrets stay environment-only.",
+      "Invalid connector config; allowed fields: version: 1, gatewayPort, ngrokApiPort. Secrets belong in process environment or project .env.",
     );
   const c = config as { gatewayPort?: number; ngrokApiPort?: number };
   const gatewayPort = c.gatewayPort ?? 8787,
@@ -701,8 +701,8 @@ export async function connector(
           }
         });
         const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null; component?: string; message?: string }>((ok) => {
-          runtime.once("error", () => ok({ code: -1, signal: null, ...failure }));
-          runtime.once("exit", (code, signal) => ok({ code, signal, ...failure }));
+          runtime.once("error", () => ok({ code: -1, signal: null, ...(failure ?? {}) }));
+          runtime.once("exit", (code, signal) => ok({ code, signal, ...(failure ?? {}) }));
         });
         const ready = new Promise<{ pid: number; publicUrl: string }>((ok, fail) => {
           const timeout = setTimeout(
@@ -793,10 +793,12 @@ export async function connectorRuntime(root: string) {
       },
       });
     } catch (error) {
-      throw Object.assign(
-        error instanceof Error ? error : new Error("Gateway startup failed."),
-        { component: "desktop_commander" },
-      );
+      const failure = error instanceof Error ? error : new Error("Gateway startup failed.");
+      throw Object.assign(failure, {
+        component: /Desktop Commander/i.test(failure.message)
+          ? "desktop_commander"
+          : "gateway",
+      });
     }
     if (stopping && failureComponent) {
       throw Object.assign(new Error("Desktop Commander transport closed unexpectedly."), {
