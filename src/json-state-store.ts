@@ -48,14 +48,20 @@ function validateState(value: unknown): RunState {
   const record = value as Record<string, unknown>;
   if (
     Object.keys(record).some(
-      key => key !== "currentWorkerId" && key !== "completedRuns" && key !== "sessions",
+      key =>
+        key !== "currentWorkerId" &&
+        key !== "completedRuns" &&
+        key !== "sessions" &&
+        key !== "ownerReviewPending",
     ) ||
     typeof record.currentWorkerId !== "string" ||
     !record.currentWorkerId.trim() ||
     typeof record.completedRuns !== "number" ||
     !Number.isSafeInteger(record.completedRuns) ||
     record.completedRuns < 0 ||
-    !isSessionMap(record.sessions)
+    !isSessionMap(record.sessions) ||
+    (record.ownerReviewPending !== undefined &&
+      typeof record.ownerReviewPending !== "boolean")
   ) {
     throw new Error("Invalid DevOS state");
   }
@@ -64,6 +70,9 @@ function validateState(value: unknown): RunState {
     currentWorkerId: record.currentWorkerId,
     completedRuns: record.completedRuns,
     sessions: { ...record.sessions },
+    ...(record.ownerReviewPending === undefined
+      ? {}
+      : { ownerReviewPending: record.ownerReviewPending }),
   };
 }
 
