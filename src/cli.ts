@@ -88,6 +88,7 @@ export async function runWorkflow(
   cwd: string,
   config?: ProjectConfig,
 ): Promise<RunState> {
+  if (config) assertWorkflowMatchesProject(workflow, config);
   if (process.env.DEVOS_DEBUG === "1") {
     process.env.DEVOS_DEBUG_FILE = join(
       cwd,
@@ -141,6 +142,15 @@ export async function runWorkflow(
     return state;
   } finally {
     await chatgpt.close();
+  }
+}
+
+export function assertWorkflowMatchesProject(
+  workflow: Workflow,
+  config: ProjectConfig,
+): void {
+  if (workflow.task.repo !== config.repo) {
+    throw new Error(`Workflow repository ${workflow.task.repo} does not match current project ${config.repo}`);
   }
 }
 
