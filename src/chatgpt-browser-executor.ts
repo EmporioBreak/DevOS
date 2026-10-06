@@ -60,13 +60,19 @@ export class ChatGptBrowserExecutor implements Executor {
       assertChatGptProjectScope(this.config.projectUrl, request.sessionId, true);
     }
     debugLog("browser.session", { decision: request.sessionId ? "resume" : "fresh", requestedUrl: url, projectRoot: request.projectRoot });
-    const { page, prepared: preparedMessage } = await this.prepare(request, !!projectScope);
+    const {
+      page,
+      prepared: preparedMessage,
+      getBackendFailure,
+    } = await this.prepare(request, !!projectScope);
     let mayHaveSubmitted = false;
     try {
       let submissionStarted!: () => void;
       const submission = new Promise<void>(resolve => { submissionStarted = resolve; });
       const assertSubmissionScope = () => {
         try {
+          const backendFailure = getBackendFailure();
+          if (backendFailure) throw backendFailure;
           if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), request.sessionId !== undefined);
           if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation before submission");
           mayHaveSubmitted = true;
@@ -128,13 +134,21 @@ export class ChatGptBrowserExecutor implements Executor {
     if (context) await context.close();
   }
 
-  private async prepare(request: WorkerRequest, enforceScope: boolean): Promise<{ page: Page; prepared: PreparedMessage }> {
+  private async prepare(
+    request: WorkerRequest,
+    enforceScope: boolean,
+  ): Promise<{
+    page: Page;
+    prepared: PreparedMessage;
+    getBackendFailure: () => Error | undefined;
+  }> {
     const url = request.sessionId ?? this.config.projectUrl;
     const deadline = Date.now() + Math.min(this.timeoutMs, 45_000);
     for (let attempt = 1; attempt <= 3; attempt++) {
       let page: Page | undefined;
       let phase = "context";
       let expired = false;
+      let backendFailure: Error | undefined;
       const budget = Math.min(15_000, deadline - Date.now());
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -146,7 +160,6 @@ export class ChatGptBrowserExecutor implements Executor {
           page = await context.newPage();
           if (expired) { await page.close(); throw new Error("Timeout: preparation deadline exhausted"); }
           const currentPage = page;
-          let backendFailure: Error | undefined;
           currentPage.on("response", response => {
             const target = new URL(response.url());
             const status = response.status();
@@ -195,8 +208,13 @@ export class ChatGptBrowserExecutor implements Executor {
           this.assertIdentity(request, currentPage, enforceScope);
           phase = "prepare-message";
           const prepared = await prepareMessage(currentPage, request.prompt, budget);
+          if (backendFailure) throw backendFailure;
           this.assertIdentity(request, currentPage, enforceScope);
-          return { page: currentPage, prepared };
+          return {
+            page: currentPage,
+            prepared,
+            getBackendFailure: () => backendFailure,
+          };
         };
         const outcome = await Promise.race([
           preparation(),
@@ -206,8 +224,9 @@ export class ChatGptBrowserExecutor implements Executor {
         return outcome;
       } catch (error) {
         expired = true;
-        const cause = error instanceof Error ? error.message : String(error);
-        const transient = isTransientBrowserFailure(error);
+        const effectiveError = backendFailure ?? error;
+        const cause = effectiveError instanceof Error ? effectiveError.message : String(effectiveError);
+        const transient = isTransientBrowserFailure(effectiveError);
         await closeBeforeDeadline(() => page?.close() ?? Promise.resolve(), deadline);
         if (/closed|crashed|disconnected/i.test(cause)) {
           await closeBeforeDeadline(() => this.close(), deadline);
