@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { validateChatGptUrl } from "./browser-config.js";
 import type { CommandRunner } from "./command-runner.js";
 import type { Workflow } from "./workflow.js";
 import { parseWorkflow } from "./workflow-loader.js";
@@ -9,6 +10,7 @@ const TASK_MARKER = "<!-- DEVOS_TASK_V1 -->";
 export interface ProjectConfig {
   version: 1;
   repo: string;
+  chatgptProjectUrl?: string;
 }
 
 export interface ReadyTask {
@@ -244,12 +246,25 @@ function parseProjectConfig(value: unknown): ProjectConfig {
   }
   const record = value as Record<string, unknown>;
   if (
+    Object.keys(record).some(
+      key => key !== "version" && key !== "repo" && key !== "chatgptProjectUrl",
+    ) ||
     record.version !== 1 ||
     typeof record.repo !== "string" ||
-    !/^[^/\s]+\/[^/\s]+$/.test(record.repo)
+    !/^[^/\s]+\/[^/\s]+$/.test(record.repo) ||
+    (record.chatgptProjectUrl !== undefined &&
+      typeof record.chatgptProjectUrl !== "string")
   ) {
     throw new Error("Invalid .devos/config.json");
   }
+
+  if (record.chatgptProjectUrl !== undefined) {
+    const value = record.chatgptProjectUrl.trim();
+    if (!value) throw new Error("Invalid .devos/config.json");
+    validateChatGptUrl(value);
+    return { version: 1, repo: record.repo, chatgptProjectUrl: value };
+  }
+
   return { version: 1, repo: record.repo };
 }
 

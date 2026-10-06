@@ -46,9 +46,27 @@ function validateState(value: unknown): RunState {
   }
 
   const record = value as Record<string, unknown>;
+  const task = record.task;
+  const ownerReviewPending = record.ownerReviewPending;
+
+  if (task !== undefined && !isTaskRef(task)) {
+    throw new Error("Invalid DevOS state");
+  }
+  if (
+    ownerReviewPending !== undefined &&
+    typeof ownerReviewPending !== "boolean"
+  ) {
+    throw new Error("Invalid DevOS state");
+  }
+
   if (
     Object.keys(record).some(
-      key => key !== "currentWorkerId" && key !== "completedRuns" && key !== "sessions",
+      key =>
+        key !== "currentWorkerId" &&
+        key !== "completedRuns" &&
+        key !== "sessions" &&
+        key !== "task" &&
+        key !== "ownerReviewPending",
     ) ||
     typeof record.currentWorkerId !== "string" ||
     !record.currentWorkerId.trim() ||
@@ -64,7 +82,28 @@ function validateState(value: unknown): RunState {
     currentWorkerId: record.currentWorkerId,
     completedRuns: record.completedRuns,
     sessions: { ...record.sessions },
+    ...(task === undefined ? {} : { task }),
+    ...(ownerReviewPending === undefined ? {} : { ownerReviewPending }),
   };
+}
+
+function isTaskRef(value: unknown): value is TaskRef {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    Object.keys(record).every(
+      key => key === "repo" || key === "issue" || key === "pr",
+    ) &&
+    typeof record.repo === "string" &&
+    /^[^/\s]+\/[^/\s]+$/.test(record.repo) &&
+    typeof record.issue === "number" &&
+    Number.isSafeInteger(record.issue) &&
+    record.issue > 0 &&
+    (record.pr === undefined ||
+      (typeof record.pr === "number" &&
+        Number.isSafeInteger(record.pr) &&
+        record.pr > 0))
+  );
 }
 
 function isSessionMap(value: unknown): value is Record<string, string> {

@@ -57,6 +57,65 @@ test("parses needs_host routes in a valid workflow", () => {
   );
 });
 
+test("parses both task owner modes", () => {
+  const base = {
+    version: 1,
+    task: { repo: "owner/product", issue: 7 },
+    start: "developer",
+    workers: [
+      {
+        id: "developer",
+        executor: "chatgpt_browser",
+        prompt: "Implement.",
+        on: { done: null },
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    parseWorkflow({
+      ...base,
+      owner: {
+        mode: "chatgpt_conversation",
+        conversationUrl: "https://chatgpt.com/c/main-task",
+      },
+    }).owner,
+    {
+      mode: "chatgpt_conversation",
+      conversationUrl: "https://chatgpt.com/c/main-task",
+    },
+  );
+
+  assert.deepEqual(
+    parseWorkflow({ ...base, owner: { mode: "parent_process" } }).owner,
+    { mode: "parent_process" },
+  );
+});
+
+test("rejects a ChatGPT owner URL that is not a conversation", () => {
+  assert.throws(
+    () =>
+      parseWorkflow({
+        version: 1,
+        task: { repo: "owner/product", issue: 7 },
+        owner: {
+          mode: "chatgpt_conversation",
+          conversationUrl: "https://chatgpt.com/",
+        },
+        start: "developer",
+        workers: [
+          {
+            id: "developer",
+            executor: "chatgpt_browser",
+            prompt: "Implement.",
+            on: { done: null },
+          },
+        ],
+      }),
+    /must identify a ChatGPT conversation/,
+  );
+});
+
 test("rejects unknown workers in routes", () => {
   assert.throws(
     () =>
@@ -97,7 +156,6 @@ test("rejects unsupported executors", () => {
   );
 });
 
-
 test("rejects undeclared host fallback workers", () => {
   assert.throws(
     () =>
@@ -117,7 +175,6 @@ test("rejects undeclared host fallback workers", () => {
     /routes to unknown worker: local_developer/,
   );
 });
-
 
 test("rejects non-null failed routes", () => {
   assert.throws(

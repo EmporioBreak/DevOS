@@ -15,6 +15,18 @@ test("loads deterministic browser defaults", () => {
   assert.equal(config.headless, false);
 });
 
+test("project-local ChatGPT Project URL overrides environment fallback", () => {
+  const config = loadChatGptBrowserConfig(
+    {
+      DEVOS_CHATGPT_PROJECT_URL: "https://chatgpt.com/g/environment/",
+      DEVOS_BROWSER_PROFILE_DIR: "/tmp/devos-profile",
+    },
+    "https://chatgpt.com/g/project/c/",
+  );
+
+  assert.equal(config.projectUrl, "https://chatgpt.com/g/project/c/");
+});
+
 test("only accepts ChatGPT https hosts", () => {
   assert.equal(validateChatGptUrl("https://chatgpt.com/c/abc").hostname, "chatgpt.com");
   assert.throws(() => validateChatGptUrl("https://example.com/"), /Invalid ChatGPT URL/);

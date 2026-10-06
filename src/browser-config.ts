@@ -10,8 +10,12 @@ export interface ChatGptBrowserConfig {
 
 export function loadChatGptBrowserConfig(
   env: Record<string, string | undefined> = process.env,
+  projectUrlOverride?: string,
 ): ChatGptBrowserConfig {
-  const projectUrl = env.DEVOS_CHATGPT_PROJECT_URL?.trim() || "https://chatgpt.com/";
+  const projectUrl =
+    projectUrlOverride?.trim() ||
+    env.DEVOS_CHATGPT_PROJECT_URL?.trim() ||
+    "https://chatgpt.com/";
   validateChatGptUrl(projectUrl);
 
   const headless = env.DEVOS_BROWSER_HEADLESS?.trim() || "0";

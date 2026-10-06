@@ -13,6 +13,15 @@ export interface TaskRef {
   pr?: number;
 }
 
+export type TaskOwner =
+  | {
+      mode: "chatgpt_conversation";
+      conversationUrl: string;
+    }
+  | {
+      mode: "parent_process";
+    };
+
 export interface WorkerSpec {
   id: string;
   executor: ExecutorKind;
@@ -23,6 +32,7 @@ export interface WorkerSpec {
 export interface Workflow {
   version: 1;
   task: TaskRef;
+  owner?: TaskOwner;
   start: string;
   workers: WorkerSpec[];
 }

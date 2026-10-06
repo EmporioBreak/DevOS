@@ -1,11 +1,13 @@
 import type { Executor } from "./executor.js";
 import { parseDevosResult } from "./result.js";
-import type { Workflow, WorkerSpec } from "./workflow.js";
+import type { TaskRef, Workflow, WorkerSpec } from "./workflow.js";
 
 export interface RunState {
   currentWorkerId: string;
   completedRuns: number;
   sessions: Record<string, string>;
+  task?: TaskRef;
+  ownerReviewPending?: boolean;
 }
 
 export interface StateStore {
@@ -19,6 +21,8 @@ export interface OrchestratorOptions {
   workflow: Workflow;
   executors: Map<string, Executor>;
   stateStore: StateStore;
+  ownerDecision?: "approved" | "changes_requested";
+  resolveTask?: (task: TaskRef) => Promise<TaskRef>;
 }
 
 export class Orchestrator {
@@ -32,7 +36,36 @@ export class Orchestrator {
         currentWorkerId: workflow.start,
         completedRuns: 0,
         sessions: {},
+        task: workflow.task,
       };
+
+    if (!state.task) {
+      state = { ...state, task: workflow.task };
+    }
+
+    if (state.ownerReviewPending) {
+      const decision = this.options.ownerDecision;
+      if (!decision) return state;
+
+      if (decision === "approved") {
+        const completed = {
+          currentWorkerId: state.currentWorkerId,
+          completedRuns: state.completedRuns,
+          sessions: state.sessions,
+          task: state.task ?? workflow.task,
+        };
+        await stateStore.clear();
+        return completed;
+      }
+
+      state = {
+        currentWorkerId: workflow.start,
+        completedRuns: state.completedRuns,
+        sessions: state.sessions,
+        task: state.task ?? workflow.task,
+      };
+      await stateStore.save(state);
+    }
 
     while (true) {
       const worker = workers.get(state.currentWorkerId);
@@ -42,9 +75,10 @@ export class Orchestrator {
       if (!executor) throw new Error(`Missing executor: ${worker.executor}`);
 
       const sessionId = state.sessions[worker.id];
+      const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
       const output = await executor.run({
         projectRoot: this.options.projectRoot,
-        prompt: buildWorkerPrompt(workflow, worker),
+        prompt: buildWorkerPrompt(activeWorkflow, worker),
         ...(sessionId ? { sessionId } : {}),
       });
 
@@ -78,8 +112,36 @@ export class Orchestrator {
       }
 
       if (nextWorkerId === null || nextWorkerId === undefined) {
-        await stateStore.clear();
-        return state;
+        if (
+          workflow.owner &&
+          state.task?.pr === undefined &&
+          this.options.resolveTask
+        ) {
+          const task = await this.options.resolveTask(state.task ?? workflow.task);
+          state = { ...state, task };
+          await stateStore.save(state);
+        }
+
+        const ownerResult = await this.handoffToOwner(state);
+        if (ownerResult === "approved") {
+          await stateStore.clear();
+          return state;
+        }
+
+        if (ownerResult === "final_review_required") {
+          state = { ...state, ownerReviewPending: true };
+          await stateStore.save(state);
+          return state;
+        }
+
+        state = {
+          currentWorkerId: workflow.start,
+          completedRuns: state.completedRuns,
+          sessions: state.sessions,
+          task: state.task ?? workflow.task,
+        };
+        await stateStore.save(state);
+        continue;
       }
 
       if (!workers.has(nextWorkerId)) {
@@ -89,6 +151,36 @@ export class Orchestrator {
       state = { ...state, currentWorkerId: nextWorkerId };
       await stateStore.save(state);
     }
+  }
+
+  private async handoffToOwner(
+    state: RunState,
+  ): Promise<"approved" | "changes_requested" | "final_review_required"> {
+    const { workflow } = this.options;
+    const owner = workflow.owner;
+    const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
+
+    if (!owner) return "approved";
+    if (owner.mode === "parent_process") return "final_review_required";
+
+    const executor = this.options.executors.get("chatgpt_browser");
+    if (!executor) throw new Error("Missing executor: chatgpt_browser");
+
+    const output = await executor.run({
+      projectRoot: this.options.projectRoot,
+      prompt: buildOwnerPrompt(activeWorkflow),
+      sessionId: owner.conversationUrl,
+    });
+    const result = parseDevosResult(output.text);
+
+    if (result.status === "approved" || result.status === "changes_requested") {
+      return result.status;
+    }
+
+    await this.options.stateStore.save(state);
+    throw new Error(
+      `Task owner returned unsupported final-review status: ${result.status}`,
+    );
   }
 }
 
@@ -108,5 +200,21 @@ export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec): strin
     `Begin every GitHub report with exactly: **DevOS worker:** \`${worker.id}\` (\`${worker.executor}\`)`,
     'If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_host instead of failed.',
     'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_host|failed"}',
+  ].join("\n");
+}
+
+export function buildOwnerPrompt(workflow: Workflow): string {
+  const issueUrl = `https://github.com/${workflow.task.repo}/issues/${workflow.task.issue}`;
+  const prUrl = workflow.task.pr
+    ? `https://github.com/${workflow.task.repo}/pull/${workflow.task.pr}`
+    : null;
+
+  return [
+    "DevOS worker phase is ready for final task-level review.",
+    `Issue: ${issueUrl}`,
+    ...(prUrl ? [`PR: ${prUrl}`] : []),
+    "Perform final acceptance in this owning conversation.",
+    "Return changes_requested if more work is required; otherwise return approved.",
+    'End your response with exactly one line: DEVOS_RESULT {"status":"approved|changes_requested"}',
   ].join("\n");
 }

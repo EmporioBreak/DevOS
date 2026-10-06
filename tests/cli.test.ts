@@ -7,9 +7,11 @@ import test from "node:test";
 import type { RunState, StateStore } from "../src/orchestrator.js";
 import {
   chooseReadyTask,
+  formatRunResult,
   isCliEntrypoint,
   parseCliArgs,
   parseIssueNumber,
+  parseParentOwnerDecision,
   prepareRunState,
 } from "../src/cli.js";
 import type { ReadyTask } from "../src/ready-tasks.js";
@@ -81,4 +83,81 @@ test("recognizes a symlinked package bin as the CLI entry point", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+
+test("parses parent-process final review decisions", () => {
+  assert.equal(parseParentOwnerDecision(undefined), undefined);
+  assert.equal(parseParentOwnerDecision("approved"), "approved");
+  assert.equal(
+    parseParentOwnerDecision("changes_requested"),
+    "changes_requested",
+  );
+  assert.throws(
+    () => parseParentOwnerDecision("done"),
+    /DEVOS_OWNER_RESULT must be approved or changes_requested/,
+  );
+});
+
+
+test("formats parent-process final review handoff as structured stdout", () => {
+  const line = formatRunResult(
+    {
+      version: 1,
+      task: { repo: "owner/product", issue: 39, pr: 41 },
+      owner: { mode: "parent_process" },
+      start: "reviewer",
+      workers: [
+        {
+          id: "reviewer",
+          executor: "chatgpt_browser",
+          prompt: "Review.",
+          on: { approved: null },
+        },
+      ],
+    },
+    {
+      currentWorkerId: "reviewer",
+      completedRuns: 1,
+      sessions: { reviewer: "https://chatgpt.com/c/review" },
+      ownerReviewPending: true,
+    },
+  );
+
+  assert.equal(
+    line,
+    'DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED","task":{"repo":"owner/product","issue":39,"pr":41}}\n',
+  );
+});
+
+
+test("parent-process handoff uses PR resolved during execution", () => {
+  const line = formatRunResult(
+    {
+      version: 1,
+      task: { repo: "owner/product", issue: 39 },
+      owner: { mode: "parent_process" },
+      start: "reviewer",
+      workers: [
+        {
+          id: "reviewer",
+          executor: "chatgpt_browser",
+          prompt: "Review.",
+          on: { approved: null },
+        },
+      ],
+    },
+    {
+      currentWorkerId: "reviewer",
+      completedRuns: 1,
+      sessions: { reviewer: "https://chatgpt.com/c/review" },
+      task: { repo: "owner/product", issue: 39, pr: 40 },
+      ownerReviewPending: true,
+    },
+  );
+
+  assert.equal(
+    line,
+    'DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED","task":{"repo":"owner/product","issue":39,"pr":40}}\n',
+  );
 });
