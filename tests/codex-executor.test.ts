@@ -10,6 +10,19 @@ import {
   parseThreadId,
 } from "../src/codex-executor.js";
 
+function turnCompletedEvent(): string {
+  return JSON.stringify({
+    type: "turn.completed",
+    usage: {
+      input_tokens: 0,
+      cached_input_tokens: 0,
+      cache_write_input_tokens: 0,
+      output_tokens: 0,
+      reasoning_output_tokens: 0,
+    },
+  });
+}
+
 test("builds start and resume arguments explicitly", () => {
   const options = {
     model: "gpt-5.6-codex",
@@ -169,7 +182,7 @@ test("finishes a Codex JSONL worker turn while its child remains alive", async (
         type: "item.completed",
         item: { type: "agent_message", text: 'DEVOS_RESULT {"status":"done"}' },
       }),
-      JSON.stringify({ type: "turn.completed", usage: {} }),
+      turnCompletedEvent(),
     ].join("\n") + "\n";
     const childScript = [
       `require("node:child_process").spawn(${JSON.stringify(process.execPath)}, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] });`,
@@ -209,7 +222,7 @@ test("waits for turn.completed after the terminal agent message", async () => {
       item: { type: "agent_message", text: 'DEVOS_RESULT {"status":"done"}' },
     }),
   ].join("\n") + "\n";
-  const completed = `${JSON.stringify({ type: "turn.completed", usage: {} })}\n`;
+  const completed = `${turnCompletedEvent()}\n`;
   const childScript = [
     `process.stdout.write(${JSON.stringify(beforeTurnCompleted)});`,
     `setTimeout(() => process.stdout.write(${JSON.stringify(completed)}), 150);`,
@@ -240,7 +253,7 @@ test("does not accept turn.failed or error events as successful completion", asy
         item: { type: "agent_message", text: 'DEVOS_RESULT {"status":"done"}' },
       }),
       JSON.stringify(failedEvent),
-      JSON.stringify({ type: "turn.completed", usage: {} }),
+      turnCompletedEvent(),
     ].join("\n") + "\n";
     const runner: CommandRunner = {
       run(_command, _args, cwd, stdin, options) {
