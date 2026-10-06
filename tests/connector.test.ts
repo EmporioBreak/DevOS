@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { parseCliArgs } from "../src/cli.js";
 import * as connectorModule from "../src/connector.js";
 import { adaptChatGptToolCall } from "../src/connector-gateway.js";
@@ -834,6 +836,55 @@ test("stale background PID is never accepted without project identity", async ()
     assert.equal(await connectorModule.connectorBackgroundRunning(root), false);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("background supervisor stops after its bounded ngrok recovery budget", async () => {
+  const f = await fixture("fail");
+  const runner = fileURLToPath(
+    new URL("../src/connector-runner.ts", import.meta.url),
+  );
+  const loader = fileURLToPath(import.meta.resolve("tsx"));
+  const child = spawn(
+    process.execPath,
+    ["--import", loader, runner, f.root, "--background"],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NGROK_AUTHTOKEN: fixtureSecret,
+        DEVOS_CONNECTOR_OWNER_SECRET: fixtureSecret,
+        DEVOS_DEBUG: "",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  let output = "";
+  child.stdout.on("data", (chunk) => (output += chunk));
+  child.stderr.on("data", (chunk) => (output += chunk));
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolve) => child.once("close", (code, signal) => resolve({ code, signal })),
+  );
+  const timeout = setTimeout(() => child.kill("SIGTERM"), 20_000);
+  try {
+    const result = await closed;
+    assert.equal(result.signal, null, "supervisor should finish within its retry budget");
+    assert.equal(result.code, 1);
+    assert.ok(!output.includes(fixtureSecret));
+    const dir = join(f.root, ".devos/connector");
+    const supervisor = JSON.parse(await readFile(join(dir, "supervisor.json"), "utf8"));
+    const diagnostic = JSON.parse(await readFile(join(dir, "diagnostic.json"), "utf8"));
+    assert.deepEqual(
+      { status: supervisor.status, attempts: supervisor.attempts },
+      { status: "failed", attempts: 4 },
+    );
+    assert.equal(diagnostic.layer, "ngrok");
+    assert.equal(diagnostic.status, "failed");
+    assert.ok(!JSON.stringify(diagnostic).includes(fixtureSecret));
+  } finally {
+    clearTimeout(timeout);
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    await rm(f.root, { recursive: true, force: true });
   }
 });
 
