@@ -78,6 +78,7 @@ export class ChatGptBrowserExecutor implements Executor {
 
       const outcome = await response;
       if ("error" in outcome) throw outcome.error;
+      debugLog("browser.response", { sessionId, text: outcome.text });
       return { text: outcome.text, sessionId };
     } finally {
       await page.close().catch(() => undefined);
