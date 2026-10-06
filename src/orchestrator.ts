@@ -167,6 +167,14 @@ export class Orchestrator {
           ? state.sessions
           : { ...state.sessions, [worker.id]: output.sessionId };
 
+      if (
+        worker.executor === "chatgpt_browser" &&
+        output.sessionId !== undefined
+      ) {
+        state = { ...state, sessions };
+        await stateStore.save(state);
+      }
+
       const result = parseDevosResult(output.text);
       state = {
         ...state,
