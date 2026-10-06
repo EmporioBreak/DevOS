@@ -30,6 +30,47 @@ is_self_host_checkout() {
   esac
 }
 
+sync_self_host_checkout() {
+  BRANCH=$(git -C "$ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  if [ "$BRANCH" != "main" ]; then
+    if [ -z "$BRANCH" ]; then
+      echo "DevOS self-hosting requires an attached main branch; checkout is detached." >&2
+    else
+      echo "DevOS self-hosting requires main; current branch is $BRANCH." >&2
+    fi
+    exit 1
+  fi
+
+  if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+    echo "DevOS self-hosting will not update a dirty checkout. Commit or stash local changes first." >&2
+    exit 1
+  fi
+
+  UPSTREAM=$(git -C "$ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
+  if [ "$UPSTREAM" != "origin/main" ]; then
+    echo "DevOS self-hosting requires main to track origin/main; current upstream is ${UPSTREAM:-none}." >&2
+    exit 1
+  fi
+
+  git -C "$ROOT" fetch origin main >/dev/null
+  LOCAL_HEAD=$(git -C "$ROOT" rev-parse HEAD)
+  REMOTE_HEAD=$(git -C "$ROOT" rev-parse origin/main)
+  [ "$LOCAL_HEAD" = "$REMOTE_HEAD" ] && return 0
+
+  if git -C "$ROOT" merge-base --is-ancestor HEAD origin/main; then
+    echo "Updating DevOS self-host checkout to origin/main..."
+    git -C "$ROOT" merge --ff-only origin/main >/dev/null
+    return 0
+  fi
+
+  if git -C "$ROOT" merge-base --is-ancestor origin/main HEAD; then
+    echo "DevOS self-hosting will not move main because the local checkout is ahead of origin/main." >&2
+  else
+    echo "DevOS self-hosting will not move main because it has diverged from origin/main." >&2
+  fi
+  exit 1
+}
+
 build_self_host() {
   if ! command -v npm >/dev/null 2>&1; then
     echo "DevOS self-hosting requires npm." >&2
@@ -68,6 +109,7 @@ install_runtime() {
 }
 
 if is_self_host_checkout; then
+  sync_self_host_checkout
   build_self_host
   cd "$ROOT"
   exec node "$SELF_CLI" "$@"
