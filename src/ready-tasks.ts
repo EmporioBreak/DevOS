@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { validateChatGptUrl } from "./browser-config.js";
+import { isTaskCompleted } from "./completed-tasks.js";
 import type { CommandRunner } from "./command-runner.js";
 import type { Workflow } from "./workflow.js";
 import { parseWorkflow } from "./workflow-loader.js";
@@ -111,7 +112,9 @@ export async function listReadyTasks(
       record.number,
       record.title,
     );
-    if (task) tasks.push(task);
+    if (task && !(await isTaskCompleted(projectRoot, task.issue))) {
+      tasks.push(task);
+    }
   }
 
   return tasks.sort((a, b) => a.issue - b.issue);
@@ -123,6 +126,7 @@ export async function loadReadyTask(
   projectRoot: string,
   runner: CommandRunner,
   allowClosed = false,
+  allowCompleted = false,
 ): Promise<ReadyTask> {
   const result = await runner.run(
     "gh",
@@ -175,6 +179,11 @@ export async function loadReadyTask(
   );
   if (!task) {
     throw new Error(`Issue #${issue} is not a ready DevOS task`);
+  }
+  if (!allowCompleted && await isTaskCompleted(projectRoot, issue)) {
+    throw new Error(
+      `Issue #${issue} is already completed; use restart to replan and run it again`,
+    );
   }
   return task;
 }

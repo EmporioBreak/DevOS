@@ -6,6 +6,11 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
 import { loadChatGptBrowserConfig } from "./browser-config.js";
+import {
+  clearTaskCompleted,
+  isTaskCompleted,
+  recordTaskCompletion,
+} from "./completed-tasks.js";
 import { ChatGptBrowserExecutor } from "./chatgpt-browser-executor.js";
 import { CodexExecutor } from "./codex-executor.js";
 import { LocalCommandRunner } from "./command-runner.js";
@@ -92,12 +97,19 @@ export async function runWorkflow(
   );
   const stateStore = new JsonStateStore(cwd, workflow.task);
   await prepareRunState(mode, stateStore);
+  if (mode === "restart") {
+    await clearTaskCompleted(cwd, workflow.task.issue);
+  } else if (await isTaskCompleted(cwd, workflow.task.issue)) {
+    throw new Error(
+      `Issue #${workflow.task.issue} is already completed; use restart to replan and run it again`,
+    );
+  }
   const ownerDecision = workflow.owner?.mode === "parent_process"
     ? parseParentOwnerDecision(process.env.DEVOS_OWNER_RESULT)
     : undefined;
 
   try {
-    return await new Orchestrator({
+    const state = await new Orchestrator({
       projectRoot: cwd,
       workflow,
       executors: new Map<string, Executor>([
@@ -109,6 +121,8 @@ export async function runWorkflow(
       resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
       onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
     }).run();
+    await recordTaskCompletion(cwd, workflow.task.issue, state);
+    return state;
   } finally {
     await chatgpt.close();
   }
@@ -176,6 +190,7 @@ export async function main(
       cwd,
       runner,
       ownerDecision !== undefined,
+      command.mode === "restart",
     );
     if (ownerDecision !== undefined) {
       const pendingState = await new JsonStateStore(cwd, task.workflow.task).load();

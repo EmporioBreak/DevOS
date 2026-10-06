@@ -11,6 +11,7 @@ import {
   parseGitHubRepo,
   parseReadyTaskBody,
 } from "../src/ready-tasks.js";
+import { markTaskCompleted } from "../src/completed-tasks.js";
 
 const workflow = {
   version: 1,
@@ -140,6 +141,28 @@ test("lists owned ready issues with one GitHub request", async () => {
   assert.ok(runner.calls[0]?.args.includes("@me"));
 });
 
+test("hides locally completed tasks from the ready list", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-ready-task-"));
+  const runner = new FakeRunner([{
+    exitCode: 0,
+    stdout: JSON.stringify([
+      { number: 42, title: "Completed", body: body() },
+    ]),
+    stderr: "",
+  }]);
+  try {
+    await markTaskCompleted(root, 42);
+    const tasks = await listReadyTasks(
+      { version: 1, repo: "owner/product" },
+      root,
+      runner,
+    );
+    assert.deepEqual(tasks, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 
 test("direct issue load rejects closed tasks by default", async () => {
   const runner = new FakeRunner([
@@ -190,4 +213,41 @@ test("direct issue load can read a closed task for guarded owner continuation", 
 
   assert.equal(task.issue, 42);
   assert.equal(task.workflow.task.issue, 42);
+});
+
+test("direct issue load refuses completed tasks unless restart is explicit", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-ready-task-"));
+  const response = {
+    exitCode: 0,
+    stdout: JSON.stringify({
+      number: 42,
+      title: "Homepage",
+      body: body(),
+      state: "OPEN",
+    }),
+    stderr: "",
+  };
+  try {
+    await markTaskCompleted(root, 42);
+    await assert.rejects(
+      loadReadyTask(
+        { version: 1, repo: "owner/product" },
+        42,
+        root,
+        new FakeRunner([{ ...response }]),
+      ),
+      /already completed; use restart/,
+    );
+    const task = await loadReadyTask(
+      { version: 1, repo: "owner/product" },
+      42,
+      root,
+      new FakeRunner([{ ...response }]),
+      false,
+      true,
+    );
+    assert.equal(task.issue, 42);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
