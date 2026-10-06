@@ -158,6 +158,20 @@ test("parent_process owner preserves task state and requests final review", asyn
   const resumed = await orchestrator.run();
   assert.equal(resumed.ownerReviewPending, true);
   assert.equal(chat.requests.length, 1);
+
+  const continuedChat = new QueueExecutor("chatgpt_browser", [
+    { text: 'DEVOS_RESULT {"status":"approved"}', sessionId: "https://chatgpt.com/c/review" },
+  ]);
+  const continued = await new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["chatgpt_browser", continuedChat]]),
+    stateStore: store,
+    ownerDecision: "changes_requested",
+  }).run();
+
+  assert.equal(continued.ownerReviewPending, true);
+  assert.equal(continuedChat.requests[0]?.sessionId, "https://chatgpt.com/c/review");
 });
 
 test("owner handoff prompt includes the concrete Issue and PR", () => {
