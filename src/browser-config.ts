@@ -1,6 +1,14 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+export const CHATGPT_PERSISTENT_PROFILE_IGNORED_DEFAULT_ARGS = [
+  "--disable-extensions",
+  "--disable-component-extensions-with-background-pages",
+  "--use-mock-keychain",
+  "--password-store=basic",
+  "--disable-sync",
+] as const;
+
 export interface ChatGptBrowserConfig {
   projectUrl: string;
   browserChannel: string;
