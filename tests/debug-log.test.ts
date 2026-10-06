@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,6 +18,8 @@ test("DEVOS_DEBUG writes task-local append-only JSONL with credential redaction"
       token: "secret-token",
       output: "ordinary repository context",
       diagnostic: "Authorization: Bearer bearer-secret https://chatgpt.com/path?access_token=access-secret&api_key=api-secret&session_token=session-secret&client_secret=client-secret&accessToken=camel-secret&session%5Ftoken=encoded-secret&auth=query-secret&utm_source=ordinary",
+      commandOutput: JSON.stringify({ token: "json-secret", nested: { api_key: "nested-secret" }, message: "ordinary" }),
+      escapedOutput: JSON.stringify({ line: JSON.stringify({ password: "escaped-secret", detail: "keep me" }) }),
     });
     debugLog("two", { password: "secret-password" });
     const lines = (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line));
@@ -29,8 +31,64 @@ test("DEVOS_DEBUG writes task-local append-only JSONL with credential redaction"
       "Authorization: Bearer [REDACTED] https://chatgpt.com/path?access_token=[REDACTED]&api_key=[REDACTED]&session_token=[REDACTED]&client_secret=[REDACTED]&accessToken=[REDACTED]&session%5Ftoken=[REDACTED]&auth=[REDACTED]&utm_source=ordinary",
     );
     assert.equal(lines[1].data.password, "[REDACTED]");
+    assert.equal(lines[0].data.commandOutput.includes("json-secret"), false);
+    assert.equal(lines[0].data.commandOutput.includes("nested-secret"), false);
+    assert.equal(lines[0].data.commandOutput.includes("ordinary"), true);
+    assert.equal(lines[0].data.escapedOutput.includes("escaped-secret"), false);
+    assert.equal(lines[0].data.escapedOutput.includes("keep me"), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    if (oldDebug === undefined) delete process.env.DEVOS_DEBUG; else process.env.DEVOS_DEBUG = oldDebug;
+    if (oldFile === undefined) delete process.env.DEVOS_DEBUG_FILE; else process.env.DEVOS_DEBUG_FILE = oldFile;
+  }
+});
+
+test("redacts escaped quotes, multiple nested JSON strings, JSONL and credential objects", async () => {
+  const { rm } = await import("node:fs/promises");
+  const root = await mkdtemp(join(tmpdir(), "devos-debug-"));
+  const file = join(root, "debug.jsonl");
+  const oldDebug = process.env.DEVOS_DEBUG;
+  const oldFile = process.env.DEVOS_DEBUG_FILE;
+  try {
+    process.env.DEVOS_DEBUG = "1"; process.env.DEVOS_DEBUG_FILE = file;
+    const secret = 'SENSITIVE"quoted\\value';
+    let nested = JSON.stringify({ password: secret, detail: "ordinary text" });
+    for (let i = 0; i < 3; i++) nested = JSON.stringify({ output: nested });
+    debugLog("credentials", { commandOutput: `${JSON.stringify({ token: secret, credentials: { secret }, ordinary: "keep" })}\n${nested}`, browserText: `context ${JSON.stringify({ api_key: secret })}` });
+    const raw = await readFile(file, "utf8");
+    assert.equal(raw.includes("SENSITIVE"), false);
+    assert.equal(raw.includes("ordinary text"), true);
+    assert.equal(raw.includes("keep"), true);
   } finally {
     if (oldDebug === undefined) delete process.env.DEVOS_DEBUG; else process.env.DEVOS_DEBUG = oldDebug;
     if (oldFile === undefined) delete process.env.DEVOS_DEBUG_FILE; else process.env.DEVOS_DEBUG_FILE = oldFile;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test("redacts pretty-printed serialized credential objects without dropping ordinary context", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-debug-pretty-"));
+  const file = join(root, "debug.jsonl");
+  const oldDebug = process.env.DEVOS_DEBUG;
+  const oldFile = process.env.DEVOS_DEBUG_FILE;
+  try {
+    process.env.DEVOS_DEBUG = "1";
+    process.env.DEVOS_DEBUG_FILE = file;
+    debugLog("pretty", {
+      commandOutput: JSON.stringify({
+        authorization: { value: "SYNTHETIC_PRETTY_SECRET" },
+        ordinary: "keep",
+      }, null, 2),
+    });
+
+    const raw = await readFile(file, "utf8");
+    assert.equal(raw.includes("SYNTHETIC_PRETTY_SECRET"), false);
+    assert.equal(raw.includes("keep"), true);
+    assert.equal(raw.includes("[REDACTED]"), true);
+  } finally {
+    if (oldDebug === undefined) delete process.env.DEVOS_DEBUG; else process.env.DEVOS_DEBUG = oldDebug;
+    if (oldFile === undefined) delete process.env.DEVOS_DEBUG_FILE; else process.env.DEVOS_DEBUG_FILE = oldFile;
+    await rm(root, { recursive: true, force: true });
   }
 });

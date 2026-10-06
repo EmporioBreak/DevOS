@@ -20,7 +20,7 @@ export async function resolveTaskReference(
         "--state",
         "open",
         "--search",
-        `#${task.issue} in:body`,
+        `${task.issue} in:body`,
         "--limit",
         "100",
         "--json",
@@ -43,12 +43,14 @@ export async function resolveTaskReference(
   if (!Array.isArray(value)) return task;
 
   const repo = escapeRegExp(task.repo);
+  const shorthand = `(?:${repo})?#${task.issue}(?!\\d)`;
+  const issueUrl = `https:\\/\\/github\\.com\\/${repo}\\/issues\\/${task.issue}(?!\\d)(?=[/?#\\s).,;]|$)`;
   const issueRef = new RegExp(
-    `(?:^|[^A-Za-z0-9_-])(?:${repo})?#${task.issue}(?!\\d)`,
+    `(?:^|[^A-Za-z0-9_-])(?:${shorthand}|${issueUrl})`,
     "i",
   );
   const closingRef = new RegExp(
-    `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+(?:${repo})?#${task.issue}(?!\\d)`,
+    `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+(?:${shorthand}|${issueUrl})`,
     "i",
   );
 

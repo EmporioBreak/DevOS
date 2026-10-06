@@ -52,11 +52,14 @@ function validateState(value: unknown): RunState {
 
   const record = value as Record<string, unknown>;
   const task = record.task;
+  const completionApproved = record.completionApproved;
   const mainAgentReviewPending = record.mainAgentReviewPending ?? record.ownerReviewPending;
   const browserWorkersStarted = record.browserWorkersStarted;
   const browserSessionRecovery = record.browserSessionRecovery;
   const sessionProjectRoots = record.sessionProjectRoots;
 
+  if (completionApproved !== undefined && typeof completionApproved !== "boolean") throw new Error("Invalid DevOS state");
+  if (completionApproved === true && mainAgentReviewPending === true) throw new Error("Invalid DevOS state");
   if (task !== undefined && !isTaskRef(task)) {
     throw new Error("Invalid DevOS state");
   }
@@ -93,7 +96,8 @@ function validateState(value: unknown): RunState {
         key !== "browserSessionRecovery" &&
         key !== "task" &&
         key !== "ownerReviewPending" &&
-        key !== "mainAgentReviewPending",
+        key !== "mainAgentReviewPending" &&
+        key !== "completionApproved",
     ) ||
     typeof record.currentWorkerId !== "string" ||
     !record.currentWorkerId.trim() ||
@@ -116,6 +120,7 @@ function validateState(value: unknown): RunState {
     ...(browserSessionRecovery === undefined
       ? {}
       : { browserSessionRecovery: [...browserSessionRecovery] }),
+    ...(completionApproved === undefined ? {} : { completionApproved }),
     ...(task === undefined ? {} : { task }),
     ...(mainAgentReviewPending === undefined ? {} : { mainAgentReviewPending }),
   };

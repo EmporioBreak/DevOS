@@ -77,9 +77,9 @@ export class ChatGptBrowserExecutor implements Executor {
             page.url(),
             request.sessionId !== undefined,
           );
-          if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) {
-            throw new Error("ChatGPT redirected to a different conversation while resuming");
-          }
+        }
+        if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) {
+          throw new Error("ChatGPT redirected to a different conversation while resuming");
         }
       } catch (error) {
         if (request.sessionId) {
@@ -90,19 +90,47 @@ export class ChatGptBrowserExecutor implements Executor {
         throw error;
       }
 
-      const response = sendAndRead(page, request.prompt, this.timeoutMs).then(
+      let submissionStarted!: () => void;
+      const submission = new Promise<void>(resolve => { submissionStarted = resolve; });
+      const assertSubmissionScope = () => {
+        try {
+          if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), request.sessionId !== undefined);
+          if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation before submission");
+          submissionStarted();
+        } catch (error) {
+          if (request.sessionId) throw new BrowserResumeUnavailableError(request.sessionId, error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+      };
+      const response = sendAndRead(page, request.prompt, this.timeoutMs, assertSubmissionScope).then(
         text => ({ text } as const),
         error => ({ error } as const),
       );
-      const sessionId = await waitForConversationUrl(page, this.timeoutMs);
-      if (projectScope) {
-        assertChatGptProjectScope(this.config.projectUrl, sessionId, true);
+
+      if (request.sessionId) {
+        const outcome = await response;
+        if ("error" in outcome) throw outcome.error;
+        if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
+        if (!isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation after submission");
+        debugLog("browser.session.ready", { sessionId: request.sessionId, actualUrl: page.url() });
+        await request.onSession?.(request.sessionId);
+        debugLog("browser.response", { sessionId: request.sessionId, text: outcome.text });
+        return { text: outcome.text, sessionId: request.sessionId };
       }
+
+      // Surface preparation failures before starting URL discovery. After submission,
+      // preserve a created session even when response loading has already failed.
+      const prepared = await Promise.race([submission, response]);
+      if (prepared && "error" in prepared) throw prepared.error;
+      const sessionId = await waitForConversationUrl(page, this.timeoutMs);
+
+      if (projectScope) assertChatGptProjectScope(this.config.projectUrl, sessionId, true);
       debugLog("browser.session.ready", { sessionId, actualUrl: page.url() });
       await request.onSession?.(sessionId);
 
       const outcome = await response;
       if ("error" in outcome) throw outcome.error;
+      if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
       debugLog("browser.response", { sessionId, text: outcome.text });
       return { text: outcome.text, sessionId };
     } finally {
@@ -139,19 +167,20 @@ export class ChatGptBrowserExecutor implements Executor {
 }
 
 export function isSameChatGptConversation(requestedUrl: string, actualUrl: string): boolean {
-  const conversationId = (value: string): string | null => {
-    const match = /^\/g\/[^/]+\/c\/([^/]+)(?:\/|$)/.exec(new URL(value).pathname);
-    if (!match?.[1]) return null;
-    try { return decodeURIComponent(match[1]); } catch { return match[1]; }
-  };
-  const requested = conversationId(requestedUrl);
-  return requested !== null && requested === conversationId(actualUrl);
+  try {
+    const requested = validateChatGptUrl(requestedUrl);
+    const actual = validateChatGptUrl(actualUrl);
+    const route = /^\/(?:g\/[^/]+\/)?c\/([^/]+)\/?$/;
+    const id = route.exec(requested.pathname)?.[1];
+    return !!id && !isProvisionalChatGptConversationId(id) && requested.origin === actual.origin && requested.pathname.replace(/\/$/, "") === actual.pathname.replace(/\/$/, "");
+  } catch { return false; }
 }
 
 export async function sendAndRead(
   page: Page,
   prompt: string,
   timeoutMs: number,
+  beforeSubmit?: () => void,
 ): Promise<string> {
   const composer = page.locator(COMPOSER).first();
   await composer.fill(prompt, { timeout: timeoutMs });
@@ -166,8 +195,10 @@ export async function sendAndRead(
 
   const send = page.locator(SEND).first();
   if (await send.isVisible()) {
+    beforeSubmit?.();
     await send.click({ timeout: timeoutMs });
   } else {
+    beforeSubmit?.();
     await composer.press("Enter", { timeout: timeoutMs });
   }
 

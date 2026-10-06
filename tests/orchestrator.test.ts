@@ -661,3 +661,58 @@ test("does not replay a resumed Codex worker after a post-execution error", asyn
   assert.equal(store.state?.sessions.reviewer, "browser-session");
   assert.equal(store.state?.currentWorkerId, "local");
 });
+
+for (const earlyFailure of [false, true]) {
+  test(`Codex identity survives ${earlyFailure ? 'post-start failure' : 'malformed final result'} and resumes`, async () => {
+    const workflow: Workflow = { version: 1, task: { repo: "owner/product", issue: 159 }, start: "local", workers: [{ id: "local", executor: "codex", prompt: "Work", on: { done: null } }] };
+    const store = new MemoryStore();
+    const requests: WorkerRequest[] = [];
+    let call = 0;
+    const codex: Executor = { kind: "codex", async run(request) {
+      requests.push(request);
+      if (call++ === 0) {
+        if (earlyFailure) { await request.onSession?.("real-thread"); throw new Error("post-start failure"); }
+        return { sessionId: "real-thread", text: "missing marker" };
+      }
+      return { sessionId: "real-thread", text: 'DEVOS_RESULT {"status":"done"}' };
+    } };
+    const options = { projectRoot: "/product", workflow, executors: new Map([["codex", codex]]), stateStore: store };
+    await assert.rejects(new Orchestrator(options).run(), earlyFailure ? /post-start/ : /DEVOS_RESULT/);
+    assert.equal(store.state?.sessions.local, "real-thread");
+    assert.equal(store.state?.sessionProjectRoots?.local, "/product");
+    await new Orchestrator(options).run();
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1]?.sessionId, "real-thread");
+  });
+}
+
+for (const explicitPr of [undefined, 61]) {
+  test(`resume PR precedence with workflow PR ${explicitPr}`, async () => {
+    const workflow: Workflow = { version: 1, task: { repo: "owner/product", issue: 159, ...(explicitPr ? { pr: explicitPr } : {}) }, owner: { mode: "main_agent" }, start: "worker", workers: [{ id: "worker", executor: "chatgpt_browser", prompt: "Work", on: { done: null } }] };
+    const store = new MemoryStore();
+    store.state = { currentWorkerId: "worker", completedRuns: 1, sessions: { worker: "saved" }, task: { repo: "owner/product", issue: 159, pr: 60 } };
+    const chat = new QueueExecutor("chatgpt_browser", [{ sessionId: "saved", text: 'DEVOS_RESULT {"status":"done"}' }]);
+    const result = await new Orchestrator({ projectRoot: "/product", workflow, executors: new Map([["chatgpt_browser", chat]]), stateStore: store }).run();
+    assert.equal(result.task?.pr, explicitPr ?? 60);
+    assert.equal(chat.requests[0]?.sessionId, "saved");
+    assert.match(chat.requests[0]!.prompt, new RegExp(`PR #${explicitPr ?? 60}`));
+  });
+}
+
+test("explicit PR is persisted before a resumed final-review handoff", async () => {
+  const store = new MemoryStore();
+  store.state = { currentWorkerId: "reviewer", completedRuns: 2, sessions: { reviewer: "saved" }, task: { repo: "owner/product", issue: 159 }, mainAgentReviewPending: true };
+  const workflow: Workflow = { version: 1, task: { repo: "owner/product", issue: 159, pr: 61 }, owner: { mode: "main_agent" }, start: "reviewer", workers: [{ id: "reviewer", executor: "chatgpt_browser", prompt: "Review", on: { approved: null } }] };
+  const result = await new Orchestrator({ projectRoot: "/product", workflow, executors: new Map(), stateStore: store }).run();
+  assert.equal(result.task?.pr, 61);
+  assert.equal(store.state?.task?.pr, 61);
+  assert.equal(result.sessions.reviewer, "saved");
+});
+
+test("changes_requested cannot override approval waiting only for bookkeeping", async () => {
+  const store = new MemoryStore();
+  store.state = { currentWorkerId: "reviewer", completedRuns: 2, sessions: { reviewer: "saved" }, completionApproved: true };
+  const workflow: Workflow = { version: 1, task: { repo: "owner/product", issue: 159 }, owner: { mode: "main_agent" }, start: "reviewer", workers: [{ id: "reviewer", executor: "codex", prompt: "Review", on: { approved: null } }] };
+  await assert.rejects(new Orchestrator({ projectRoot: "/product", workflow, executors: new Map(), stateStore: store, mainAgentDecision: "changes_requested" }).run(), /waiting for final review/);
+  assert.equal(store.state?.completionApproved, true);
+});

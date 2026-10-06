@@ -98,12 +98,14 @@ export const CHATGPT_RESPONSE_LOADER_SOURCE = String.raw`
       var obj = JSON.parse(data);
       if (!obj || typeof obj !== 'object') return;
       if (obj.type === 'message_stream_complete') { complete = true; return; }
-      if (obj.type === 'response.failed' || obj.type === 'response.incomplete' || obj.type === 'response.cancelled' || obj.error) { failed = true; return; }
+      if (obj.type === 'response.failed' || obj.type === 'response.incomplete' || obj.type === 'response.cancelled' || obj.type === 'error' || obj.error) { failed = true; complete = true; return; }
       if (obj.type === 'response.output_text.delta' && typeof obj.delta === 'string') responseText += obj.delta;
       else if (obj.type === 'response.output_text.done' && typeof obj.text === 'string') responseText = obj.text;
-      else if (obj.type === 'response.completed') completedResponse = obj.response;
+      else if (obj.type === 'response.completed') { completedResponse = obj.response; complete = true; }
       else if (obj.message) { doc = obj; lastContentPath = null; }
       else applyDelta(obj);
+      var message = doc && (doc.message || doc);
+      if (message && message.status === 'finished_successfully' && message.end_turn === true && textFromDoc(doc)) complete = true;
     }
     async function readStream() {
       try {
@@ -111,10 +113,11 @@ export const CHATGPT_RESPONSE_LOADER_SOURCE = String.raw`
           var chunk = await reader.read();
           buffer += chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
           var events = buffer.split(/\r?\n\r?\n/); buffer = events.pop();
-          events.forEach(readEvent);
-          if (chunk.done || complete) { if (buffer.trim()) readEvent(buffer); break; }
+          for (var event of events) { readEvent(event); if (complete) break; }
+          if (complete) break;
+          if (chunk.done) { if (buffer.trim()) readEvent(buffer); break; }
         }
-        var text = doc ? textFromDoc(doc) : completedResponse ? envelopeText(completedResponse) : responseText;
+        var text = completedResponse ? envelopeText(completedResponse) : doc ? textFromDoc(doc) : responseText;
         if (pending === state) {
           var message = doc && (doc.message || doc);
           var finished = complete || (message && message.status === 'finished_successfully' && message.end_turn === true) || !!completedResponse;

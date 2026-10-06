@@ -251,3 +251,16 @@ test("direct issue load refuses completed tasks unless restart is explicit", asy
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("malformed picker entry warns and leaves valid tasks available with one query", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-ready-task-"));
+  try {
+    const runner = new FakeRunner([{ exitCode: 0, stderr: "", stdout: JSON.stringify([{ number: 41, title: "Draft", body: "<!-- DEVOS_TASK_V1 -->\n```json\n{bad\n```" }, { number: 42, title: "Valid", body: body() }]) }]);
+    const warnings: string[] = [];
+    const tasks = await listReadyTasks({ version: 1, repo: "owner/product" }, root, runner, warning => warnings.push(warning));
+    assert.deepEqual(tasks.map(task => task.issue), [42]);
+    assert.match(warnings[0]!, /Issue #41.*invalid DEVOS_TASK_V1/);
+    assert.equal(runner.calls.length, 1);
+    await assert.rejects(loadReadyTask({ version: 1, repo: "owner/product" }, 41, root, new FakeRunner([{ exitCode: 0, stderr: "", stdout: JSON.stringify({ number: 41, title: "Draft", state: "OPEN", body: "<!-- DEVOS_TASK_V1 -->" }) }])), /malformed DEVOS_TASK_V1/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

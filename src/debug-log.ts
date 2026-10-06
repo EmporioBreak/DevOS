@@ -17,7 +17,7 @@ export function debugLog(event: string, data: unknown): void {
 }
 
 function redact(value: unknown, key = ""): unknown {
-  if (/token|cookie|password|secret|authorization|private.?key/i.test(key)) {
+  if (isCredentialQueryKey(key) || /token|cookie|password|secret|authorization|private.?key/i.test(key)) {
     return "[REDACTED]";
   }
   if (Array.isArray(value)) return value.map(item => redact(item));
@@ -27,13 +27,46 @@ function redact(value: unknown, key = ""): unknown {
     );
   }
   if (typeof value === "string") {
-    return value
+    return redactSerializedCredentials(value)
       .replace(/(authorization:\s*bearer\s+)[^\s]+/gi, "$1[REDACTED]")
       .replace(/([?&])([^=&#\s]+)=([^&#\s]*)/g, (match, separator: string, key: string) =>
         isCredentialQueryKey(key) ? `${separator}${key}=[REDACTED]` : match,
       );
   }
   return value;
+}
+
+function redactSerializedCredentials(value: string): string {
+  // Prefer parsing the complete string so pretty-printed JSON and credential
+  // objects are redacted recursively. Fall back to per-line parsing for JSONL.
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed && (typeof parsed === "object" || typeof parsed === "string")) {
+      return JSON.stringify(redact(parsed));
+    }
+  } catch { /* JSONL and mixed prose are handled below. */ }
+
+  const lines = value.split("\n").map(line => {
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (parsed && (typeof parsed === "object" || typeof parsed === "string")) return JSON.stringify(redact(parsed));
+    } catch { /* Mixed prose falls through to the credential-field patterns. */ }
+    return line;
+  });
+  let redacted = lines.join("\n").replace(
+    /("([^"\\]+)"\s*:\s*)"(?:\\.|[^"\\])*"/g,
+    (match, prefix: string, key: string) => isCredentialQueryKey(key)
+      ? `${prefix}"[REDACTED]"`
+      : match,
+  );
+
+  redacted = redacted.replace(
+    /\\\"([^"\\]+)\\\"\s*:\s*\\\"((?:\\\\.|[^"\\])*)\\\"/g,
+    (match, key: string) => isCredentialQueryKey(key)
+      ? match.replace(/:\s*\\\".*\\\"$/, ':\\\"[REDACTED]\\\"')
+      : match,
+  );
+  return redacted;
 }
 
 function isCredentialQueryKey(key: string): boolean {
@@ -46,7 +79,7 @@ function isCredentialQueryKey(key: string): boolean {
   const normalized = decodedKey
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .toLowerCase();
-  return /(?:^|[_-])(?:token|secret|password|credential|authorization|auth|key)(?:[_-]|$)/.test(
+  return /(?:^|[_-])(?:token|secret|password|credential|authorization|auth|key|cookie)(?:[_-]|$)/.test(
     normalized,
   );
 }

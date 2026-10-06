@@ -76,6 +76,7 @@ test("resumes the supplied Codex session", async () => {
         stdout: [
           '{"type":"thread.started","thread_id":"session-1"}',
           '{"type":"item.completed","item":{"type":"agent_message","text":"DEVOS_RESULT {\\\"status\\\":\\\"done\\\"}"}}',
+          turnCompletedEvent(),
         ].join("\n"),
       };
     },
@@ -157,7 +158,8 @@ test("feeds fresh Codex prompt through stdin instead of argv", async () => {
         stderr: "",
         stdout: [
           '{"type":"thread.started","thread_id":"session-2"}',
-          '{"type":"item.completed","item":{"type":"agent_message","text":"DEVOS_RESULT {\\"status\\":\\"done\\"}"}}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"DEVOS_RESULT {\\\"status\\\":\\\"done\\\"}"}}',
+          turnCompletedEvent(),
         ].join("\n"),
       };
     },
@@ -185,6 +187,7 @@ test("finishes a Codex JSONL worker turn while its child remains alive", async (
       turnCompletedEvent(),
     ].join("\n") + "\n";
     const childScript = [
+      "setTimeout(() => { if (process.platform !== 'win32') process.kill(-process.pid, 'SIGKILL'); else process.exit(1); }, 3000).unref();",
       `require("node:child_process").spawn(${JSON.stringify(process.execPath)}, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] });`,
       `process.stdout.write(${JSON.stringify(jsonl)});`,
       "setInterval(() => {}, 1000);",
@@ -224,6 +227,7 @@ test("waits for turn.completed after the terminal agent message", async () => {
   ].join("\n") + "\n";
   const completed = `${turnCompletedEvent()}\n`;
   const childScript = [
+    "setTimeout(() => { if (process.platform !== 'win32') process.kill(-process.pid, 'SIGKILL'); else process.exit(1); }, 3000).unref();",
     `process.stdout.write(${JSON.stringify(beforeTurnCompleted)});`,
     `setTimeout(() => process.stdout.write(${JSON.stringify(completed)}), 150);`,
     "setInterval(() => {}, 1000);",
@@ -324,4 +328,37 @@ test("does not complete early for an unterminated JSONL record", async () => {
     () => new CodexExecutor(runner).run({ projectRoot: process.cwd(), prompt: "Continue" }),
     /Codex exited with code 1/,
   );
+});
+
+for (const type of ["turn.failed", "error"]) {
+  test(`natural zero exit still rejects Codex ${type}`, async () => {
+    const runner: CommandRunner = { async run() { return {
+      exitCode: 0, stderr: "", stdout: [
+        JSON.stringify({ type: "thread.started", thread_id: "failed-zero" }),
+        JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: 'DEVOS_RESULT {"status":"done"}' } }),
+        JSON.stringify({ type, error: { message: "logical failure" } }),
+      ].join("\n"),
+    }; } };
+    await assert.rejects(new CodexExecutor(runner).run({ projectRoot: process.cwd(), prompt: "test" }), /logical failure/);
+  });
+}
+
+test("publishes thread identity before a live process fails", async () => {
+  let reported: string | undefined;
+  const runner: CommandRunner = { run(_command, _args, cwd, stdin, options) {
+    return new LocalCommandRunner().run(process.execPath, ["-e", `
+      console.log(JSON.stringify({type: 'thread.started', thread_id: 'early-thread'}));
+      setTimeout(() => process.exit(1), 100);
+    `], cwd, stdin, options);
+  } };
+  await assert.rejects(new CodexExecutor(runner).run({ projectRoot: process.cwd(), prompt: "Work", onSession: id => { reported = id; } }), /Codex exited/);
+  assert.equal(reported, "early-thread");
+});
+
+test("natural zero exit without turn.completed is not logical success", async () => {
+  const runner: CommandRunner = { async run() { return { exitCode: 0, stderr: "", stdout: [
+    JSON.stringify({ type: "thread.started", thread_id: "incomplete" }),
+    JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: 'DEVOS_RESULT {"status":"done"}' } }),
+  ].join("\n") }; } };
+  await assert.rejects(new CodexExecutor(runner).run({ projectRoot: process.cwd(), prompt: "Work" }), /complete.*turn/);
 });

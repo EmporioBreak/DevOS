@@ -13,6 +13,7 @@ export interface RunState {
   browserSessionRecovery?: string[];
   task?: TaskRef;
   mainAgentReviewPending?: boolean;
+  completionApproved?: boolean;
 }
 
 export interface StateStore {
@@ -59,6 +60,7 @@ export interface OrchestratorOptions {
   executors: Map<string, Executor>;
   stateStore: StateStore;
   mainAgentDecision?: "approved" | "changes_requested";
+  finalizeTask?: (state: RunState) => Promise<void>;
   resolveTask?: (task: TaskRef) => Promise<TaskRef>;
   onEvent?: (event: OrchestrationEvent) => void | Promise<void>;
 }
@@ -78,10 +80,21 @@ export class Orchestrator {
         task: workflow.task,
       };
 
-    if (!state.task) {
+    if (!state.task || workflow.task.pr !== undefined) {
       state = { ...state, task: workflow.task };
+      if (persistedState) await stateStore.save(state);
     }
 
+    if (state.completionApproved) {
+      if (this.options.mainAgentDecision === "changes_requested") {
+        throw new Error("DEVOS_OWNER_RESULT requires an existing task waiting for final review");
+      }
+      return await this.finishApproved(state);
+    }
+
+    if (this.options.mainAgentDecision && !state.mainAgentReviewPending) {
+      throw new Error("DEVOS_OWNER_RESULT requires an existing task waiting for final review");
+    }
     if (state.mainAgentReviewPending) {
       const decision = this.options.mainAgentDecision;
       if (!decision) {
@@ -94,22 +107,7 @@ export class Orchestrator {
       }
 
       if (decision === "approved") {
-        const completed = {
-          currentWorkerId: state.currentWorkerId,
-          completedRuns: state.completedRuns,
-          sessions: state.sessions,
-          ...(state.sessionProjectRoots ? { sessionProjectRoots: state.sessionProjectRoots } : {}),
-          ...(state.browserWorkersStarted
-            ? { browserWorkersStarted: state.browserWorkersStarted }
-            : {}),
-          ...(state.browserSessionRecovery
-            ? { browserSessionRecovery: state.browserSessionRecovery }
-            : {}),
-          task: state.task ?? workflow.task,
-        };
-        await this.emitTaskStatus(completed, "completed");
-        await stateStore.clear();
-        return completed;
+        return await this.finishApproved(state);
       }
 
       await this.emitTaskStatus(state, "changes_requested");
@@ -190,34 +188,23 @@ export class Orchestrator {
         session: sessionId ? "resumed" : "fresh",
       });
       const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
+      const onSession = async (reportedSessionId: string) => {
+        state = {
+          ...state,
+          sessions: { ...state.sessions, [worker.id]: reportedSessionId },
+          ...(worker.executor === "codex" ? { sessionProjectRoots: { ...(state.sessionProjectRoots ?? {}), [worker.id]: this.options.projectRoot } } : {}),
+          ...(state.browserSessionRecovery ? { browserSessionRecovery: state.browserSessionRecovery.filter(id => id !== worker.id) } : {}),
+        };
+        await stateStore.save(state);
+      };
       let output: WorkerOutput;
       try {
         output = await executor.run({
-        projectRoot: this.options.projectRoot,
-        prompt: buildWorkerPrompt(activeWorkflow, worker),
-        ...(sessionId ? { sessionId } : {}),
-        ...(worker.executor === "chatgpt_browser"
-          ? {
-              enforceProjectScope: true,
-              onSession: async (reportedSessionId: string) => {
-                state = {
-                  ...state,
-                  sessions: {
-                    ...state.sessions,
-                    [worker.id]: reportedSessionId,
-                  },
-                  ...(state.browserSessionRecovery
-                    ? {
-                        browserSessionRecovery: state.browserSessionRecovery.filter(
-                          id => id !== worker.id,
-                        ),
-                      }
-                    : {}),
-                };
-                await stateStore.save(state);
-              },
-            }
-          : {}),
+          projectRoot: this.options.projectRoot,
+          prompt: buildWorkerPrompt(activeWorkflow, worker),
+          ...(sessionId ? { sessionId } : {}),
+          ...(worker.executor === "chatgpt_browser" ? { enforceProjectScope: true } : {}),
+          onSession,
         });
       } catch (error) {
         if (worker.executor === "codex" && sessionId && isCodexResumeUnavailableError(error)) {
@@ -236,6 +223,7 @@ export class Orchestrator {
           output = await executor.run({
             projectRoot: this.options.projectRoot,
             prompt: buildWorkerPrompt(activeWorkflow, worker),
+            onSession,
           });
         } else if (
           worker.executor === "chatgpt_browser" &&
@@ -260,39 +248,16 @@ export class Orchestrator {
             projectRoot: this.options.projectRoot,
             prompt: buildWorkerPrompt(activeWorkflow, worker),
             enforceProjectScope: true,
-            onSession: async reportedSessionId => {
-              state = {
-                ...state,
-                sessions: { ...state.sessions, [worker.id]: reportedSessionId },
-                browserSessionRecovery: (state.browserSessionRecovery ?? []).filter(
-                  id => id !== worker.id,
-                ),
-              };
-              await stateStore.save(state);
-            },
+            onSession,
           });
         } else {
           throw error;
         }
       }
 
-      const sessions =
-        output.sessionId === undefined
-          ? state.sessions
-          : { ...state.sessions, [worker.id]: output.sessionId };
-
-      if (
-        worker.executor === "chatgpt_browser" &&
-        output.sessionId !== undefined
-      ) {
-        state = { ...state, sessions };
-        await stateStore.save(state);
-      }
-
-      const sessionProjectRoots =
-        worker.executor === "codex" && output.sessionId
-          ? { ...(state.sessionProjectRoots ?? {}), [worker.id]: this.options.projectRoot }
-          : state.sessionProjectRoots;
+      if (output.sessionId !== undefined) await onSession(output.sessionId);
+      const sessions = state.sessions;
+      const sessionProjectRoots = state.sessionProjectRoots;
       const result = parseDevosResult(output.text);
       if (worker.executor === "codex" && result.status === "needs_local_worker") {
         state = { ...state, sessions, ...(sessionProjectRoots ? { sessionProjectRoots } : {}) };
@@ -353,9 +318,7 @@ export class Orchestrator {
         }
         const ownerResult = workflow.owner ? "final_review_required" : "approved";
         if (ownerResult === "approved") {
-          await this.emitTaskStatus(state, "completed");
-          await stateStore.clear();
-          return state;
+          return await this.finishApproved(state);
         }
 
         if (ownerResult === "final_review_required") {
@@ -393,6 +356,16 @@ export class Orchestrator {
       state = { ...state, currentWorkerId: nextWorkerId };
       await stateStore.save(state);
     }
+  }
+
+  private async finishApproved(state: RunState): Promise<RunState> {
+    const approved = { ...state, mainAgentReviewPending: false, completionApproved: true };
+    // Keep approval and sessions until both marker writing and state cleanup succeed.
+    await this.options.stateStore.save(approved);
+    await this.options.finalizeTask?.(approved);
+    await this.options.stateStore.clear();
+    await this.emitTaskStatus(approved, "completed");
+    return approved;
   }
 
   private async emit(event: OrchestrationEvent): Promise<void> {
