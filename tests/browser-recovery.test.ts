@@ -7,25 +7,40 @@ import { ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
 const project = "https://chatgpt.com/g/one/project";
 const saved = "https://chatgpt.com/g/one/c/saved";
 const created = "https://chatgpt.com/g/one/c/created";
-function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failures?: number; error?: string; destination?: string; status?: number; body?: string; historyBody?: boolean; sendError?: boolean; responseError?: boolean; slow?: boolean; closeSlow?: boolean; backendDenied?: boolean; rootRedirect?: boolean } = {}) {
+function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failures?: number; error?: string; destination?: string; status?: number; body?: string; historyBody?: boolean; sendError?: boolean; responseError?: boolean; slow?: boolean; closeSlow?: boolean; backendDenied?: boolean; backendDeniedDuringWait?: boolean; backendDeniedDuringFill?: boolean; rootRedirect?: boolean } = {}) {
   let attempts = 0, sends = 0, fills = 0, closes = 0;
   const urls: string[] = [];
+  let responseListener: ((response: any) => void) | undefined;
+  const denied = () => responseListener?.({
+    url: () => "https://chatgpt.com/backend-api/accounts/check",
+    status: () => 403,
+    headers: () => ({ "content-type": "text/html" }),
+  });
   const locator = {
     first() { return this; },
-    async waitFor() { if (options.phase === "wait") fail(); },
-    async fill() { fills++; if (options.phase === "fill") fail(); },
+    async waitFor() {
+      if (options.backendDeniedDuringWait) {
+        setTimeout(denied, 10);
+        await new Promise(resolve => setTimeout(resolve, 700));
+      }
+      if (options.phase === "wait") fail();
+    },
+    async fill() {
+      fills++;
+      if (options.backendDeniedDuringFill) denied();
+      if (options.phase === "fill") fail();
+    },
     async isVisible() { return true; },
     async click() { sends++; url = url === saved ? saved : created; if (options.sendError) throw new Error("Target page crashed during click"); },
     async press() { await this.click(); },
   };
   let url = project;
   function fail() { if (attempts <= (options.failures ?? 1)) throw new Error(options.error ?? "Timeout waiting for composer"); }
-  let responseListener: ((response: any) => void) | undefined;
   const page = {
     on(_event: string, listener: (response: any) => void) { responseListener = listener; },
     url: () => url,
     async goto(target: string) {
-      if (options.backendDenied) responseListener?.({ url: () => "https://chatgpt.com/backend-api/accounts/check", status: () => 403, headers: () => ({ "content-type": "text/html" }) });
+      if (options.backendDenied) denied();
       urls.push(target); url = options.rootRedirect && attempts === 1 ? "https://chatgpt.com/" : options.destination ?? target;
       if (options.slow) await new Promise(resolve => setTimeout(resolve, 60));
       if (options.phase === "goto") fail();
@@ -194,5 +209,26 @@ test("slow cleanup cannot extend the total preparation deadline", async () => {
   const started = Date.now();
   await assert.rejects(f.executor.run({ projectRoot: "/project", prompt: "Work", enforceProjectScope: true }), /deadline/);
   assert.ok(Date.now() - started < 120, "cleanup must share the preparation deadline");
+  assert.equal(f.sends(), 0);
+});
+
+
+test("asynchronous backend HTML 403 remains definitive when preparation deadline wins", async () => {
+  const f = fixture({ backendDeniedDuringWait: true });
+  await assert.rejects(
+    f.executor.run({ projectRoot: "/project", sessionId: saved, prompt: "Work", enforceProjectScope: true }),
+    /challenge.*HTTP 403/,
+  );
+  assert.deepEqual(f.urls, [saved]);
+  assert.equal(f.sends(), 0);
+});
+
+test("backend HTML 403 during prompt preparation stops before irreversible submit", async () => {
+  const f = fixture({ backendDeniedDuringFill: true });
+  await assert.rejects(
+    f.executor.run({ projectRoot: "/project", sessionId: saved, prompt: "Work", enforceProjectScope: true }),
+    /challenge.*HTTP 403/,
+  );
+  assert.deepEqual(f.urls, [saved]);
   assert.equal(f.sends(), 0);
 });
