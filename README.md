@@ -117,6 +117,23 @@ Starting #35: Build homepage
 DevOS complete: #35, 4 worker runs.
 ```
 
+Во время исполнения DevOS также печатает короткие lifecycle-строки, сформированные самим оркестратором. Они показывают worker ID, executor, результат worker-а и следующий переход без вывода prompt-ов, ответов агента или conversation URL:
+
+```text
+Task #41 started
+[developer] chatgpt_browser — starting fresh conversation
+[developer] chatgpt_browser — done
+→ reviewer
+[reviewer] chatgpt_browser — resuming existing session
+[reviewer] chatgpt_browser — approved
+Final review required by task owner
+DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED","task":{"repo":"owner/product","issue":41,"pr":57}}
+```
+
+Для нового browser-разговора видно `starting fresh conversation`; при повторном входе того же worker-а в task-scoped session — `resuming existing session`. Переходы `needs_host → local_*` и `changes_requested → developer` печатаются тем же способом: сначала возвращённый статус worker-а, затем строка `→ next_worker`. Ошибка worker-а по-прежнему завершает процесс с ненулевым кодом; перед ошибкой в stdout уже виден его статус `failed`.
+
+Существующая строка `DEVOS_OWNER_HANDOFF ...` остаётся отдельным machine-readable результатом для `parent_process`; человекочитаемая строка лишь делает момент handoff заметным в терминале.
+
 После завершения workflow процесс DevOS заканчивается. В фоне ничего не остаётся и GitHub больше не опрашивается.
 
 ### Готовая задача
