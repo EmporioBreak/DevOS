@@ -20,6 +20,7 @@ export interface OrchestratorOptions {
   workflow: Workflow;
   executors: Map<string, Executor>;
   stateStore: StateStore;
+  ownerDecision?: "approved" | "changes_requested";
 }
 
 export class Orchestrator {
@@ -35,7 +36,27 @@ export class Orchestrator {
         sessions: {},
       };
 
-    if (state.ownerReviewPending) return state;
+    if (state.ownerReviewPending) {
+      const decision = this.options.ownerDecision;
+      if (!decision) return state;
+
+      if (decision === "approved") {
+        const completed = {
+          currentWorkerId: state.currentWorkerId,
+          completedRuns: state.completedRuns,
+          sessions: state.sessions,
+        };
+        await stateStore.clear();
+        return completed;
+      }
+
+      state = {
+        currentWorkerId: workflow.start,
+        completedRuns: state.completedRuns,
+        sessions: state.sessions,
+      };
+      await stateStore.save(state);
+    }
 
     while (true) {
       const worker = workers.get(state.currentWorkerId);
