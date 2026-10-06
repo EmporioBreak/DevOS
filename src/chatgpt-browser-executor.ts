@@ -57,6 +57,13 @@ const SEND = [
   'button[type="submit"][aria-label="Отправить"]:visible',
 ].join(",");
 
+export function persistentChromeIgnoreDefaultArgs(
+  platform: string = process.platform,
+): string[] | undefined {
+  if (platform !== "darwin") return undefined;
+  return ["--use-mock-keychain", "--password-store=basic"];
+}
+
 export class ChatGptBrowserExecutor implements Executor {
   readonly kind = "chatgpt_browser" as const;
   private context: BrowserContext | undefined;
@@ -416,11 +423,13 @@ export class ChatGptBrowserExecutor implements Executor {
     await mkdir(this.config.profileDir, { recursive: true });
     debugLog("browser.context", { phase: "launch", headless: this.config.headless, browserMode: this.config.headless ? "headless" : "headed" });
     const baseline = await profileProcesses(this.config.profileDir).catch(() => undefined);
+    const ignoreDefaultArgs = persistentChromeIgnoreDefaultArgs();
     const context = await chromium.launchPersistentContext(this.config.profileDir, {
       timeout,
       channel: this.config.browserChannel,
       headless: this.config.headless,
       viewport: null,
+      ...(ignoreDefaultArgs ? { ignoreDefaultArgs } : {}),
     });
 
     this.context = context;
