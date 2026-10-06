@@ -70,6 +70,29 @@ test("accepts the configured ChatGPT Project landing URL", () => {
   );
 });
 
+test("accepts the live ChatGPT Project overview as a landing state only", () => {
+  const projectUrl = "https://chatgpt.com/g/g-p-project-denis-devos/";
+  const overviewUrl =
+    "https://chatgpt.com/g/g-p-project-denis-devos/project";
+
+  assert.equal(
+    assertChatGptProjectScope(projectUrl, overviewUrl).pathname,
+    "/g/g-p-project-denis-devos/project",
+  );
+  assert.throws(
+    () => assertChatGptProjectScope(projectUrl, overviewUrl, true),
+    /Project conversation URL did not appear/,
+  );
+  assert.throws(
+    () =>
+      assertChatGptProjectScope(
+        projectUrl,
+        "https://chatgpt.com/g/g-p-other/project",
+      ),
+    /escaped the configured Project/,
+  );
+});
+
 test("rejects a configured ChatGPT URL that cannot enforce project scope", () => {
   assert.throws(
     () => getChatGptProjectScope("https://chatgpt.com/c/standalone"),
@@ -104,5 +127,17 @@ test("accepts only conversations in the configured ChatGPT Project", () => {
         true,
       ),
     /escaped the configured Project/,
+  );
+});
+
+test("rejects provisional local ChatGPT conversation IDs as resumable sessions", () => {
+  assert.throws(
+    () =>
+      assertChatGptProjectScope(
+        "https://chatgpt.com/g/g-p-project-denis-devos/",
+        "https://chatgpt.com/g/g-p-project-denis-devos/c/local-chatgpt%3A1234",
+        true,
+      ),
+    /Project conversation URL did not appear/,
   );
 });

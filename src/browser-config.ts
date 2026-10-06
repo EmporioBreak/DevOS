@@ -62,10 +62,10 @@ export function getChatGptProjectScope(value: string): ChatGptProjectScope | nul
   const url = validateChatGptUrl(value);
   if (url.pathname === "/") return null;
 
-  const match = /^\/g\/([^/]+)(?:\/c)?\/?$/.exec(url.pathname);
+  const match = /^\/g\/([^/]+)(?:\/(?:project|c))?\/?$/.exec(url.pathname);
   if (!match?.[1]) {
     throw new Error(
-      "Invalid configured ChatGPT Project URL; expected /g/<project-id>/ or /g/<project-id>/c/",
+      "Invalid configured ChatGPT Project URL; expected a /g/<project-id>/ Project URL",
     );
   }
   return { origin: url.origin, projectId: match[1] };
@@ -80,7 +80,7 @@ export function assertChatGptProjectScope(
   const scope = getChatGptProjectScope(projectUrl);
   if (!scope) return candidate;
 
-  const match = /^\/g\/([^/]+)(?:\/c(?:\/([^/]+))?)?\/?$/.exec(
+  const match = /^\/g\/([^/]+)(?:\/project|\/c(?:\/([^/]+))?)?\/?$/.exec(
     candidate.pathname,
   );
   const projectId = match?.[1];
@@ -92,6 +92,20 @@ export function assertChatGptProjectScope(
   if (requireConversation && !conversationId) {
     throw new Error("ChatGPT Project conversation URL did not appear");
   }
+  if (requireConversation && isProvisionalChatGptConversationId(conversationId)) {
+    throw new Error("ChatGPT Project conversation URL did not appear");
+  }
 
   return candidate;
+}
+
+export function isProvisionalChatGptConversationId(value: string | undefined): boolean {
+  if (!value) return false;
+  let decoded = value;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    // Keep the raw URL segment for the provisional-prefix check.
+  }
+  return /^local-chatgpt:/i.test(decoded);
 }
