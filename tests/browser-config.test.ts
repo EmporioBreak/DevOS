@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { CHATGPT_PERSISTENT_IGNORE_DEFAULT_ARGS } from "../src/chatgpt-browser-executor.js";
 import {
   assertChatGptProjectScope,
   getChatGptProjectScope,
@@ -147,3 +148,15 @@ test("rejects provisional local ChatGPT conversation IDs as resumable sessions",
   assert.equal(loadChatGptBrowserConfig({ DEVOS_BROWSER_HEADLESS: "1" }).headless, true);
   assert.throws(() => loadChatGptBrowserConfig({ DEVOS_BROWSER_HEADLESS: "yes" }), /must be 0 or 1/);
  });
+
+
+test("persistent Chrome keeps durable profile semantics", () => {
+  assert.deepEqual(CHATGPT_PERSISTENT_IGNORE_DEFAULT_ARGS, [
+    "--enable-automation",
+    "--use-mock-keychain",
+    "--password-store=basic",
+    "--disable-extensions",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-sync",
+  ]);
+});

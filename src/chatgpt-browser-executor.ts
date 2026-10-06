@@ -50,6 +50,16 @@ const COMPOSER = [
   '[contenteditable="true"]:visible',
 ].join(",");
 
+
+export const CHATGPT_PERSISTENT_IGNORE_DEFAULT_ARGS = [
+  "--enable-automation",
+  "--use-mock-keychain",
+  "--password-store=basic",
+  "--disable-extensions",
+  "--disable-component-extensions-with-background-pages",
+  "--disable-sync",
+] as const;
+
 const SEND = [
   '#composer-submit-button:visible',
   'button[data-testid="send-button"]:visible',
@@ -421,6 +431,8 @@ export class ChatGptBrowserExecutor implements Executor {
       channel: this.config.browserChannel,
       headless: this.config.headless,
       viewport: null,
+      args: ["--disable-blink-features=AutomationControlled"],
+      ignoreDefaultArgs: [...CHATGPT_PERSISTENT_IGNORE_DEFAULT_ARGS],
     });
 
     this.context = context;
@@ -429,7 +441,9 @@ export class ChatGptBrowserExecutor implements Executor {
     context.on("close", () => { if (this.context === context) this.context = undefined; });
     try {
       if (!this.config.headless) await this.minimizeOwnedWindow(context, Math.min(timeout, 2_000));
-      await context.addInitScript({ content: CHATGPT_RESPONSE_LOADER_SOURCE });
+      await context.addInitScript({
+        content: `Object.defineProperty(navigator, 'webdriver', { get: function () { return undefined; } });\n${CHATGPT_RESPONSE_LOADER_SOURCE}`,
+      });
     } catch (error) {
       await this.close();
       throw error;
