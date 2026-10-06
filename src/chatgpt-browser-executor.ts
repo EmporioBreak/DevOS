@@ -26,6 +26,21 @@ export function isBrowserResumeUnavailableError(
   return error instanceof BrowserResumeUnavailableError;
 }
 
+export class BrowserPreSubmitFailureError extends Error {
+  readonly safeToRetryFresh = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "BrowserPreSubmitFailureError";
+  }
+}
+
+export function isBrowserPreSubmitFailureError(
+  error: unknown,
+): error is BrowserPreSubmitFailureError {
+  return error instanceof BrowserPreSubmitFailureError;
+}
+
 const COMPOSER = [
   '[data-testid="prompt-textarea"]:visible',
   '#prompt-textarea:visible',
@@ -78,8 +93,9 @@ export class ChatGptBrowserExecutor implements Executor {
           mayHaveSubmitted = true;
           submissionStarted();
         } catch (error) {
-          if (request.sessionId) throw new BrowserResumeUnavailableError(request.sessionId, error instanceof Error ? error.message : String(error));
-          throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          if (request.sessionId) throw new BrowserResumeUnavailableError(request.sessionId, message);
+          throw new BrowserPreSubmitFailureError(message);
         }
       };
       const response = sendAndRead(page, request.prompt, this.timeoutMs, assertSubmissionScope, preparedMessage).then(
@@ -236,7 +252,7 @@ export class ChatGptBrowserExecutor implements Executor {
         if (!retry) {
           const message = `Browser recovery attempt=${attempt} phase=${phase} ${transient ? "transient" : "definitive"}: ${cause}; saved identity preserved`;
           if (request.sessionId) throw new BrowserResumeUnavailableError(request.sessionId, message);
-          throw new Error(message);
+          throw new BrowserPreSubmitFailureError(message);
         }
       } finally {
         if (timer) clearTimeout(timer);
