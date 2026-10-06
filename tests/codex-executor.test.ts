@@ -44,7 +44,8 @@ test("parses thread id and final agent message", () => {
   const stdout = [
     '{"type":"thread.started","thread_id":"abc-123"}',
     '{"type":"item.completed","item":{"type":"agent_message","text":"first"}}',
-    '{"type":"item.completed","item":{"type":"agent_message","text":"final\\nDEVOS_RESULT {\\\"status\\\":\\\"done\\\"}"}}',
+    '{"type":"item.completed","item":{"type":"agent_message","text":"final
+DEVOS_RESULT {\\\"status\\\":\\\"done\\\"}"}}',
   ].join("\n");
 
   assert.equal(parseThreadId(stdout), "abc-123");
