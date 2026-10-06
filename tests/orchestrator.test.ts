@@ -696,3 +696,85 @@ test("legacy browser recovery marker cannot silently replace a missing saved con
   assert.deepEqual(store.state?.sessions, { other: "saved-other" });
   assert.deepEqual(store.state?.task, workflow.task);
 });
+
+
+test("worker-run budget stops dispatch after 30 completed runs", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 90 },
+    start: "worker",
+    workers: [{ id: "worker", executor: "codex", prompt: "Loop.", on: { done: "worker" } }],
+  };
+  const store = new MemoryStore();
+  store.state = {
+    currentWorkerId: "worker",
+    completedRuns: 30,
+    sessions: {},
+    task: workflow.task,
+    startedAt: new Date(1_000).toISOString(),
+    reviewLoops: 0,
+  };
+  const executor = new QueueExecutor("codex", [{ text: 'DEVOS_RESULT {"status":"done"}' }]);
+  await assert.rejects(new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["codex", executor]]),
+    stateStore: store,
+    now: () => 2_000,
+  }).run(), /maxWorkerRuns.*30/);
+  assert.equal(executor.requests.length, 0);
+});
+
+test("review-loop budget survives resume state", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 91 },
+    start: "worker",
+    workers: [{ id: "worker", executor: "codex", prompt: "Loop.", on: { done: "worker" } }],
+  };
+  const store = new MemoryStore();
+  store.state = {
+    currentWorkerId: "worker",
+    completedRuns: 1,
+    sessions: {},
+    task: workflow.task,
+    startedAt: new Date(1_000).toISOString(),
+    reviewLoops: 9,
+  };
+  const executor = new QueueExecutor("codex", [{ text: 'DEVOS_RESULT {"status":"done"}' }]);
+  await assert.rejects(new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["codex", executor]]),
+    stateStore: store,
+    now: () => 2_000,
+  }).run(), /maxReviewLoops.*8/);
+  assert.equal(executor.requests.length, 0);
+});
+
+test("wall-clock budget uses persisted startedAt across resume", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 92 },
+    start: "worker",
+    workers: [{ id: "worker", executor: "codex", prompt: "Loop.", on: { done: "worker" } }],
+  };
+  const store = new MemoryStore();
+  store.state = {
+    currentWorkerId: "worker",
+    completedRuns: 1,
+    sessions: {},
+    task: workflow.task,
+    startedAt: new Date(1_000).toISOString(),
+    reviewLoops: 0,
+  };
+  const executor = new QueueExecutor("codex", [{ text: 'DEVOS_RESULT {"status":"done"}' }]);
+  await assert.rejects(new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["codex", executor]]),
+    stateStore: store,
+    now: () => 1_000 + 6 * 60 * 60_000 + 1,
+  }).run(), /maxWallClockDurationMs/);
+  assert.equal(executor.requests.length, 0);
+});
