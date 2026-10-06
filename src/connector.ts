@@ -19,6 +19,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadConnectorSecrets, type ConnectorSecrets } from "./connector-env.js";
 import { captureProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "./process-identity.js";
 import { runBoundedConnectorSupervisor, type ConnectorSupervisorState } from "./connector-supervisor.js";
+import { appendConnectorDiagnostic } from "./connector-diagnostics.js";
 import {
   startGateway,
   ownerAuth,
@@ -531,7 +532,7 @@ export async function connector(
     return;
   }
   if (action === "status") {
-    let state: { pid?: number; publicUrl?: string } = {};
+    let state: { pid?: number; publicUrl?: string; lifecycle?: string; restartAttempt?: number; maxRestartAttempts?: number; lastFailureComponent?: string; lastFailureAt?: string; lastExitCode?: number | null } = {};
     try {
       state = JSON.parse(await readFile(stateFile, "utf8"));
     } catch {}
@@ -547,8 +548,15 @@ export async function connector(
       ? await publicEndpoint(config.ngrokApiPort, config.gatewayPort)
       : undefined;
     // Do not probe public tool endpoints or claim external reachability from local agent state.
+    const lifecycle = state.lifecycle ?? (alive ? "degraded" : "stopped");
+    const restart = state.restartAttempt !== undefined && state.maxRestartAttempts !== undefined
+      ? `; restart ${state.restartAttempt}/${state.maxRestartAttempts}`
+      : "";
+    const failure = state.lastFailureComponent
+      ? `; last failure ${state.lastFailureComponent}${state.lastExitCode !== undefined ? ` exit=${state.lastExitCode}` : ""}${state.lastFailureAt ? ` at ${state.lastFailureAt}` : ""}`
+      : "";
     process.stdout.write(
-      `Connector ${alive ? "running" : "stopped"}; local gateway ${local ? "healthy" : "unavailable"}; ngrok ${url && url === state.publicUrl ? "HTTPS endpoint registered" : "unavailable"}; public reachability not tested.\n`,
+      `Connector ${lifecycle}; runtime ${alive ? "running" : "stopped"}; local gateway ${local ? "healthy" : "unavailable"}; ngrok ${url && url === state.publicUrl ? "HTTPS endpoint registered" : "unavailable"}${restart}${failure}; public reachability not tested.\n`,
     );
     return;
   }
@@ -607,6 +615,7 @@ export async function connector(
       currentPublicUrl = ready.publicUrl;
     }
     terminalFailed = state.status === "terminal_failed";
+    await appendConnectorDiagnostic(root, state);
     await writeFile(
       stateFile,
       JSON.stringify({
