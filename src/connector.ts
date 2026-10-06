@@ -54,6 +54,48 @@ export function safeEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     if (env[key]) out[key] = env[key];
   return out;
 }
+
+function projectIdentity(root: string) {
+  return createHash("sha256").update(root).digest("hex").slice(0, 24);
+}
+
+async function atomicWrite(path: string, content: string) {
+  const tmp = path + "." + process.pid + ".tmp";
+  await writeFile(tmp, content, { mode: 0o600 });
+  await rename(tmp, path);
+  await chmod(path, 0o600);
+}
+
+function keychain(root: string, account: string, value?: string): string | undefined {
+  if (process.platform !== "darwin") return undefined;
+  const service = "devos.connector." + projectIdentity(root);
+  const args = value === undefined
+    ? ["find-generic-password", "-a", account, "-s", service, "-w"]
+    : ["add-generic-password", "-U", "-a", account, "-s", service, "-w"];
+  const result = spawnSync("/usr/bin/security", args, {
+    input: value === undefined ? undefined : value,
+    encoding: "utf8",
+    env: safeEnvironment(process.env),
+    stdio: value === undefined ? ["ignore", "pipe", "ignore"] : ["pipe", "ignore", "ignore"],
+  });
+  return result.status === 0 && value === undefined ? result.stdout.trim() : result.status === 0 ? "" : undefined;
+}
+
+function importCredentials(root: string) {
+  for (const [envName, account] of [
+    ["DEVOS_CONNECTOR_OWNER_SECRET", "owner-secret"],
+    ["NGROK_AUTHTOKEN", "ngrok-authtoken"],
+  ] as const) {
+    const value = process.env[envName]?.trim();
+    if (value && keychain(root, account, value) === undefined)
+      throw new Error(`Could not store ${envName} in macOS Keychain.`);
+  }
+}
+
+function loadCredentials(root: string) {
+  process.env.DEVOS_CONNECTOR_OWNER_SECRET ||= keychain(root, "owner-secret");
+  process.env.NGROK_AUTHTOKEN ||= keychain(root, "ngrok-authtoken");
+}
 export function desktopCommand(root: string) {
   return {
     file: process.execPath,
@@ -276,11 +318,12 @@ async function health(port: number) {
 }
 const backgroundStateName = "background.json";
 
-async function backgroundState(root: string): Promise<{ pid?: number }> {
+type BackgroundState = { pid?: number; identity?: string; startedAt?: string };
+async function backgroundState(root: string): Promise<BackgroundState> {
   try {
     return JSON.parse(
       await readFile(join(root, ".devos/connector", backgroundStateName), "utf8"),
-    ) as { pid?: number };
+    ) as BackgroundState;
   } catch {
     return {};
   }
@@ -296,10 +339,21 @@ function processAlive(pid: number | undefined): boolean {
   }
 }
 
+function backgroundOwned(root: string, state: BackgroundState): boolean {
+  if (!processAlive(state.pid) || state.identity !== projectIdentity(root)) return false;
+  const ps = spawnSync("/bin/ps", ["-p", String(state.pid), "-o", "command="], {
+    encoding: "utf8",
+    env: safeEnvironment(process.env),
+  });
+  return ps.status === 0 &&
+    ps.stdout.includes("connector-runner") &&
+    ps.stdout.includes(root) &&
+    ps.stdout.includes("--background");
+}
+
 export async function connectorBackgroundRunning(root: string): Promise<boolean> {
   root = await realpath(root);
-  const state = await backgroundState(root);
-  return processAlive(state.pid);
+  return backgroundOwned(root, await backgroundState(root));
 }
 
 async function startBackground(root: string, config: {
@@ -309,7 +363,7 @@ async function startBackground(root: string, config: {
   const dir = join(root, ".devos/connector");
   const serviceFile = join(dir, backgroundStateName);
   const existing = await backgroundState(root);
-  if (processAlive(existing.pid)) {
+  if (backgroundOwned(root, existing)) {
     process.stdout.write("DevOS is already running in background.\n");
     return;
   }
@@ -327,10 +381,13 @@ async function startBackground(root: string, config: {
       DEVOS_CONNECTOR_OWNER_SECRET: process.env.DEVOS_CONNECTOR_OWNER_SECRET,
     },
   });
-  await writeFile(
+  await atomicWrite(
     serviceFile,
-    JSON.stringify({ pid: child.pid, startedAt: new Date().toISOString() }) + "\n",
-    { mode: 0o600 },
+    JSON.stringify({
+      pid: child.pid,
+      identity: projectIdentity(root),
+      startedAt: new Date().toISOString(),
+    }) + "\n",
   );
   child.unref();
 
@@ -372,7 +429,7 @@ async function stopBackground(root: string) {
   const dir = join(root, ".devos/connector");
   const serviceFile = join(dir, backgroundStateName);
   const state = await backgroundState(root);
-  if (!processAlive(state.pid)) {
+  if (!backgroundOwned(root, state)) {
     await rm(serviceFile, { force: true });
     process.stdout.write("DevOS background is already stopped.\n");
     return;
@@ -468,11 +525,13 @@ export async function connector(
       await installNgrok(root);
     }
     await mkdir(dir, { recursive: true, mode: 0o700 });
+    importCredentials(root);
     process.stdout.write(
-      `Connector software ready: Desktop Commander ${DESKTOP_VERSION}, ngrok ${NGROK_VERSION}.\n`,
+      `Connector software ready: Desktop Commander ${DESKTOP_VERSION}, ngrok ${NGROK_VERSION}.${process.env.DEVOS_CONNECTOR_OWNER_SECRET || process.env.NGROK_AUTHTOKEN ? " Supplied connector credentials stored in macOS Keychain." : ""}\n`,
     );
     return;
   }
+  loadCredentials(root);
   const config = await readConfig(root);
   if (action === "stop") {
     await stopBackground(root);
@@ -480,23 +539,23 @@ export async function connector(
   }
   if (action === "status") {
     let state: { pid?: number; publicUrl?: string } = {};
-    try {
-      state = JSON.parse(await readFile(stateFile, "utf8"));
-    } catch {}
-    let alive = false;
-    if (Number.isSafeInteger(state.pid) && state.pid! > 0) {
-      try {
-        process.kill(state.pid!, 0);
-        alive = true;
-      } catch {}
-    }
-    const local = alive && (await health(config.gatewayPort));
-    const url = alive
-      ? await publicEndpoint(config.ngrokApiPort, config.gatewayPort)
-      : undefined;
-    // Do not probe public tool endpoints or claim external reachability from local agent state.
+    let supervisor: { status?: string; attempt?: number } = {};
+    let diagnostic: { layer?: string; reason?: string } = {};
+    try { state = JSON.parse(await readFile(stateFile, "utf8")); } catch {}
+    try { supervisor = JSON.parse(await readFile(join(dir, "supervisor.json"), "utf8")); } catch {}
+    try { diagnostic = JSON.parse(await readFile(join(dir, "diagnostic.json"), "utf8")); } catch {}
+    const owned = backgroundOwned(root, await backgroundState(root));
+    const runtimeAlive = processAlive(state.pid);
+    const local = runtimeAlive && (await health(config.gatewayPort));
+    const url = runtimeAlive ? await publicEndpoint(config.ngrokApiPort, config.gatewayPort) : undefined;
+    const healthy = owned && local && !!url && url === state.publicUrl;
+    const phase = healthy ? "healthy" :
+      supervisor.status === "failed" ? "failed" :
+      supervisor.status === "recovering" ? "recovering" :
+      owned ? (runtimeAlive ? "degraded" : "starting") : "stopped";
+    const detail = diagnostic.layer ? `; last failure ${diagnostic.layer}: ${diagnostic.reason ?? "unknown"}` : "";
     process.stdout.write(
-      `Connector ${alive ? "running" : "stopped"}; local gateway ${local ? "healthy" : "unavailable"}; ngrok ${url && url === state.publicUrl ? "HTTPS endpoint registered" : "unavailable"}; public reachability not tested.\n`,
+      `Connector ${phase}; local gateway ${local ? "healthy" : "unavailable"}; ngrok ${url && url === state.publicUrl ? "HTTPS endpoint registered" : "unavailable"}${detail}; public reachability not tested.\n`,
     );
     return;
   }
@@ -510,11 +569,11 @@ export async function connector(
   }
   await checkDesktop();
   await checkedVersion(binary);
+  if (!process.env.DEVOS_CONNECTOR_OWNER_SECRET?.trim())
+    throw new Error("Missing owner credential: run one-time connector setup with DEVOS_CONNECTOR_OWNER_SECRET set, or provide the environment override.");
   ownerAuth(process.env.DEVOS_CONNECTOR_OWNER_SECRET);
   if (!process.env.NGROK_AUTHTOKEN?.trim())
-    throw new Error(
-      "Missing ngrok auth: set NGROK_AUTHTOKEN before connector run/doctor.",
-    );
+    throw new Error("Missing ngrok credential: run one-time connector setup with NGROK_AUTHTOKEN set, or provide the environment override.");
   if (action === "start") {
     await startBackground(root, config);
     return;
@@ -616,16 +675,15 @@ export async function connector(
         );
       });
     });
-    const [url] = await Promise.all([
-      ready,
-      writeFile(stateFile, JSON.stringify({ pid: runtime.pid }) + "\n", {
-        mode: 0o600,
-      }),
-    ]);
-    await writeFile(
+    await atomicWrite(stateFile, JSON.stringify({ pid: runtime.pid }) + "\n");
+    const url = await ready;
+    await atomicWrite(
       stateFile,
       JSON.stringify({ pid: runtime.pid, publicUrl: url }) + "\n",
-      { mode: 0o600 },
+    );
+    await atomicWrite(
+      join(dir, "supervisor.json"),
+      JSON.stringify({ version: 1, status: "healthy", updatedAt: new Date().toISOString() }) + "\n",
     );
     if (!stopping)
       process.stdout.write(
