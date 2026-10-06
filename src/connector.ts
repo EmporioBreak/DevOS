@@ -73,7 +73,10 @@ function keychain(root: string, account: string, value?: string): string | undef
     ? ["find-generic-password", "-a", account, "-s", service, "-w"]
     : ["add-generic-password", "-U", "-a", account, "-s", service, "-w"];
   const result = spawnSync("/usr/bin/security", args, {
-    input: value === undefined ? undefined : value,
+    // With -w and no argv value, macOS security prompts twice for a new/updated
+    // password. Feed both confirmations through stdin so the secret never
+    // appears in argv/process listings.
+    input: value === undefined ? undefined : value + "\n" + value + "\n",
     encoding: "utf8",
     env: safeEnvironment(process.env),
     stdio: value === undefined ? ["ignore", "pipe", "ignore"] : ["pipe", "ignore", "ignore"],
@@ -522,6 +525,7 @@ export async function connector(
     dir = join(root, ".devos/connector"),
     stateFile = join(dir, "state.json");
   await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700);
   await secureStatePermissions(dir);
   if (action === "setup") {
     try {
@@ -612,6 +616,7 @@ export async function connector(
   // Runtime output is suppressed; only fixed IPC diagnostics/non-secret URL escape.
   let runtime: ReturnType<typeof spawn> | undefined;
   let exit: Promise<number | null> | undefined;
+  let runtimeFailure: string | undefined;
   let stopping = false,
     deadline = 0,
     timer: NodeJS.Timeout | undefined;
@@ -670,9 +675,14 @@ export async function connector(
         30_000,
       );
       runtime!.on("message", (message) => {
+        if (typeof message !== "object" || !message) return;
         if (
-          typeof message === "object" &&
-          message &&
+          "failure" in message &&
+          typeof message.failure === "string"
+        ) {
+          runtimeFailure = message.failure.slice(0, 512);
+        }
+        if (
           "publicUrl" in message &&
           typeof message.publicUrl === "string"
         ) {
@@ -687,7 +697,8 @@ export async function connector(
         clearTimeout(timeout);
         fail(
           new Error(
-            "Connector startup/runtime failed; check local ports, ngrok credentials and Desktop Commander.",
+            runtimeFailure ??
+              "Connector startup/runtime failed; check local ports, ngrok credentials and Desktop Commander.",
           ),
         );
       });
@@ -707,7 +718,8 @@ export async function connector(
         `Connector ready: ${new URL("/mcp", url).href}. OAuth required. Foreground; Ctrl+C stops gateway, ngrok and Desktop Commander.\n`,
       );
     await exit;
-    if (!stopping) throw new Error("Connector runtime exited unexpectedly.");
+    if (!stopping)
+      throw new Error(runtimeFailure ?? "Connector runtime exited unexpectedly.");
   } catch (error) {
     if (!stopping) throw error;
   } finally {
