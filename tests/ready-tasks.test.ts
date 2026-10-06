@@ -7,6 +7,7 @@ import type { CommandResult, CommandRunner } from "../src/command-runner.js";
 import {
   listReadyTasks,
   loadOrCreateProjectConfig,
+  loadReadyTask,
   parseGitHubRepo,
   parseReadyTaskBody,
 } from "../src/ready-tasks.js";
@@ -137,4 +138,56 @@ test("lists owned ready issues with one GitHub request", async () => {
   assert.equal(runner.calls[0]?.command, "gh");
   assert.ok(runner.calls[0]?.args.includes("--author"));
   assert.ok(runner.calls[0]?.args.includes("@me"));
+});
+
+
+test("direct issue load rejects closed tasks by default", async () => {
+  const runner = new FakeRunner([
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        number: 42,
+        title: "Homepage",
+        body: body(),
+        state: "CLOSED",
+      }),
+      stderr: "",
+    },
+  ]);
+
+  await assert.rejects(
+    loadReadyTask(
+      { version: 1, repo: "owner/product" },
+      42,
+      "/project",
+      runner,
+    ),
+    /not an open ready DevOS task/,
+  );
+});
+
+test("direct issue load can read a closed task for guarded owner continuation", async () => {
+  const runner = new FakeRunner([
+    {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        number: 42,
+        title: "Homepage",
+        body: body(),
+        state: "CLOSED",
+      }),
+      stderr: "",
+    },
+  ]);
+
+  const task = await loadReadyTask(
+    { version: 1, repo: "owner/product" },
+    42,
+    "/project",
+    runner,
+    true,
+  );
+
+  assert.equal(task.issue, 42);
+  assert.equal(task.workflow.task.issue, 42);
 });
