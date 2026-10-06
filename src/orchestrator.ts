@@ -370,6 +370,8 @@ export class Orchestrator {
         state = {
           currentWorkerId: workflow.start,
           completedRuns: state.completedRuns,
+          startedAt: state.startedAt,
+          reviewLoops: state.reviewLoops ?? 0,
           sessions: state.sessions,
           ...(state.sessionProjectRoots ? { sessionProjectRoots: state.sessionProjectRoots } : {}),
           ...(state.browserWorkersStarted
