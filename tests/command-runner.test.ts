@@ -25,3 +25,19 @@ test("writes supplied stdin and closes it", async () => {
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout, "prompt over stdin");
 });
+
+test("finishes after matching complete stdout and kills the lingering child", async () => {
+  const startedAt = Date.now();
+  const result = await new LocalCommandRunner().run(
+    process.execPath,
+    ["-e", "process.stdout.write('ready\\n'); setInterval(() => {}, 1000)"],
+    process.cwd(),
+    undefined,
+    { completeWhenOutput: stdout => stdout.includes("ready\n") },
+  );
+
+  assert.ok(Date.now() - startedAt < 1_000, "runner should not wait for natural process exit");
+  assert.equal(result.completedEarly, true);
+  assert.match(result.stdout, /ready/);
+  assert.notEqual(result.signal, null);
+});

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { CommandResult, CommandRunner } from "../src/command-runner.js";
+import { LocalCommandRunner, type CommandResult, type CommandRunner } from "../src/command-runner.js";
 import {
   CodexExecutor,
   CodexResumeUnavailableError,
@@ -158,4 +158,96 @@ test("feeds fresh Codex prompt through stdin instead of argv", async () => {
   assert.equal(calls[0]?.stdin, "Do the work");
   assert.equal(calls[0]?.args.includes("Do the work"), false);
   assert.equal(calls[0]?.args.at(-1), "--json");
+});
+
+test("finishes a Codex JSONL worker turn while its child remains alive", async () => {
+  for (const sessionId of [undefined, "resumed-1"]) {
+    const threadId = sessionId ?? "fresh-1";
+    const jsonl = [
+      JSON.stringify({ type: "thread.started", thread_id: threadId }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: 'DEVOS_RESULT {"status":"done"}' },
+      }),
+    ].join("\n") + "\n";
+    const childScript = [
+      `require("node:child_process").spawn(${JSON.stringify(process.execPath)}, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] });`,
+      `process.stdout.write(${JSON.stringify(jsonl)});`,
+      "setInterval(() => {}, 1000);",
+    ].join(" ");
+    const runner: CommandRunner = {
+      run(_command, _args, cwd, stdin, options) {
+        return new LocalCommandRunner().run(
+          process.execPath,
+          ["-e", childScript],
+          cwd,
+          stdin,
+          options,
+        );
+      },
+    };
+    const startedAt = Date.now();
+
+    const result = await new CodexExecutor(runner).run({
+      projectRoot: process.cwd(),
+      prompt: "Complete this worker turn",
+      ...(sessionId ? { sessionId } : {}),
+    });
+
+    assert.ok(Date.now() - startedAt < 1_000, "Codex completion should not wait for child exit");
+    assert.equal(result.sessionId, threadId);
+    assert.equal(result.text, 'DEVOS_RESULT {"status":"done"}');
+  }
+});
+
+test("does not complete early for a malformed worker result", async () => {
+  const jsonl = [
+    JSON.stringify({ type: "thread.started", thread_id: "fresh-2" }),
+    JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: "DEVOS_RESULT {broken" },
+    }),
+  ].join("\n") + "\n";
+  const runner: CommandRunner = {
+    run(_command, _args, cwd, stdin, options) {
+      return new LocalCommandRunner().run(
+        process.execPath,
+        ["-e", `process.stdout.write(${JSON.stringify(jsonl)}); setTimeout(() => process.exit(1), 100)`],
+        cwd,
+        stdin,
+        options,
+      );
+    },
+  };
+
+  await assert.rejects(
+    () => new CodexExecutor(runner).run({ projectRoot: process.cwd(), prompt: "Continue" }),
+    /Codex exited with code 1/,
+  );
+});
+
+test("does not complete early for an unterminated JSONL record", async () => {
+  const stdout = [
+    JSON.stringify({ type: "thread.started", thread_id: "partial-1" }),
+    JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: 'DEVOS_RESULT {"status":"done"}' },
+    }),
+  ].join("\n");
+  const runner: CommandRunner = {
+    run(_command, _args, cwd, stdin, options) {
+      return new LocalCommandRunner().run(
+        process.execPath,
+        ["-e", `process.stdout.write(${JSON.stringify(stdout)}); setTimeout(() => process.exit(1), 100)`],
+        cwd,
+        stdin,
+        options,
+      );
+    },
+  };
+
+  await assert.rejects(
+    () => new CodexExecutor(runner).run({ projectRoot: process.cwd(), prompt: "Continue" }),
+    /Codex exited with code 1/,
+  );
 });

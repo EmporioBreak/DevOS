@@ -1,6 +1,7 @@
 import type { CommandRunner } from "./command-runner.js";
 import type { Executor, WorkerRequest } from "./executor.js";
 import type { WorkerOutput } from "./workflow.js";
+import { parseDevosResult } from "./result.js";
 
 export class CodexResumeUnavailableError extends Error {
   readonly safeToRetryFresh = true;
@@ -44,9 +45,11 @@ export class CodexExecutor implements Executor {
         )
       : buildCodexArgs(request.projectRoot, request.prompt, this.options);
 
-    const result = await this.runner.run("codex", args, request.projectRoot, request.prompt);
+    const result = await this.runner.run("codex", args, request.projectRoot, request.prompt, {
+      completeWhenOutput: stdout => isCompleteWorkerOutput(stdout, request.sessionId),
+    });
 
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 && result.completedEarly !== true) {
       const message =
         `Codex exited with code ${result.exitCode}: ${result.stderr.trim() || "no stderr"}`;
       if (
@@ -69,6 +72,20 @@ export class CodexExecutor implements Executor {
       text: parseFinalAgentMessage(result.stdout),
       sessionId,
     };
+  }
+}
+
+function isCompleteWorkerOutput(stdout: string, expectedSessionId?: string): boolean {
+  // Only a complete JSONL record can end a live child; a trailing partial line may
+  // still be followed by more output that changes which agent_message is final.
+  if (!stdout.endsWith("\n")) return false;
+  try {
+    const sessionId = parseThreadId(stdout);
+    if (expectedSessionId && sessionId !== expectedSessionId) return false;
+    parseDevosResult(parseFinalAgentMessage(stdout));
+    return true;
+  } catch {
+    return false;
   }
 }
 
