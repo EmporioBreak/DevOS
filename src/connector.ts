@@ -278,6 +278,35 @@ async function health(port: number) {
     return false;
   }
 }
+export interface ConnectorStatusSnapshot {
+  lifecycle: string;
+  supervisor: string;
+  runtimeAlive: boolean;
+  localHealthy: boolean;
+  ngrokRegistered: boolean;
+  restartAttempt?: number;
+  maxRestartAttempts?: number;
+  lastFailureComponent?: string;
+  lastFailureAt?: string;
+  lastExitCode?: number | null;
+}
+
+export function formatConnectorStatus(snapshot: ConnectorStatusSnapshot): string {
+  const restart =
+    snapshot.restartAttempt !== undefined &&
+    snapshot.maxRestartAttempts !== undefined
+      ? `; restart ${snapshot.restartAttempt}/${snapshot.maxRestartAttempts}`
+      : "";
+  const failure = snapshot.lastFailureComponent
+    ? `; last failure ${snapshot.lastFailureComponent}${snapshot.lastExitCode !== undefined ? ` exit=${snapshot.lastExitCode}` : ""}${snapshot.lastFailureAt ? ` at ${snapshot.lastFailureAt}` : ""}`
+    : "";
+  return (
+    `Connector ${snapshot.lifecycle}; supervisor ${snapshot.supervisor}; runtime ${snapshot.runtimeAlive ? "running" : "stopped"}; ` +
+    `local gateway ${snapshot.localHealthy ? "healthy" : "unavailable"}; ngrok ${snapshot.ngrokRegistered ? "HTTPS endpoint registered" : "unavailable"}` +
+    `${restart}${failure}; public reachability not tested.\n`
+  );
+}
+
 const backgroundStateName = "background.json";
 
 export interface ConnectorBackgroundState {
@@ -564,16 +593,18 @@ export async function connector(
       supervisor = "stale";
     }
     // Do not probe public tool endpoints or claim external reachability from local agent state.
-    const lifecycle = state.lifecycle ?? (alive ? "degraded" : "stopped");
-    const restart = state.restartAttempt !== undefined && state.maxRestartAttempts !== undefined
-      ? `; restart ${state.restartAttempt}/${state.maxRestartAttempts}`
-      : "";
-    const failure = state.lastFailureComponent
-      ? `; last failure ${state.lastFailureComponent}${state.lastExitCode !== undefined ? ` exit=${state.lastExitCode}` : ""}${state.lastFailureAt ? ` at ${state.lastFailureAt}` : ""}`
-      : "";
-    process.stdout.write(
-      `Connector ${lifecycle}; supervisor ${supervisor}; runtime ${alive ? "running" : "stopped"}; local gateway ${local ? "healthy" : "unavailable"}; ngrok ${url && url === state.publicUrl ? "HTTPS endpoint registered" : "unavailable"}${restart}${failure}; public reachability not tested.\n`,
-    );
+    process.stdout.write(formatConnectorStatus({
+      lifecycle: state.lifecycle ?? (alive ? "degraded" : "stopped"),
+      supervisor,
+      runtimeAlive: alive,
+      localHealthy: local,
+      ngrokRegistered: !!url && url === state.publicUrl,
+      ...(state.restartAttempt !== undefined ? { restartAttempt: state.restartAttempt } : {}),
+      ...(state.maxRestartAttempts !== undefined ? { maxRestartAttempts: state.maxRestartAttempts } : {}),
+      ...(state.lastFailureComponent ? { lastFailureComponent: state.lastFailureComponent } : {}),
+      ...(state.lastFailureAt ? { lastFailureAt: state.lastFailureAt } : {}),
+      ...(state.lastExitCode !== undefined ? { lastExitCode: state.lastExitCode } : {}),
+    }));
     return;
   }
   if (action === "start") {
