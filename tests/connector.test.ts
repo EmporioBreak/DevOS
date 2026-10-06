@@ -5,7 +5,7 @@ import * as connectorModule from "../src/connector.js";
 import { adaptChatGptToolCall } from "../src/connector-gateway.js";
 
 test("provider-neutral CLI rejects obsolete tunnel IDs and secret flags", () => {
-  for (const action of ["setup", "doctor", "run", "status"])
+  for (const action of ["setup", "doctor", "run", "start", "stop", "status"])
     assert.deepEqual(parseCliArgs(["connector", action]), {
       kind: "connector",
       action,
@@ -13,7 +13,6 @@ test("provider-neutral CLI rejects obsolete tunnel IDs and secret flags", () => 
   for (const args of [
     ["connector", "run", "--tunnel-id", "obsolete"],
     ["connector", "run", "--token", "secret"],
-    ["connector", "stop"],
   ])
     assert.throws(() => parseCliArgs(args), /Usage/);
 });

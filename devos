@@ -162,7 +162,7 @@ if is_self_host_checkout; then
   sync_self_host_checkout
   build_self_host
   cd "$ROOT"
-  exec node "$SELF_CLI" "$@"
+  exec env DEVOS_MANAGE_BACKGROUND=1 node "$SELF_CLI" "$@"
 fi
 
 if [ "${1-}" = "connector" ]; then
@@ -180,4 +180,4 @@ if [ ! -f "$RUNTIME_CLI" ] || [ -z "$LOCAL_HEAD" ] || [ "$LOCAL_HEAD" != "$REMOT
 fi
 
 cd "$ROOT"
-exec node "$RUNTIME_CLI" "$@"
+exec env DEVOS_MANAGE_BACKGROUND=1 node "$RUNTIME_CLI" "$@"

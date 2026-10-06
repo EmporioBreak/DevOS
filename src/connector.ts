@@ -24,7 +24,13 @@ import {
 export { startGateway } from "./connector-gateway.js";
 export const NGROK_VERSION = "3.39.11";
 export const DESKTOP_VERSION = "0.2.52";
-export type ConnectorAction = "setup" | "doctor" | "run" | "status";
+export type ConnectorAction =
+  | "setup"
+  | "doctor"
+  | "run"
+  | "start"
+  | "stop"
+  | "status";
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const softwareRoot = resolve(
   moduleDir,
@@ -268,6 +274,138 @@ async function health(port: number) {
     return false;
   }
 }
+const backgroundStateName = "background.json";
+
+async function backgroundState(root: string): Promise<{ pid?: number }> {
+  try {
+    return JSON.parse(
+      await readFile(join(root, ".devos/connector", backgroundStateName), "utf8"),
+    ) as { pid?: number };
+  } catch {
+    return {};
+  }
+}
+
+function processAlive(pid: number | undefined): boolean {
+  if (!Number.isSafeInteger(pid) || pid! <= 0) return false;
+  try {
+    process.kill(pid!, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function connectorBackgroundRunning(root: string): Promise<boolean> {
+  root = await realpath(root);
+  const state = await backgroundState(root);
+  return processAlive(state.pid);
+}
+
+async function startBackground(root: string, config: {
+  gatewayPort: number;
+  ngrokApiPort: number;
+}) {
+  const dir = join(root, ".devos/connector");
+  const serviceFile = join(dir, backgroundStateName);
+  const existing = await backgroundState(root);
+  if (processAlive(existing.pid)) {
+    process.stdout.write("DevOS is already running in background.\n");
+    return;
+  }
+  await rm(serviceFile, { force: true });
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+
+  const runner = join(softwareRoot, "dist/src/connector-runner.js");
+  await access(runner);
+  const child = spawn(process.execPath, [runner, root, "--background"], {
+    detached: true,
+    stdio: "ignore",
+    env: {
+      ...safeEnvironment(process.env),
+      NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN,
+      DEVOS_CONNECTOR_OWNER_SECRET: process.env.DEVOS_CONNECTOR_OWNER_SECRET,
+    },
+  });
+  await writeFile(
+    serviceFile,
+    JSON.stringify({ pid: child.pid, startedAt: new Date().toISOString() }) + "\n",
+    { mode: 0o600 },
+  );
+  child.unref();
+
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (!processAlive(child.pid)) break;
+    let connectorState: { publicUrl?: string } = {};
+    try {
+      connectorState = JSON.parse(
+        await readFile(join(dir, "state.json"), "utf8"),
+      ) as { publicUrl?: string };
+    } catch {}
+    const local = await health(config.gatewayPort);
+    const publicUrl = local
+      ? await publicEndpoint(config.ngrokApiPort, config.gatewayPort)
+      : undefined;
+    if (
+      publicUrl &&
+      connectorState.publicUrl === publicUrl
+    ) {
+      process.stdout.write(
+        `DevOS background ready: ${new URL("/mcp", publicUrl).href}\nYou can close this terminal.\n`,
+      );
+      return;
+    }
+    await delay(100);
+  }
+
+  if (processAlive(child.pid)) {
+    try {
+      process.kill(child.pid!, "SIGTERM");
+    } catch {}
+  }
+  await rm(serviceFile, { force: true });
+  throw new Error("DevOS background startup failed.");
+}
+
+async function stopBackground(root: string) {
+  const dir = join(root, ".devos/connector");
+  const serviceFile = join(dir, backgroundStateName);
+  const state = await backgroundState(root);
+  if (!processAlive(state.pid)) {
+    await rm(serviceFile, { force: true });
+    process.stdout.write("DevOS background is already stopped.\n");
+    return;
+  }
+
+  try {
+    process.kill(state.pid!, "SIGTERM");
+  } catch {}
+  const gracefulDeadline = Date.now() + 5000;
+  while (processAlive(state.pid) && Date.now() < gracefulDeadline) {
+    await delay(50);
+  }
+  if (processAlive(state.pid)) {
+    try {
+      process.kill(state.pid!, "SIGKILL");
+    } catch {}
+  }
+
+  const cleanupDeadline = Date.now() + 3000;
+  while (Date.now() < cleanupDeadline) {
+    let runtime: { pid?: number } = {};
+    try {
+      runtime = JSON.parse(
+        await readFile(join(dir, "state.json"), "utf8"),
+      ) as { pid?: number };
+    } catch {}
+    if (!processAlive(runtime.pid)) break;
+    await delay(50);
+  }
+  await rm(serviceFile, { force: true });
+  process.stdout.write("DevOS background stopped; owned connector processes cleaned up.\n");
+}
+
 async function superviseRun(root: string) {
   const runner = join(softwareRoot, "dist/src/connector-runner.js");
   await access(runner);
@@ -336,6 +474,10 @@ export async function connector(
     return;
   }
   const config = await readConfig(root);
+  if (action === "stop") {
+    await stopBackground(root);
+    return;
+  }
   if (action === "status") {
     let state: { pid?: number; publicUrl?: string } = {};
     try {
@@ -358,6 +500,14 @@ export async function connector(
     );
     return;
   }
+  if (action === "start") {
+    try {
+      await checkDesktop();
+      await checkedVersion(binary);
+    } catch {
+      await connector("setup", root);
+    }
+  }
   await checkDesktop();
   await checkedVersion(binary);
   ownerAuth(process.env.DEVOS_CONNECTOR_OWNER_SECRET);
@@ -365,6 +515,10 @@ export async function connector(
     throw new Error(
       "Missing ngrok auth: set NGROK_AUTHTOKEN before connector run/doctor.",
     );
+  if (action === "start") {
+    await startBackground(root, config);
+    return;
+  }
   if (action === "doctor") {
     const lock = await acquire(root);
     await new Promise<void>((ok) => lock.close(() => ok()));

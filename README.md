@@ -499,11 +499,18 @@ completion не записывается: `FINAL_REVIEW_REQUIRED` оставля
 Путь соединения: **ChatGPT / Codex / OpenCode → HTTPS ngrok → DevOS Streamable HTTP `/mcp` на `127.0.0.1` → локальный stdio Desktop Commander → Mac**. Выполнение файловых и терминальных инструментов остаётся на Mac. Localhost-only соединение отвергнуто: ChatGPT не может обратиться к нему напрямую. OpenAI Secure MCP Tunnel отвергнут из-за привязки транспорта к провайдеру; tunnel-client, tunnel ID и Platform runtime key больше не используются. Hosted Remote Desktop Commander тоже не участвует.
 
 ```bash
+# Обычный lifecycle проекта:
+./devos
+# Первый запуск поднимает project-local DevOS stack в фоне и возвращает prompt.
+# Повторный ./devos показывает меню: ready tasks / status / stop.
+
+# Низкоуровневые команды для диагностики и автоматизации:
 ./devos connector setup
 ./devos connector doctor
-./devos connector run
-# В другом терминале того же проекта:
+./devos connector start
 ./devos connector status
+./devos connector stop
+./devos connector run   # foreground diagnostic mode
 ```
 
 Нужны macOS arm64/x64, Node ≥22, npm, `/usr/bin/unzip` и сеть для setup. Desktop Commander точно закреплён на `0.2.52`, MCP SDK — на `1.32.1`, зависимости воспроизводятся lockfile. `setup` устанавливает ngrok **3.39.11** из versioned official archive, проверяет закреплённый SHA256 ([источник checksum](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/n/ngrok.rb)), `ngrok version` и записывает hash установленного binary. Последующие проверки сверяют version и hash. Всё хранится в игнорируемой `.devos/`, глобальная установка и автообновление ngrok не нужны. Setup не требует секретов.
@@ -564,12 +571,12 @@ opencode mcp auth devos
 
 ### Время жизни и проверки
 
-`run` работает только в foreground и ждёт готовности до 30 секунд. Ctrl+C/SIGTERM останавливает группу gateway/ngrok/Desktop Commander. Отдельный процесс текущего запуска удерживает loopback mutex по каноническому пути проекта; stdin EOF при смерти CLI, включая SIGKILL, запускает cleanup и удерживает lock до конца. Даже если родитель ngrok вышел первым, потомки получают до трёх секунд для завершения, затем группа принудительно останавливается. Второй DevOS connector того же проекта запрещён; занятый lock-порт тоже приводит к отказу. Не запускайте отдельную копию gateway/ngrok вручную.
+Обычный `./devos` использует project-local background supervisor: после готовности он отсоединяется от терминала, а gateway/ngrok/Desktop Commander продолжают работать до явного Stop DevOS. `connector start|stop|status` дают тот же lifecycle без меню; `connector run` сохранён как foreground diagnostic mode, где Ctrl+C/SIGTERM и EOF владельца завершают весь принадлежащий запуску стек. Supervisor удерживает loopback mutex по каноническому пути проекта; второй stack того же проекта запрещён. При остановке потомки получают ограниченное время для завершения, затем принудительно убиваются. Не запускайте отдельную копию gateway/ngrok вручную.
 
 `doctor` проверяет точные локальные версии/hash, config, наличие auth и lock; действительность ngrok credentials и сеть он не подтверждает. `status` отдельно показывает здоровье локального gateway и регистрацию HTTPS endpoint в локальном ngrok API; внешнюю достижимость не утверждает. Секреты в диагностике отсутствуют. `npx tsx tests/connector-local.smoke.ts` проверяет настоящий локальный stdio/gateway, OAuth, discovery и чтение файла с fake ngrok, без реального публичного endpoint.
 
 Main agent/пользователь после независимого review настраивает ngrok локально, запускает run и проверяет ChatGPT Server URL/OAuth: список tools, `pwd`, `git status` DevOS, чтение файла и безопасное создание/чтение/удаление временного файла. Нужно также подтвердить второй remote-клиент. Только после live успеха отключается старый hosted connector. Worker smoke не заменяет эту проверку. Дополнительный `npx tsx tests/connector-oauth-browser.smoke.ts` проверяет consent в системном Chrome с полностью контролируемым HTTPS origin и loopback callback, не затрагивая worker-сессии.
 
-Автоматический lifecycle вместе с обычным `./devos run` **отложен**. Connector запускается отдельно; run/restart и сохранённые worker-сессии не меняются. В source checkout connector-команды используют текущую ветку без auto-update.
+Обычные `./devos run <issue>` и `./devos restart <issue>` автоматически убеждаются, что project-local background stack уже работает, и поднимают его при необходимости; worker-сессии и task state при этом остаются отдельными. В source checkout connector-команды используют текущую ветку без auto-update.
 
 Атрибуция: Desktop Commander — MIT, © 2024–2025 Eduard Ruzga and Desktop Commander Contributors ([upstream](https://github.com/wonderwhy-er/DesktopCommanderMCP)); MCP TypeScript SDK — MIT ([upstream](https://github.com/modelcontextprotocol/typescript-sdk)); ngrok — proprietary CLI ([условия](https://ngrok.com/terms-of-service)). Лицензии npm-пакетов остаются в установленных зависимостях. В pinned цепочке Desktop Commander `npm audit` сохраняет 11 findings: 6 moderate / 5 high; unrelated force-upgrade/downgrade не выполняется.

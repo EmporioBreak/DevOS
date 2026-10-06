@@ -34,7 +34,11 @@ import { resolveTaskReference } from "./task-reference.js";
 import type { Workflow } from "./workflow.js";
 import { loadWorkflow } from "./workflow-loader.js";
 
-import { connector, type ConnectorAction } from "./connector.js";
+import {
+  connector,
+  connectorBackgroundRunning,
+  type ConnectorAction,
+} from "./connector.js";
 
 export type CliCommand =
   | { kind: "connector"; action: ConnectorAction }
@@ -46,8 +50,13 @@ export function parseCliArgs(args: string[]): CliCommand {
     return { kind: "select" };
   }
 
-  if (args[0] === "connector" && ["setup", "doctor", "run", "status"].includes(args[1] ?? "") &&
-      args.length === 2) {
+  if (
+    args[0] === "connector" &&
+    ["setup", "doctor", "run", "start", "stop", "status"].includes(
+      args[1] ?? "",
+    ) &&
+    args.length === 2
+  ) {
     return { kind: "connector", action: args[1] as ConnectorAction };
   }
   const mode = args[0];
@@ -60,7 +69,7 @@ export function parseCliArgs(args: string[]): CliCommand {
   }
 
   throw new Error(
-    "Usage: ./devos | ./devos <run|restart> <workflow.json|issue-number> | ./devos connector <setup|doctor|run|status>",
+    "Usage: ./devos | ./devos <run|restart> <workflow.json|issue-number> | ./devos connector <setup|doctor|run|start|stop|status>",
   );
 }
 
@@ -159,6 +168,38 @@ export async function main(
   if (command.kind === "connector") {
     await connector(command.action, cwd);
     return;
+  }
+
+  if (process.env.DEVOS_MANAGE_BACKGROUND === "1") {
+    const backgroundWasRunning = await connectorBackgroundRunning(cwd);
+    if (!backgroundWasRunning) {
+      await connector("start", cwd);
+      if (command.kind === "select") return;
+    }
+
+    if (command.kind === "select") {
+      process.stdout.write(
+        "\nDevOS is running in background.\n" +
+          "1. Open ready tasks\n" +
+          "2. Show background status\n" +
+          "3. Stop DevOS\n",
+      );
+      const control = createInterface({ input, output });
+      try {
+        const answer = (await control.question("\nSelect: ")).trim();
+        if (answer === "2") {
+          await connector("status", cwd);
+          return;
+        }
+        if (answer === "3") {
+          await connector("stop", cwd);
+          return;
+        }
+        if (answer !== "1") throw new Error("Invalid selection");
+      } finally {
+        control.close();
+      }
+    }
   }
 
   if (command.kind === "select") {
