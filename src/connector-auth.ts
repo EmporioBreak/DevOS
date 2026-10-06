@@ -57,6 +57,11 @@ type Token = {
 // encrypted at rest with a key derived from the owner secret, bound to the
 // exact public MCP resource, and protected by 0600 file permissions.
 // Every map is bounded, expired entries are pruned before admitting new entries.
+export interface ConnectorAuthPersistenceHooks {
+  beforeAuthStateCommit?: () => void;
+  afterAuthStateCommit?: () => void;
+}
+
 export class ConnectorAuth implements OAuthServerProvider {
   private clients = new Map<string, OAuthClientInformationFull>();
   private approvedClients = new Set<string>();
@@ -71,6 +76,7 @@ export class ConnectorAuth implements OAuthServerProvider {
     ownerSecret: string,
     private clientsPath?: string,
     private statePath?: string,
+    private persistenceHooks: ConnectorAuthPersistenceHooks = {},
   ) {
     this.ownerDigest = digest(ownerSecret);
     this.loadPublicClients();
@@ -207,7 +213,9 @@ export class ConnectorAuth implements OAuthServerProvider {
         mode: 0o600,
         flag: "wx",
       });
+      this.persistenceHooks.beforeAuthStateCommit?.();
       renameSync(tmp, this.statePath);
+      this.persistenceHooks.afterAuthStateCommit?.();
     } finally {
       try {
         unlinkSync(tmp);
