@@ -155,25 +155,28 @@ export async function main(
   writeRunResult(workflow, state);
 }
 
+export function formatRunResult(
+  workflow: Workflow,
+  state: RunState,
+  label?: string,
+): string {
+  if (state.ownerReviewPending) {
+    return `DEVOS_OWNER_HANDOFF ${JSON.stringify({
+      status: "FINAL_REVIEW_REQUIRED",
+      task: workflow.task,
+    })}\n`;
+  }
+
+  const subject = label ? `${label}, ` : "";
+  return `DevOS complete: ${subject}${state.completedRuns} worker runs.\n`;
+}
+
 export function writeRunResult(
   workflow: Workflow,
   state: RunState,
   label?: string,
 ): void {
-  if (state.ownerReviewPending) {
-    process.stdout.write(
-      `DEVOS_OWNER_HANDOFF ${JSON.stringify({
-        status: "FINAL_REVIEW_REQUIRED",
-        task: workflow.task,
-      })}\n`,
-    );
-    return;
-  }
-
-  const subject = label ? `${label}, ` : "";
-  process.stdout.write(
-    `DevOS complete: ${subject}${state.completedRuns} worker runs.\n`,
-  );
+  process.stdout.write(formatRunResult(workflow, state, label));
 }
 
 export function parseParentOwnerDecision(
