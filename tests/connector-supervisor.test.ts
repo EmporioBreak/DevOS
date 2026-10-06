@@ -61,3 +61,25 @@ test("healthy stability resets the consecutive failure budget", async () => {
   });
   assert.ok(states.some(state => state.status === "healthy"));
 });
+
+
+test("supervisor preserves child failure component in diagnostics state", async () => {
+  const states: ConnectorSupervisorState[] = [];
+  await assert.rejects(
+    runBoundedConnectorSupervisor({
+      launch: async () => ({
+        ready: Promise.reject(Object.assign(new Error("ngrok failed"), { component: "ngrok" })),
+        exit: Promise.resolve({ code: 1, signal: null, component: "ngrok", message: "ngrok failed" }),
+        stop() {},
+      }),
+      sleep: async () => {},
+      onState: async state => { states.push(state); },
+    }),
+    /restart budget exhausted/,
+  );
+  assert.ok(states.some(state =>
+    state.status === "recovering" &&
+    state.lastFailureComponent === "ngrok"
+  ));
+  assert.equal(states.at(-1)?.lastFailureComponent, "ngrok");
+});
