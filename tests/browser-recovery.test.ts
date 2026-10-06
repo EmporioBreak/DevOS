@@ -70,7 +70,7 @@ function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failur
   };
   const executor = new ChatGptBrowserExecutor({ projectUrl: project, profileDir: "/unused", browserChannel: "chrome", headless: true }, options.slow ? 30 : 500);
   Object.assign(executor, { context });
-  return { executor, urls, changeConversation: () => { url = "https://chatgpt.com/g/one/c/unrelated"; }, attempts: () => attempts, sends: () => sends, fills: () => fills, closes: () => closes };
+  return { executor, urls, reopen: () => Object.assign(executor, { context }), changeConversation: () => { url = "https://chatgpt.com/g/one/c/unrelated"; }, attempts: () => attempts, sends: () => sends, fills: () => fills, closes: () => closes };
 }
 
 for (const phase of ["goto", "wait", "fill"] as const) {
@@ -285,6 +285,7 @@ test("orchestrator ordinary run retries a proven first-turn pre-submit 403 witho
   assert.deepEqual(store.state?.task, workflow.task);
   assert.equal(f.sends(), 0);
 
+  f.reopen();
   options.status = 200;
   const result = await new Orchestrator({
     projectRoot: "/project",
@@ -318,6 +319,7 @@ test("orchestrator ordinary run retries a proven first-turn transient exhaustion
   assert.deepEqual(store.state?.browserPreSubmitRetry, ["browser"]);
   assert.equal(f.sends(), 0);
 
+  f.reopen();
   options.failures = 0;
   const result = await new Orchestrator({
     projectRoot: "/project",
@@ -416,6 +418,7 @@ test("saved conversation remains identical across a pre-submit failure and ordin
   assert.equal(store.state?.sessions.browser, saved);
   assert.equal(f.sends(), 0);
 
+  f.reopen();
   options.status = 200;
   const result = await new Orchestrator({
     projectRoot: "/project",
@@ -446,6 +449,7 @@ for (const failure of ["auth", "transient"] as const) {
     assert.deepEqual(persisted?.sessions, { other: saved });
     assert.deepEqual(persisted?.task, workflow.task);
     assert.equal(f.sends(), 0);
+    f.reopen();
     options.status = 200; options.failures = 0;
     const result = await new Orchestrator({ ...runOptions, stateStore: new JsonStateStore(root, workflow.task) }).run();
     assert.equal(result.sessions.browser, created);
@@ -476,6 +480,7 @@ test("possible submission without a saved URL revokes safe retry and cannot crea
   const store = new RecoveryStateStore();
   const runOptions = { projectRoot: "/project", workflow, executors: new Map([["chatgpt_browser", f.executor]]), stateStore: store };
   await assert.rejects(new Orchestrator(runOptions).run(), /HTTP 403/);
+  f.reopen();
   options.status = 200;
   await assert.rejects(new Orchestrator(runOptions).run(), /post-submit.*not replayed/);
   assert.notEqual(store.state?.browserPreSubmitRetry?.includes("browser"), true);

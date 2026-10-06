@@ -107,7 +107,7 @@ test("fresh response failure still persists a conversation created during submis
     async evaluate() { return 1; }, async waitForFunction() { throw new Error("response failed after submission"); }, async close() {},
   };
   const executor = new ChatGptBrowserExecutor({ projectUrl: project, profileDir: "/unused", browserChannel: "chrome", headless: false }, 1000);
-  Object.assign(executor, { context: { async newPage() { return page; } } });
+  Object.assign(executor, { context: { async newPage() { return page; }, async close() {} } });
   await assert.rejects(executor.run({ projectRoot: "/project", prompt: "Work", enforceProjectScope: true, onSession: id => { saved = id; } }), /response failed after submission/);
   assert.equal(saved, created);
 });

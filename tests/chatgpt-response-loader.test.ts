@@ -60,3 +60,21 @@ for (const partial of [
     assert.equal(state.text, null);
   });
 }
+
+test("stream bytes refresh activity independently of response completion", async () => {
+  let now = 0;
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
+  const window = { location: { origin: "https://chatgpt.com" }, fetch: async () => new Response(stream, { headers: { "content-type": "text/event-stream" } }) } as unknown as { fetch: typeof fetch; __DEVOS_ARM_STREAM__: () => number; __DEVOS_STREAM_STATE__: { text: string | null; lastActivityAt: number } };
+  runInNewContext(CHATGPT_RESPONSE_LOADER_SOURCE, { window, URL, TextDecoder, Date: { now: () => now } });
+  window.__DEVOS_ARM_STREAM__();
+  const response = await window.fetch("https://chatgpt.com/backend-api/conversation", { method: "POST", body: JSON.stringify({ messages: [{ id: "user", author: { role: "user" } }] }) });
+  now = 11 * 60_000;
+  controller.enqueue(new TextEncoder().encode(event({ type: "response.output_text.delta", delta: "working" })));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(window.__DEVOS_STREAM_STATE__.lastActivityAt, now);
+  assert.equal(window.__DEVOS_STREAM_STATE__.text, null);
+  controller.enqueue(new TextEncoder().encode(event(finalMessage)));
+  controller.close();
+  await response.text();
+});
