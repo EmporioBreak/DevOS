@@ -192,3 +192,42 @@ test("owner handoff prompt includes the concrete Issue and PR", () => {
   assert.match(prompt, /https:\/\/github\.com\/owner\/product\/issues\/39/);
   assert.match(prompt, /https:\/\/github\.com\/owner\/product\/pull\/41/);
 });
+
+
+test("Issue-only workflow resolves a later PR before chat owner handoff", async () => {
+  const ownerUrl = "https://chatgpt.com/c/main-owner";
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 39 },
+    owner: { mode: "chatgpt_conversation", conversationUrl: ownerUrl },
+    start: "reviewer",
+    workers: [
+      {
+        id: "reviewer",
+        executor: "chatgpt_browser",
+        prompt: "Review.",
+        on: { approved: null },
+      },
+    ],
+  };
+
+  const chat = new QueueExecutor("chatgpt_browser", [
+    { text: 'DEVOS_RESULT {"status":"approved"}', sessionId: "https://chatgpt.com/c/review" },
+    { text: 'DEVOS_RESULT {"status":"approved"}', sessionId: ownerUrl },
+  ]);
+  const store = new MemoryStore();
+
+  const result = await new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["chatgpt_browser", chat]]),
+    stateStore: store,
+    resolveTask: async task => ({ ...task, pr: 40 }),
+  }).run();
+
+  assert.deepEqual(result.task, { repo: "owner/product", issue: 39, pr: 40 });
+  assert.match(
+    chat.requests[1]?.prompt ?? "",
+    /https:\/\/github\.com\/owner\/product\/pull\/40/,
+  );
+});
