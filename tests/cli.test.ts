@@ -14,8 +14,10 @@ import {
   parseIssueNumber,
   parseParentOwnerDecision,
   prepareRunState,
+  prepareTaskRun,
+  recordTaskCompletion,
 } from "../src/cli.js";
-import type { ReadyTask } from "../src/ready-tasks.js";
+import { isTaskCompleted, markTaskCompleted, type ReadyTask } from "../src/ready-tasks.js";
 
 class TrackingStore implements StateStore {
   cleared = 0;
@@ -187,4 +189,46 @@ test("owner decision requires an existing final-review handoff", () => {
       ownerReviewPending: true,
     }),
   );
+});
+
+
+test("restart explicitly clears completed-task state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-cli-completed-"));
+  try {
+    await markTaskCompleted(root, 42);
+    await assert.rejects(prepareTaskRun("run", root, 42), /already completed/);
+    await prepareTaskRun("restart", root, 42);
+    assert.equal(await isTaskCompleted(root, 42), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("records completion only after final owner approval", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-cli-owner-completion-"));
+  const workflow = {
+    version: 1 as const,
+    task: { repo: "owner/product", issue: 42 },
+    start: "reviewer",
+    workers: [{
+      id: "reviewer",
+      executor: "chatgpt_browser" as const,
+      prompt: "Review.",
+      on: { approved: null },
+    }],
+  };
+  try {
+    await recordTaskCompletion(root, workflow, {
+      currentWorkerId: "reviewer", completedRuns: 1, sessions: {},
+      ownerReviewPending: true,
+    });
+    assert.equal(await isTaskCompleted(root, 42), false);
+
+    await recordTaskCompletion(root, workflow, {
+      currentWorkerId: "reviewer", completedRuns: 1, sessions: {},
+    });
+    assert.equal(await isTaskCompleted(root, 42), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
