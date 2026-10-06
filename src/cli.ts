@@ -31,6 +31,7 @@ import {
   type ReadyTask,
 } from "./ready-tasks.js";
 import { resolveTaskReference } from "./task-reference.js";
+import { acquireTaskLock } from "./task-lock.js";
 import type { Workflow } from "./workflow.js";
 import { loadWorkflow } from "./workflow-loader.js";
 
@@ -89,6 +90,8 @@ export async function runWorkflow(
   config?: ProjectConfig,
 ): Promise<RunState> {
   if (config) assertWorkflowMatchesProject(workflow, config);
+  const taskLock = await acquireTaskLock(cwd, workflow.task);
+  try {
   if (process.env.DEVOS_DEBUG === "1") {
     process.env.DEVOS_DEBUG_FILE = join(
       cwd,
@@ -142,6 +145,9 @@ export async function runWorkflow(
     return state;
   } finally {
     await chatgpt.close();
+  }
+  } finally {
+    await taskLock.release();
   }
 }
 
