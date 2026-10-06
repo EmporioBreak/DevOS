@@ -159,7 +159,21 @@ export class Orchestrator {
         projectRoot: this.options.projectRoot,
         prompt: buildWorkerPrompt(activeWorkflow, worker),
         ...(sessionId ? { sessionId } : {}),
-        ...(worker.executor === "chatgpt_browser" ? { enforceProjectScope: true } : {}),
+        ...(worker.executor === "chatgpt_browser"
+          ? {
+              enforceProjectScope: true,
+              onSession: async (reportedSessionId: string) => {
+                state = {
+                  ...state,
+                  sessions: {
+                    ...state.sessions,
+                    [worker.id]: reportedSessionId,
+                  },
+                };
+                await stateStore.save(state);
+              },
+            }
+          : {}),
       });
 
       const sessions =
