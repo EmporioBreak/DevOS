@@ -439,8 +439,14 @@ async function stopBackground(root: string) {
     await delay(50);
   }
   if (processAlive(state.pid)) {
+    const afterGrace = await captureProcessIdentity(state.pid);
+    if (!afterGrace || !backgroundOwnershipMatches(state, afterGrace, root)) {
+      throw new Error(
+        "DevOS background PID changed identity during shutdown; refusing SIGKILL escalation.",
+      );
+    }
     try {
-      process.kill(state.pid!, "SIGKILL");
+      process.kill(state.pid, "SIGKILL");
     } catch {}
   }
 
