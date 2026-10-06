@@ -159,6 +159,10 @@ export class ConnectorAuth implements OAuthServerProvider {
           const token = this.tokenFromDisk(entry[1]);
           if (token) target.set(entry[0], token);
         }
+      // Re-persist immediately so expired/invalid entries that were skipped
+      // above are durably pruned while replay markers that are still valid
+      // remain protected across the next restart.
+      this.persistAuthState();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       try {
