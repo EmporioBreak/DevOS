@@ -44,8 +44,7 @@ test("parses thread id and final agent message", () => {
   const stdout = [
     '{"type":"thread.started","thread_id":"abc-123"}',
     '{"type":"item.completed","item":{"type":"agent_message","text":"first"}}',
-    '{"type":"item.completed","item":{"type":"agent_message","text":"final
-DEVOS_RESULT {\\\"status\\\":\\\"done\\\"}"}}',
+    '{"type":"item.completed","item":{"type":"agent_message","text":"final\\nDEVOS_RESULT {\\\"status\\\":\\\"done\\\"}"}}',
   ].join("\n");
 
   assert.equal(parseThreadId(stdout), "abc-123");
@@ -55,8 +54,8 @@ DEVOS_RESULT {\\\"status\\\":\\\"done\\\"}"}}',
 test("resumes the supplied Codex session", async () => {
   const calls: Array<{ args: string[]; cwd: string }> = [];
   const runner: CommandRunner = {
-    async run(_command, args): Promise<CommandResult> {
-      calls.push(args);
+    async run(_command, args, cwd): Promise<CommandResult> {
+      calls.push({ args, cwd });
       return {
         exitCode: 0,
         stderr: "",
@@ -74,6 +73,8 @@ test("resumes the supplied Codex session", async () => {
     sessionId: "session-1",
   });
 
-  assert.equal(calls[0]?.args.includes("resume"), true);\n  assert.equal(calls[0]?.cwd, "/project");\n  assert.deepEqual(calls[0]?.args.slice(0, 3), ["exec", "-C", "/project"]);
+  assert.equal(calls[0]?.args.includes("resume"), true);
+  assert.equal(calls[0]?.cwd, "/project");
+  assert.deepEqual(calls[0]?.args.slice(0, 3), ["exec", "-C", "/project"]);
   assert.equal(result.sessionId, "session-1");
 });
