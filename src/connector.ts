@@ -72,10 +72,16 @@ function keychain(root: string, account: string, value?: string): string | undef
   const args = value === undefined
     ? ["find-generic-password", "-a", account, "-s", service, "-w"]
     : ["add-generic-password", "-U", "-a", account, "-s", service, "-w"];
-  const result = spawnSync("/usr/bin/security", args, {
-    // With -w and no argv value, macOS security prompts twice for a new/updated
-    // password. Feed both confirmations through stdin so the secret never
-    // appears in argv/process listings.
+  // `security ... -w` intentionally reads a new password from a terminal, not
+  // ordinary stdin. For writes, give it a short-lived pseudo-TTY via macOS
+  // `script`; the secret still travels only over stdin and never appears in
+  // argv/process listings. Reads are non-interactive and can call `security`
+  // directly.
+  const command = value === undefined ? "/usr/bin/security" : "/usr/bin/script";
+  const commandArgs = value === undefined
+    ? args
+    : ["-q", "/dev/null", "/usr/bin/security", ...args];
+  const result = spawnSync(command, commandArgs, {
     input: value === undefined ? undefined : value + "\n" + value + "\n",
     encoding: "utf8",
     env: safeEnvironment(process.env),

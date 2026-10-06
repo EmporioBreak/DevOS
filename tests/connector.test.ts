@@ -846,6 +846,8 @@ test("connector hardening keeps recovery and credentials out of CLI argv", async
   const runner = await readFile(new URL("../src/connector-runner.ts", import.meta.url), "utf8");
   assert.match(source, /find-generic-password/);
   assert.match(source, /add-generic-password/);
+  assert.match(source, /\/usr\/bin\/script/);
+  assert.match(source, /\["-q", "\/dev\/null", "\/usr\/bin\/security", \.\.\.args\]/);
   assert.match(source, /value \+ "\\n" \+ value \+ "\\n"/);
   assert.match(gatewaySource, /Desktop Commander transport closed unexpectedly/);
   assert.match(source, /backgroundOwned/);
