@@ -87,7 +87,7 @@ function isTaskRef(value: unknown): value is TaskRef {
       key => key === "repo" || key === "issue" || key === "pr",
     ) &&
     typeof record.repo === "string" &&
-    /^[^/\\s]+\\/[^/\\s]+$/.test(record.repo) &&
+    /^[^/\s]+\/[^/\s]+$/.test(record.repo) &&
     typeof record.issue === "number" &&
     Number.isSafeInteger(record.issue) &&
     record.issue > 0 &&
