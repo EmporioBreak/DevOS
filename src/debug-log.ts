@@ -37,8 +37,15 @@ function redact(value: unknown, key = ""): unknown {
 }
 
 function redactSerializedCredentials(value: string): string {
-  // Decode serialized JSON/JSONL first so nested stringified command output is
-  // redacted with the same key rules as structured debug data.
+  // Prefer parsing the complete string so pretty-printed JSON and credential
+  // objects are redacted recursively. Fall back to per-line parsing for JSONL.
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed && (typeof parsed === "object" || typeof parsed === "string")) {
+      return JSON.stringify(redact(parsed));
+    }
+  } catch { /* JSONL and mixed prose are handled below. */ }
+
   const lines = value.split("\n").map(line => {
     try {
       const parsed: unknown = JSON.parse(line);
