@@ -11,7 +11,12 @@ import { CodexExecutor } from "./codex-executor.js";
 import { LocalCommandRunner } from "./command-runner.js";
 import type { Executor } from "./executor.js";
 import { JsonStateStore } from "./json-state-store.js";
-import { Orchestrator, type RunState, type StateStore } from "./orchestrator.js";
+import {
+  Orchestrator,
+  type OrchestrationEvent,
+  type RunState,
+  type StateStore,
+} from "./orchestrator.js";
 import {
   listReadyTasks,
   loadOrCreateProjectConfig,
@@ -83,6 +88,7 @@ export async function runWorkflow(
       stateStore,
       ...(ownerDecision ? { ownerDecision } : {}),
       resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
+      onEvent: writeOrchestrationEvent,
     }).run();
   } finally {
     await chatgpt.close();
@@ -158,6 +164,33 @@ export async function main(
   writeRunResult(workflow, state);
 }
 
+export function formatOrchestrationEvent(event: OrchestrationEvent): string {
+  switch (event.type) {
+    case "task_status":
+      if (event.status === "running") {
+        return `Task #${event.task.issue} — running (${event.resumed ? "resume" : "start"})\n`;
+      }
+      return `Task #${event.task.issue} — ${event.status}\n`;
+    case "worker_started":
+      if (event.executor === "chatgpt_browser") {
+        return event.session === "resumed"
+          ? `[${event.workerId}] ${event.executor} — resuming existing session\n`
+          : `[${event.workerId}] ${event.executor} — starting fresh conversation\n`;
+      }
+      return `[${event.workerId}] ${event.executor} — starting\n`;
+    case "worker_result":
+      return `[${event.workerId}] ${event.executor} — ${event.status}\n`;
+    case "transition":
+      return `→ ${event.to}\n`;
+    case "owner_handoff":
+      return "Owner handoff\n";
+  }
+}
+
+export function writeOrchestrationEvent(event: OrchestrationEvent): void {
+  process.stdout.write(formatOrchestrationEvent(event));
+}
+
 export function formatRunResult(
   workflow: Workflow,
   state: RunState,
@@ -171,7 +204,7 @@ export function formatRunResult(
   }
 
   const subject = label ? `${label}, ` : "";
-  return `DevOS complete: ${subject}${state.completedRuns} worker runs.\n`;
+  return `Task ${subject}completed (${state.completedRuns} worker runs).\n`;
 }
 
 export function writeRunResult(

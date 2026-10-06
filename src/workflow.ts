@@ -4,7 +4,7 @@ export type WorkerStatus =
   | "done"
   | "approved"
   | "changes_requested"
-  | "needs_host"
+  | "needs_local_worker"
   | "failed";
 
 export interface TaskRef {

@@ -96,7 +96,7 @@ test("starts without a pull request or existing sessions", async () => {
 });
 
 
-test("routes needs_host from ChatGPT to local Codex mechanically", async () => {
+test("routes needs_local_worker from ChatGPT to local Codex mechanically", async () => {
   const workflow: Workflow = {
     version: 1,
     task: { repo: "owner/product", issue: 99 },
@@ -106,7 +106,7 @@ test("routes needs_host from ChatGPT to local Codex mechanically", async () => {
         id: "primary",
         executor: "chatgpt_browser",
         prompt: "Attempt the task.",
-        on: { done: null, needs_host: "host" },
+        on: { done: null, needs_local_worker: "host" },
       },
       {
         id: "host",
@@ -118,7 +118,7 @@ test("routes needs_host from ChatGPT to local Codex mechanically", async () => {
   };
 
   const chat = new QueueExecutor("chatgpt_browser", [
-    { text: 'DEVOS_RESULT {"status":"needs_host"}', sessionId: "https://chatgpt.com/c/primary" },
+    { text: 'DEVOS_RESULT {"status":"needs_local_worker"}', sessionId: "https://chatgpt.com/c/primary" },
   ]);
   const codex = new QueueExecutor("codex", [
     { text: 'DEVOS_RESULT {"status":"done"}', sessionId: "codex-host" },
@@ -207,7 +207,7 @@ test("keeps persisted state after worker failure", async () => {
 });
 
 
-for (const status of ["needs_host", "changes_requested"] as const) {
+for (const status of ["needs_local_worker", "changes_requested"] as const) {
   test(`preserves state and rejects unroutable ${status}`, async () => {
     const workflow: Workflow = {
       version: 1,

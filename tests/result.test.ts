@@ -11,8 +11,8 @@ test("parses the final control line", () => {
 
 test("accepts host fallback status", () => {
   assert.deepEqual(
-    parseDevosResult('DEVOS_RESULT {"status":"needs_host"}'),
-    { status: "needs_host" },
+    parseDevosResult('DEVOS_RESULT {"status":"needs_local_worker"}'),
+    { status: "needs_local_worker" },
   );
 });
 

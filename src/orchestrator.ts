@@ -1,6 +1,6 @@
 import type { Executor } from "./executor.js";
 import { parseDevosResult } from "./result.js";
-import type { TaskRef, Workflow, WorkerSpec } from "./workflow.js";
+import type { ExecutorKind, TaskRef, WorkerStatus, Workflow, WorkerSpec } from "./workflow.js";
 
 export interface RunState {
   currentWorkerId: string;
@@ -16,6 +16,37 @@ export interface StateStore {
   clear(): Promise<void>;
 }
 
+export type TaskLifecycleStatus =
+  | "ready"
+  | "running"
+  | "final_review_required"
+  | "changes_requested"
+  | "completed"
+  | "blocked"
+  | "failed";
+
+export type OrchestrationEvent =
+  | {
+      type: "task_status";
+      task: TaskRef;
+      status: TaskLifecycleStatus;
+      resumed?: boolean;
+    }
+  | {
+      type: "worker_started";
+      workerId: string;
+      executor: ExecutorKind;
+      session: "fresh" | "resumed";
+    }
+  | {
+      type: "worker_result";
+      workerId: string;
+      executor: ExecutorKind;
+      status: WorkerStatus;
+    }
+  | { type: "transition"; from: string; to: string }
+  | { type: "owner_handoff"; task: TaskRef };
+
 export interface OrchestratorOptions {
   projectRoot: string;
   workflow: Workflow;
@@ -23,6 +54,7 @@ export interface OrchestratorOptions {
   stateStore: StateStore;
   ownerDecision?: "approved" | "changes_requested";
   resolveTask?: (task: TaskRef) => Promise<TaskRef>;
+  onEvent?: (event: OrchestrationEvent) => void | Promise<void>;
 }
 
 export class Orchestrator {
@@ -31,8 +63,9 @@ export class Orchestrator {
   async run(): Promise<RunState> {
     const { workflow, stateStore } = this.options;
     const workers = new Map(workflow.workers.map((worker) => [worker.id, worker]));
+    const persistedState = await stateStore.load();
     let state =
-      (await stateStore.load()) ?? {
+      persistedState ?? {
         currentWorkerId: workflow.start,
         completedRuns: 0,
         sessions: {},
@@ -45,7 +78,14 @@ export class Orchestrator {
 
     if (state.ownerReviewPending) {
       const decision = this.options.ownerDecision;
-      if (!decision) return state;
+      if (!decision) {
+        await this.emit({
+          type: "owner_handoff",
+          task: state.task ?? workflow.task,
+        });
+        await this.emitTaskStatus(state, "final_review_required");
+        return state;
+      }
 
       if (decision === "approved") {
         const completed = {
@@ -54,10 +94,12 @@ export class Orchestrator {
           sessions: state.sessions,
           task: state.task ?? workflow.task,
         };
+        await this.emitTaskStatus(completed, "completed");
         await stateStore.clear();
         return completed;
       }
 
+      await this.emitTaskStatus(state, "changes_requested");
       state = {
         currentWorkerId: workflow.start,
         completedRuns: state.completedRuns,
@@ -65,6 +107,10 @@ export class Orchestrator {
         task: state.task ?? workflow.task,
       };
       await stateStore.save(state);
+      await this.emit({ type: "transition", from: "owner", to: workflow.start });
+      await this.emitTaskStatus(state, "running", true);
+    } else {
+      await this.emitTaskStatus(state, "running", persistedState !== null);
     }
 
     while (true) {
@@ -75,6 +121,12 @@ export class Orchestrator {
       if (!executor) throw new Error(`Missing executor: ${worker.executor}`);
 
       const sessionId = state.sessions[worker.id];
+      await this.emit({
+        type: "worker_started",
+        workerId: worker.id,
+        executor: worker.executor,
+        session: sessionId ? "resumed" : "fresh",
+      });
       const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
       const output = await executor.run({
         projectRoot: this.options.projectRoot,
@@ -93,19 +145,27 @@ export class Orchestrator {
         sessions,
         completedRuns: state.completedRuns + 1,
       };
+      await this.emit({
+        type: "worker_result",
+        workerId: worker.id,
+        executor: worker.executor,
+        status: result.status,
+      });
 
       if (result.status === "failed") {
         await stateStore.save(state);
+        await this.emitTaskStatus(state, "failed");
         throw new Error(`Worker failed: ${worker.id}`);
       }
 
       const nextWorkerId = worker.on[result.status];
 
       if (
-        (result.status === "needs_host" || result.status === "changes_requested") &&
+        (result.status === "needs_local_worker" || result.status === "changes_requested") &&
         (nextWorkerId === null || nextWorkerId === undefined)
       ) {
         await stateStore.save(state);
+        await this.emitTaskStatus(state, "blocked");
         throw new Error(
           `Worker ${worker.id} returned unroutable status: ${result.status}`,
         );
@@ -122,8 +182,15 @@ export class Orchestrator {
           await stateStore.save(state);
         }
 
+        if (workflow.owner) {
+          await this.emit({
+            type: "owner_handoff",
+            task: state.task ?? workflow.task,
+          });
+        }
         const ownerResult = await this.handoffToOwner(state);
         if (ownerResult === "approved") {
+          await this.emitTaskStatus(state, "completed");
           await stateStore.clear();
           return state;
         }
@@ -131,9 +198,11 @@ export class Orchestrator {
         if (ownerResult === "final_review_required") {
           state = { ...state, ownerReviewPending: true };
           await stateStore.save(state);
+          await this.emitTaskStatus(state, "final_review_required");
           return state;
         }
 
+        await this.emitTaskStatus(state, "changes_requested");
         state = {
           currentWorkerId: workflow.start,
           completedRuns: state.completedRuns,
@@ -141,6 +210,8 @@ export class Orchestrator {
           task: state.task ?? workflow.task,
         };
         await stateStore.save(state);
+        await this.emit({ type: "transition", from: "owner", to: workflow.start });
+        await this.emitTaskStatus(state, "running", true);
         continue;
       }
 
@@ -148,9 +219,27 @@ export class Orchestrator {
         throw new Error(`Worker ${worker.id} routed to unknown worker: ${nextWorkerId}`);
       }
 
+      await this.emit({ type: "transition", from: worker.id, to: nextWorkerId });
       state = { ...state, currentWorkerId: nextWorkerId };
       await stateStore.save(state);
     }
+  }
+
+  private async emit(event: OrchestrationEvent): Promise<void> {
+    await this.options.onEvent?.(event);
+  }
+
+  private async emitTaskStatus(
+    state: RunState,
+    status: TaskLifecycleStatus,
+    resumed?: boolean,
+  ): Promise<void> {
+    await this.emit({
+      type: "task_status",
+      task: state.task ?? this.options.workflow.task,
+      status,
+      ...(status === "running" ? { resumed: resumed ?? false } : {}),
+    });
   }
 
   private async handoffToOwner(
@@ -198,8 +287,8 @@ export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec): strin
     "Put your meaningful work report in the appropriate GitHub Issue, PR, review, or comment.",
     "Do not invent new workers, roles, or routing during execution. The complete worker graph was declared before DevOS started.",
     `Begin every GitHub report with exactly: **DevOS worker:** \`${worker.id}\` (\`${worker.executor}\`)`,
-    'If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_host instead of failed.',
-    'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_host|failed"}',
+    'If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_local_worker instead of failed.',
+    'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_local_worker|failed"}',
   ].join("\n");
 }
 

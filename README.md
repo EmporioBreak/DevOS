@@ -31,10 +31,10 @@ DevOS только исполняет этот workflow.
 пользовательская задача
         ↓
 developer
-        ├─ needs_host → local_developer
+        ├─ needs_local_worker → local_developer
         └─ done → reviewer
                     ├─ changes_requested → developer
-                    ├─ needs_host → local_reviewer
+                    ├─ needs_local_worker → local_reviewer
                     └─ approved → owner final review
                                       ├─ changes_requested → developer
                                       └─ approved → готово
@@ -114,8 +114,26 @@ Select task: 1
 
 Starting #35: Build homepage
 ...
-DevOS complete: #35, 4 worker runs.
+Task #35, completed (4 worker runs).
 ```
+
+Во время исполнения DevOS также печатает короткие lifecycle-строки, сформированные самим оркестратором. Они показывают worker ID, executor, результат worker-а и следующий переход без вывода prompt-ов, ответов агента или conversation URL:
+
+```text
+Task #41 — running (start)
+[developer] chatgpt_browser — starting fresh conversation
+[developer] chatgpt_browser — done
+→ reviewer
+[reviewer] chatgpt_browser — resuming existing session
+[reviewer] chatgpt_browser — approved
+Owner handoff
+Task #41 — final_review_required
+DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED","task":{"repo":"owner/product","issue":41,"pr":57}}
+```
+
+Для нового browser-разговора видно `starting fresh conversation`; при повторном входе того же worker-а в task-scoped session — `resuming existing session`. Переходы `needs_local_worker → local_*` и `changes_requested → developer` печатаются тем же способом: сначала возвращённый статус worker-а, затем строка `→ next_worker`. Ошибка worker-а по-прежнему завершает процесс с ненулевым кодом; перед ошибкой в stdout уже виден его статус `failed`.
+
+Существующая строка `DEVOS_OWNER_HANDOFF ...` остаётся отдельным machine-readable результатом для `parent_process`; человекочитаемая строка лишь делает момент handoff заметным в терминале.
 
 После завершения workflow процесс DevOS заканчивается. В фоне ничего не остаётся и GitHub больше не опрашивается.
 
@@ -247,7 +265,7 @@ reviewer
 - во время исполнения worker не добавляет новые роли и не меняет маршрутизацию;
 - DevOS не создаёт workers динамически.
 
-Например, `needs_host` не создаёт local Codex worker. Он только переводит управление на уже существующий worker из workflow.
+Например, `needs_local_worker` не создаёт local Codex worker. Он только переводит управление на уже существующий worker из workflow.
 
 Если во время работы обнаружилась действительно непредвиденная роль, исполнение нужно остановить. Главный агент формирует новый workflow, после чего запускает его через `devos restart <workflow.json>`. Эта команда очищает сохранённое состояние только текущей GitHub Issue и начинает новый graph с его `start` worker-а.
 
@@ -295,7 +313,7 @@ Conversation URL worker-а хранится только в state текущей
 
 - сначала запускать задачу через `chatgpt_browser`;
 - worker должен реально попытаться выполнить её доступными инструментами;
-- если он упёрся именно в недоступную ему host/local capability, он возвращает `needs_host`;
+- если он упёрся именно в недоступную ему host/local capability, он возвращает `needs_local_worker`;
 - workflow механически переводит такую задачу на заранее настроенный `codex` worker.
 
 Это позволяет экономить лимиты Codex и использовать локальный executor только после фактической невозможности выполнить задачу в ChatGPT-среде.
@@ -372,12 +390,12 @@ DEVOS_RESULT {"status":"done"}
 - `done` — работа выполнена, переходить дальше по workflow;
 - `approved` — review пройден;
 - `changes_requested` — требуется вернуть работу указанному worker-у;
-- `needs_host` — worker попробовал выполнить задачу, но упёрся в возможность, доступную только на host/local environment;
+- `needs_local_worker` — worker попробовал выполнить задачу, но упёрся в возможность, доступную только на host/local environment;
 - `failed` — выполнение остановлено из-за ошибки; state сохраняется для последующего resume или явного `restart`.
 
 Worker не выбирает следующего исполнителя. Следующий шаг всегда определяется переходом `on[status]`, который заранее задал главный агент в workflow.
 
-Статусы `needs_host` и `changes_requested` требуют заранее объявленного перехода. Если такого перехода нет, DevOS сохраняет state и останавливается с ошибкой вместо того, чтобы считать workflow успешно завершённым.
+Статусы `needs_local_worker` и `changes_requested` требуют заранее объявленного перехода. Если такого перехода нет, DevOS сохраняет state и останавливается с ошибкой вместо того, чтобы считать workflow успешно завершённым.
 
 `failed` никогда не маршрутизируется дальше: он всегда сохраняет state и останавливает workflow. Поэтому `on.failed` может быть только `null` или отсутствовать.
 
@@ -431,7 +449,7 @@ devos restart .devos/workflow.json
       "prompt": "Implement the task described in GitHub.",
       "on": {
         "done": "reviewer",
-        "needs_host": "local_developer"
+        "needs_local_worker": "local_developer"
       }
     },
     {
@@ -450,7 +468,7 @@ devos restart .devos/workflow.json
       "on": {
         "approved": null,
         "changes_requested": "developer",
-        "needs_host": "local_reviewer"
+        "needs_local_worker": "local_reviewer"
       }
     },
     {
