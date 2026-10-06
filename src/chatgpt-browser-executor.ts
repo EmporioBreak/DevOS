@@ -100,34 +100,44 @@ export class ChatGptBrowserExecutor implements Executor {
         }
       };
       const response = sendAndRead(page, request.prompt, this.timeoutMs, assertSubmissionScope).then(
-        text => ({ kind: "response" as const, text }),
-        error => ({ kind: "response" as const, error }),
+        text => ({ text } as const),
+        error => ({ error } as const),
       );
+
+      if (request.sessionId) {
+        const outcome = await response;
+        if ("error" in outcome) throw outcome.error;
+        if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
+        if (!isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation after submission");
+        debugLog("browser.session.ready", { sessionId: request.sessionId, actualUrl: page.url() });
+        await request.onSession?.(request.sessionId);
+        debugLog("browser.response", { sessionId: request.sessionId, text: outcome.text });
+        return { text: outcome.text, sessionId: request.sessionId };
+      }
+
       const session = waitForConversationUrl(page, this.timeoutMs).then(
-        sessionId => ({ kind: "session" as const, sessionId }),
-        error => ({ kind: "session" as const, error }),
+        sessionId => ({ sessionId } as const),
+        error => ({ error } as const),
       );
       const first = await Promise.race([response, session]);
       if ("error" in first) throw first.error;
+
       let sessionId: string;
-      if (first.kind === "session") {
+      if ("sessionId" in first) {
         sessionId = first.sessionId;
       } else {
         const sessionOutcome = await session;
         if ("error" in sessionOutcome) throw sessionOutcome.error;
         sessionId = sessionOutcome.sessionId;
       }
-      if (projectScope) {
-        assertChatGptProjectScope(this.config.projectUrl, sessionId, true);
-      }
-      if (request.sessionId && !isSameChatGptConversation(request.sessionId, sessionId)) throw new Error("ChatGPT changed saved conversation after submission");
+
+      if (projectScope) assertChatGptProjectScope(this.config.projectUrl, sessionId, true);
       debugLog("browser.session.ready", { sessionId, actualUrl: page.url() });
       await request.onSession?.(sessionId);
 
       const outcome = await response;
       if ("error" in outcome) throw outcome.error;
       if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
-      if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation after submission");
       debugLog("browser.response", { sessionId, text: outcome.text });
       return { text: outcome.text, sessionId };
     } finally {
