@@ -96,8 +96,14 @@ function importCredentials(root: string) {
 }
 
 function loadCredentials(root: string) {
-  process.env.DEVOS_CONNECTOR_OWNER_SECRET ||= keychain(root, "owner-secret");
-  process.env.NGROK_AUTHTOKEN ||= keychain(root, "ngrok-authtoken");
+  if (!process.env.DEVOS_CONNECTOR_OWNER_SECRET) {
+    const value = keychain(root, "owner-secret");
+    if (value) process.env.DEVOS_CONNECTOR_OWNER_SECRET = value;
+  }
+  if (!process.env.NGROK_AUTHTOKEN) {
+    const value = keychain(root, "ngrok-authtoken");
+    if (value) process.env.NGROK_AUTHTOKEN = value;
+  }
 }
 
 async function secureStatePermissions(dir: string) {
@@ -683,7 +689,8 @@ export async function connector(
     const phase = healthy ? "healthy" :
       supervisor.status === "failed" ? "failed" :
       supervisor.status === "recovering" ? "recovering" :
-      owned ? (runtimeAlive ? "degraded" : "starting") : "stopped";
+      owned ? (runtimeAlive ? "degraded" : "starting") :
+      runtimeAlive && local ? "degraded" : "stopped";
     const detail = diagnostic.layer ? `; last failure ${diagnostic.layer}: ${diagnostic.reason ?? "unknown"}` : "";
     process.stdout.write(
       `Connector ${phase}; local gateway ${local ? "healthy" : "unavailable"}; ngrok ${url && url === state.publicUrl ? "HTTPS endpoint registered" : "unavailable"}${detail}; public reachability not tested.\n`,
