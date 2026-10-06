@@ -39,3 +39,21 @@ test("stale dead lock is replaced safely", { skip: process.platform !== "darwin"
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test("ambiguous partial lock is never removed automatically", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-lock-"));
+  const task = { repo: "owner/repo", issue: 9 };
+  const path = taskLockPath(root, task);
+  await (await import("node:fs/promises")).mkdir(join(root, ".devos", "locks"), { recursive: true });
+  await writeFile(path, "");
+  try {
+    await assert.rejects(
+      acquireTaskLock(root, task),
+      /ownership cannot be validated/,
+    );
+    assert.equal(await readFile(path, "utf8"), "");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
