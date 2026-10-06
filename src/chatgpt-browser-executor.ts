@@ -57,11 +57,14 @@ const SEND = [
   'button[type="submit"][aria-label="Отправить"]:visible',
 ].join(",");
 
-export function persistentChromeIgnoreDefaultArgs(
+export function persistentChromeCredentialArgs(
   platform: string = process.platform,
-): string[] | undefined {
+): { ignoreDefaultArgs: string[]; args: string[] } | undefined {
   if (platform !== "darwin") return undefined;
-  return ["--use-mock-keychain", "--password-store=basic"];
+  return {
+    ignoreDefaultArgs: ["--use-mock-keychain", "--password-store=basic"],
+    args: ["--use-real-keychain", "--password-store=keychain"],
+  };
 }
 
 export class ChatGptBrowserExecutor implements Executor {
@@ -423,13 +426,13 @@ export class ChatGptBrowserExecutor implements Executor {
     await mkdir(this.config.profileDir, { recursive: true });
     debugLog("browser.context", { phase: "launch", headless: this.config.headless, browserMode: this.config.headless ? "headless" : "headed" });
     const baseline = await profileProcesses(this.config.profileDir).catch(() => undefined);
-    const ignoreDefaultArgs = persistentChromeIgnoreDefaultArgs();
+    const credentialArgs = persistentChromeCredentialArgs();
     const context = await chromium.launchPersistentContext(this.config.profileDir, {
       timeout,
       channel: this.config.browserChannel,
       headless: this.config.headless,
       viewport: null,
-      ...(ignoreDefaultArgs ? { ignoreDefaultArgs } : {}),
+      ...(credentialArgs ?? {}),
     });
 
     this.context = context;
