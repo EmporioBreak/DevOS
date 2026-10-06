@@ -828,11 +828,15 @@ test("stale background PID is never accepted without project identity", async ()
 
 test("connector hardening keeps recovery and credentials out of CLI argv", async () => {
   const source = await readFile(new URL("../src/connector.ts", import.meta.url), "utf8");
+  const gatewaySource = await readFile(
+    new URL("../src/connector-gateway.ts", import.meta.url),
+    "utf8",
+  );
   const runner = await readFile(new URL("../src/connector-runner.ts", import.meta.url), "utf8");
   assert.match(source, /find-generic-password/);
   assert.match(source, /add-generic-password/);
   assert.match(source, /value \+ "\\n" \+ value \+ "\\n"/);
-  assert.match(source, /Desktop Commander transport closed unexpectedly/);
+  assert.match(gatewaySource, /Desktop Commander transport closed unexpectedly/);
   assert.match(source, /backgroundOwned/);
   assert.match(source, /atomicWrite/);
   assert.doesNotMatch(source, /\["--[^"]*(secret|token)/i);
