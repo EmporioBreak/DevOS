@@ -123,7 +123,7 @@ test("self-hosting fast-forwards a clean main checkout that is behind origin/mai
   const log = await readFile(f.log, "utf8");
   assert.match(log, /git:-C .* fetch origin main/);
   assert.match(log, /git:-C .* merge --ff-only origin\/main/);
-  assert.match(log, /npm:.*project:install --no-package-lock/);
+  assert.match(log, /npm:.*project:ci/);
   assert.match(log, /npm:.*project:run build/);
 });
 
@@ -188,7 +188,7 @@ test("a stale project-local runtime is refreshed without touching project state"
 
   const log = await readFile(f.log, "utf8");
   assert.match(log, /gh:repo clone EmporioBreak\/DevOS/);
-  assert.match(log, /npm:.*runtime\.tmp\.[0-9]+:install --no-package-lock/);
+  assert.match(log, /npm:.*runtime\.tmp\.[0-9]+:ci/);
   assert.match(log, /npm:.*runtime\.tmp\.[0-9]+:run build/);
   assert.equal(await readFile(state, "utf8"), '{"status":"running"}');
 });
@@ -262,4 +262,10 @@ if [ "$1 $2" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi`);
     assert.equal(failure.status,1);assert.ok(!(failure.stdout+failure.stderr).includes(synthetic));
     assert.match(failure.stderr,/bootstrap failed/);
   }finally{await (await import('node:fs/promises')).rm(f.root,{recursive:true,force:true});}
+});
+
+
+test("launcher never uses npm install --no-package-lock", async () => {
+  const source = await readFile(launcher, "utf8");
+  assert.doesNotMatch(source, /npm install --no-package-lock/);
 });
