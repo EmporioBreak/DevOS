@@ -3,6 +3,8 @@ import { chromium, type BrowserContext, type Page } from "playwright";
 import type { Executor, WorkerRequest } from "./executor.js";
 import type { WorkerOutput } from "./workflow.js";
 import {
+  assertChatGptProjectScope,
+  getChatGptProjectScope,
   loadChatGptBrowserConfig,
   validateChatGptUrl,
   type ChatGptBrowserConfig,
@@ -37,16 +39,31 @@ export class ChatGptBrowserExecutor implements Executor {
     const page = await context.newPage();
 
     try {
+      const projectScope = getChatGptProjectScope(this.config.projectUrl);
       const url = request.sessionId ?? this.config.projectUrl;
       validateChatGptUrl(url);
+      if (projectScope && request.sessionId) {
+        assertChatGptProjectScope(this.config.projectUrl, request.sessionId, true);
+      }
+
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: this.timeoutMs });
       await page.locator(COMPOSER).first().waitFor({
         state: "visible",
         timeout: this.timeoutMs,
       });
+      if (projectScope) {
+        assertChatGptProjectScope(
+          this.config.projectUrl,
+          page.url(),
+          request.sessionId !== undefined,
+        );
+      }
 
       const text = await sendAndRead(page, request.prompt, this.timeoutMs);
       const sessionId = await waitForConversationUrl(page, this.timeoutMs);
+      if (projectScope) {
+        assertChatGptProjectScope(this.config.projectUrl, sessionId, true);
+      }
       return { text, sessionId };
     } finally {
       await page.close().catch(() => undefined);
