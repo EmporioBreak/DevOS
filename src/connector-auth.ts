@@ -164,6 +164,20 @@ export class ConnectorAuth implements OAuthServerProvider {
       try {
         unlinkSync(this.statePath);
       } catch {}
+      try {
+        const diagnosticPath = dirname(this.statePath) + "/auth-diagnostic.json";
+        writeFileSync(
+          diagnosticPath,
+          JSON.stringify({
+            version: 1,
+            layer: "auth",
+            status: "invalidated",
+            reason: "encrypted OAuth state was unreadable or bound to different credentials/resource",
+            at: new Date().toISOString(),
+          }) + "\n",
+          { encoding: "utf8", mode: 0o600 },
+        );
+      } catch {}
     }
   }
 
