@@ -202,6 +202,7 @@ test("keeps persisted state after worker failure", async () => {
     currentWorkerId: "worker",
     completedRuns: 1,
     sessions: { worker: "session-2" },
+    task: { repo: "owner/product", issue: 102 },
   });
 });
 
@@ -245,6 +246,7 @@ for (const status of ["needs_host", "changes_requested"] as const) {
       currentWorkerId: "worker",
       completedRuns: 1,
       sessions: { worker: "session-3" },
+      task: { repo: "owner/product", issue: 103 },
     });
   });
 }
