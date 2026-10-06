@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -83,6 +83,32 @@ test("creates project-local config from git origin without a GitHub request", as
       await readFile(join(root, ".devos", "config.json"), "utf8"),
     );
     assert.deepEqual(saved, config);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loads project-local ChatGPT Project URL", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-ready-task-"));
+  const runner = new FakeRunner([]);
+
+  try {
+    await mkdir(join(root, ".devos"), { recursive: true });
+    await writeFile(
+      join(root, ".devos", "config.json"),
+      JSON.stringify({
+        version: 1,
+        repo: "owner/product",
+        chatgptProjectUrl: "https://chatgpt.com/g/project/c/",
+      }),
+    );
+
+    assert.deepEqual(await loadOrCreateProjectConfig(root, runner), {
+      version: 1,
+      repo: "owner/product",
+      chatgptProjectUrl: "https://chatgpt.com/g/project/c/",
+    });
+    assert.equal(runner.calls.length, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
