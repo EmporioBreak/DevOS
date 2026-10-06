@@ -66,3 +66,35 @@ test("clear removes only the active task state", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test("persists a PR resolved during task execution", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-state-"));
+
+  try {
+    const store = new JsonStateStore(root, { repo: "owner/product", issue: 39 });
+    await store.save({
+      currentWorkerId: "reviewer",
+      completedRuns: 2,
+      sessions: {
+        developer: "https://chatgpt.com/c/dev",
+        reviewer: "https://chatgpt.com/c/review",
+      },
+      task: { repo: "owner/product", issue: 39, pr: 40 },
+      ownerReviewPending: true,
+    });
+
+    assert.deepEqual(await store.load(), {
+      currentWorkerId: "reviewer",
+      completedRuns: 2,
+      sessions: {
+        developer: "https://chatgpt.com/c/dev",
+        reviewer: "https://chatgpt.com/c/review",
+      },
+      task: { repo: "owner/product", issue: 39, pr: 40 },
+      ownerReviewPending: true,
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
