@@ -107,6 +107,132 @@ export function patchToolListWireBody(body: string): string {
   }
 }
 
+function chatGptCompatibleTool(tool: Record<string, unknown>) {
+  const name = String(tool.name ?? "");
+  const next = { ...tool };
+
+  if (name === "set_config_value") {
+    next.description =
+      String(tool.description ?? "") +
+      "\n\nChatGPT compatibility: pass value_json as a JSON-encoded value (for example true, 100, null, \"/bin/zsh\", or [\"/Users/me/Documents\"]).";
+    next.inputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        key: { type: "string" },
+        value_json: {
+          type: "string",
+          description: "JSON-encoded configuration value.",
+        },
+      },
+      required: ["key", "value_json"],
+      additionalProperties: false,
+    };
+  }
+
+  if (name === "write_pdf") {
+    next.description =
+      String(tool.description ?? "") +
+      "\n\nChatGPT compatibility: content is always a string. Use content_format=markdown to create a PDF, or content_format=operations_json with a JSON-encoded array of insert/delete operations to modify one. Pass free-form PDF options through options_json when needed.";
+    next.inputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" },
+        content_format: {
+          type: "string",
+          enum: ["markdown", "operations_json"],
+        },
+        outputPath: { type: "string" },
+        options_json: {
+          type: "string",
+          description: "Optional JSON-encoded PDF options object.",
+        },
+      },
+      required: ["path", "content"],
+      additionalProperties: false,
+    };
+  }
+
+  if (name === "edit_block") {
+    next.description =
+      String(tool.description ?? "") +
+      "\n\nChatGPT compatibility: text/DOCX edits use old_string/new_string normally. Excel range edits pass the 2D cell array as JSON in content_json. Pass free-form options through options_json when needed.";
+    next.inputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        file_path: { type: "string" },
+        old_string: { type: "string" },
+        new_string: { type: "string" },
+        expected_replacements: { type: "number" },
+        range: { type: "string" },
+        content_json: {
+          type: "string",
+          description: "JSON-encoded 2D cell array for Excel range edits.",
+        },
+        options_json: {
+          type: "string",
+          description: "Optional JSON-encoded options object.",
+        },
+      },
+      required: ["file_path"],
+      additionalProperties: false,
+    };
+  }
+
+  return next;
+}
+
+export function adaptChatGptToolCall(request: unknown): unknown {
+  if (!request || typeof request !== "object") return request;
+  const call = request as {
+    method?: string;
+    params?: { name?: string; arguments?: Record<string, unknown>; [key: string]: unknown };
+    [key: string]: unknown;
+  };
+  if (call.method !== "tools/call" || !call.params?.arguments) return request;
+
+  const name = String(call.params.name ?? "");
+  const args = { ...call.params.arguments };
+
+  if (name === "set_config_value" && typeof args.value_json === "string") {
+    args.value = JSON.parse(args.value_json);
+    delete args.value_json;
+  }
+
+  if (name === "write_pdf") {
+    if (args.content_format === "operations_json" && typeof args.content === "string") {
+      args.content = JSON.parse(args.content);
+    }
+    delete args.content_format;
+    if (typeof args.options_json === "string") {
+      args.options = JSON.parse(args.options_json);
+    }
+    delete args.options_json;
+  }
+
+  if (name === "edit_block") {
+    if (typeof args.content_json === "string") {
+      args.content = JSON.parse(args.content_json);
+    }
+    delete args.content_json;
+    if (typeof args.options_json === "string") {
+      args.options = JSON.parse(args.options_json);
+    }
+    delete args.options_json;
+  }
+
+  return {
+    ...call,
+    params: {
+      ...call.params,
+      arguments: args,
+    },
+  };
+}
+
 export async function startGateway(options: {
   root: string;
   port: number;
@@ -300,7 +426,8 @@ export async function startGateway(options: {
                 | undefined
             )?.progressToken;
             const writes: Promise<void>[] = [];
-            const result = await local.request(request, ResultSchema, {
+            const forwardedRequest = adaptChatGptToolCall(request) as typeof request;
+            const result = await local.request(forwardedRequest, ResultSchema, {
               signal: extra.signal,
               ...(token !== undefined
                 ? {
@@ -336,12 +463,7 @@ export async function startGateway(options: {
                 tools: Array<Record<string, unknown>>;
                 [key: string]: unknown;
               };
-              const excludedForChatGpt = new Set([
-                "write_pdf",
-                "edit_block",
-                "track_ui_event",
-                "set_config_value",
-              ]);
+              const excludedForChatGpt = new Set(["track_ui_event"]);
               return {
                 ...listed,
                 tools: listed.tools
@@ -349,23 +471,28 @@ export async function startGateway(options: {
                     (tool) => !excludedForChatGpt.has(String(tool.name ?? "")),
                   )
                   .map((tool) => {
+                    const compatibleTool = chatGptCompatibleTool(tool);
                     const annotations =
-                      tool.annotations && typeof tool.annotations === "object"
-                        ? (tool.annotations as Record<string, unknown>)
+                      compatibleTool.annotations &&
+                      typeof compatibleTool.annotations === "object"
+                        ? (compatibleTool.annotations as Record<string, unknown>)
                         : {};
                     const readOnly = annotations.readOnlyHint === true;
                     const title =
-                      typeof tool.title === "string"
-                        ? tool.title
+                      typeof compatibleTool.title === "string"
+                        ? compatibleTool.title
                         : typeof annotations.title === "string"
                           ? annotations.title
-                          : String(tool.name ?? "Desktop Commander tool");
+                          : String(
+                              compatibleTool.name ?? "Desktop Commander tool",
+                            );
                     const inputSchema =
-                      tool.inputSchema && typeof tool.inputSchema === "object"
+                      compatibleTool.inputSchema &&
+                      typeof compatibleTool.inputSchema === "object"
                         ? structuredClone(
-                            tool.inputSchema as Record<string, unknown>,
+                            compatibleTool.inputSchema as Record<string, unknown>,
                           )
-                        : tool.inputSchema;
+                        : compatibleTool.inputSchema;
                     if (
                       inputSchema &&
                       typeof inputSchema === "object" &&
@@ -381,7 +508,7 @@ export async function startGateway(options: {
                       delete properties.options;
                     }
                     return {
-                      ...tool,
+                      ...compatibleTool,
                       inputSchema,
                       title,
                       annotations: {

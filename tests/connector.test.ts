@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseCliArgs } from "../src/cli.js";
 import * as connectorModule from "../src/connector.js";
+import { adaptChatGptToolCall } from "../src/connector-gateway.js";
 
 test("provider-neutral CLI rejects obsolete tunnel IDs and secret flags", () => {
   for (const action of ["setup", "doctor", "run", "status"])
@@ -22,6 +23,77 @@ test("connector exports a loopback gateway instead of a provider runtime", () =>
     "function",
   );
   assert.equal("TUNNEL_VERSION" in connectorModule, false);
+});
+
+test("ChatGPT compatibility adapter restores rich Desktop Commander arguments", () => {
+  const adapt = adaptChatGptToolCall;
+  assert.deepEqual(
+    adapt({
+      method: "tools/call",
+      params: {
+        name: "set_config_value",
+        arguments: { key: "telemetryEnabled", value_json: "false" },
+      },
+    }),
+    {
+      method: "tools/call",
+      params: {
+        name: "set_config_value",
+        arguments: { key: "telemetryEnabled", value: false },
+      },
+    },
+  );
+  assert.deepEqual(
+    adapt({
+      method: "tools/call",
+      params: {
+        name: "write_pdf",
+        arguments: {
+          path: "/tmp/in.pdf",
+          content: "[{\"type\":\"delete\",\"pageIndexes\":[0]}]",
+          content_format: "operations_json",
+          outputPath: "/tmp/out.pdf",
+          options_json: "{\"format\":\"A4\"}",
+        },
+      },
+    }),
+    {
+      method: "tools/call",
+      params: {
+        name: "write_pdf",
+        arguments: {
+          path: "/tmp/in.pdf",
+          content: [{ type: "delete", pageIndexes: [0] }],
+          outputPath: "/tmp/out.pdf",
+          options: { format: "A4" },
+        },
+      },
+    },
+  );
+  assert.deepEqual(
+    adapt({
+      method: "tools/call",
+      params: {
+        name: "edit_block",
+        arguments: {
+          file_path: "/tmp/book.xlsx",
+          range: "Sheet1!A1:B1",
+          content_json: "[[\"A\",\"B\"]]",
+        },
+      },
+    }),
+    {
+      method: "tools/call",
+      params: {
+        name: "edit_block",
+        arguments: {
+          file_path: "/tmp/book.xlsx",
+          range: "Sheet1!A1:B1",
+          content: [["A", "B"]],
+        },
+      },
+    },
+  );
 });
 
 import { createHash, randomBytes } from "node:crypto";
@@ -92,6 +164,20 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
     await client.connect(transport as Transport);
     const tools = await client.listTools();
     assert.ok(tools.tools.some((t) => t.name === "read_file"));
+    for (const requiredTool of [
+      "set_config_value",
+      "write_pdf",
+      "edit_block",
+    ]) {
+      const descriptor = tools.tools.find((t) => t.name === requiredTool) as any;
+      assert.ok(descriptor, `ChatGPT-compatible list must include ${requiredTool}`);
+      assert.doesNotMatch(JSON.stringify(descriptor.inputSchema), /"anyOf"/);
+    }
+    assert.equal(
+      tools.tools.some((t) => t.name === "track_ui_event"),
+      false,
+      "internal UI telemetry must not be model-callable",
+    );
     for (const tool of tools.tools) {
       const descriptor = tool as any;
       assert.equal(typeof descriptor.title, "string");
