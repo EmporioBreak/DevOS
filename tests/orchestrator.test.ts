@@ -340,3 +340,58 @@ test("marks a browser worker as started before its first executor call", async (
   assert.deepEqual(store.state?.browserWorkersStarted, ["worker"]);
   assert.deepEqual(store.state?.sessions, {});
 });
+
+
+test("persists a returned browser session before parsing malformed worker output", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 106 },
+    start: "worker",
+    workers: [
+      {
+        id: "worker",
+        executor: "chatgpt_browser",
+        prompt: "Continue the task.",
+        on: { done: null },
+      },
+    ],
+  };
+
+  const store = new MemoryStore();
+  const sessionId =
+    "https://chatgpt.com/g/g-p-project/c/conversation-106";
+  const chat = new QueueExecutor("chatgpt_browser", [
+    { text: "malformed result", sessionId },
+    { text: 'DEVOS_RESULT {"status":"done"}', sessionId },
+  ]);
+
+  await assert.rejects(
+    () =>
+      new Orchestrator({
+        projectRoot: "/project",
+        workflow,
+        executors: new Map([["chatgpt_browser", chat]]),
+        stateStore: store,
+      }).run(),
+    /DEVOS_RESULT/,
+  );
+
+  assert.deepEqual(store.state, {
+    currentWorkerId: "worker",
+    completedRuns: 0,
+    sessions: { worker: sessionId },
+    browserWorkersStarted: ["worker"],
+    task: { repo: "owner/product", issue: 106 },
+  });
+
+  const result = await new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["chatgpt_browser", chat]]),
+    stateStore: store,
+  }).run();
+
+  assert.equal(chat.requests[1]?.sessionId, sessionId);
+  assert.equal(result.sessions.worker, sessionId);
+  assert.equal(result.completedRuns, 1);
+});
