@@ -395,3 +395,66 @@ test("persists a returned browser session before parsing malformed worker output
   assert.equal(result.sessions.worker, sessionId);
   assert.equal(result.completedRuns, 1);
 });
+
+
+test("persists an early browser session when response loading fails after conversation creation", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 107 },
+    start: "worker",
+    workers: [
+      {
+        id: "worker",
+        executor: "chatgpt_browser",
+        prompt: "Continue the task.",
+        on: { done: null },
+      },
+    ],
+  };
+
+  const store = new MemoryStore();
+  const sessionId =
+    "https://chatgpt.com/g/g-p-project/c/conversation-107";
+  const interrupted: Executor = {
+    kind: "chatgpt_browser",
+    async run(request: WorkerRequest): Promise<WorkerOutput> {
+      assert.equal(request.sessionId, undefined);
+      assert.ok(request.onSession);
+      await request.onSession(sessionId);
+      throw new Error("simulated response loader failure");
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      new Orchestrator({
+        projectRoot: "/project",
+        workflow,
+        executors: new Map([["chatgpt_browser", interrupted]]),
+        stateStore: store,
+      }).run(),
+    /simulated response loader failure/,
+  );
+
+  assert.deepEqual(store.state, {
+    currentWorkerId: "worker",
+    completedRuns: 0,
+    sessions: { worker: sessionId },
+    browserWorkersStarted: ["worker"],
+    task: { repo: "owner/product", issue: 107 },
+  });
+
+  const resumed = new QueueExecutor("chatgpt_browser", [
+    { text: 'DEVOS_RESULT {"status":"done"}', sessionId },
+  ]);
+  const result = await new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["chatgpt_browser", resumed]]),
+    stateStore: store,
+  }).run();
+
+  assert.equal(resumed.requests[0]?.sessionId, sessionId);
+  assert.equal(result.sessions.worker, sessionId);
+  assert.equal(result.completedRuns, 1);
+});
