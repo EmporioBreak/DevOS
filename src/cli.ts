@@ -13,6 +13,7 @@ import { JsonStateStore } from "./json-state-store.js";
 import { Orchestrator, type StateStore } from "./orchestrator.js";
 import {
   clearTaskCompletion,
+  isTaskCompleted,
   listReadyTasks,
   loadOrCreateProjectConfig,
   loadReadyTask,
@@ -160,7 +161,16 @@ export async function main(
 
   const workflowPath = resolve(cwd, command.target);
   const workflow = await loadWorkflow(workflowPath);
+  if (command.mode === "run" && await isTaskCompleted(cwd, workflow.task.issue)) {
+    throw new Error(
+      `Issue #${workflow.task.issue} has already completed. Use ./devos restart ${command.target} after an explicit replan.`,
+    );
+  }
+  if (command.mode === "restart") {
+    await clearTaskCompletion(cwd, workflow.task.issue);
+  }
   const completedRuns = await runWorkflow(workflow, command.mode, cwd);
+  await markTaskCompleted(cwd, workflow.task.issue);
   process.stdout.write(`DevOS complete: ${completedRuns} worker runs.\n`);
 }
 
