@@ -21,7 +21,7 @@ export interface ConnectorSupervisorState {
 
 export interface ConnectorAttempt<T> {
   ready: Promise<T>;
-  exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  exit: Promise<{ code: number | null; signal: NodeJS.Signals | null; component?: string; message?: string }>;
   stop(signal?: NodeJS.Signals): void;
 }
 
@@ -69,10 +69,14 @@ export async function runBoundedConnectorSupervisor<T>(options: {
       const exited = await attempt.exit;
       if (options.signal?.aborted) return;
       if (healthyAt !== undefined && now() - healthyAt >= stableResetMs) failures = 0;
-      throw Object.assign(new Error("connector runtime exited unexpectedly"), {
-        exitCode: exited.code,
-        exitSignal: exited.signal,
-      });
+      throw Object.assign(
+        new Error(exited.message ?? "connector runtime exited unexpectedly"),
+        {
+          exitCode: exited.code,
+          exitSignal: exited.signal,
+          component: exited.component,
+        },
+      );
     } catch (error) {
       attempt.stop("SIGTERM");
       if (options.signal?.aborted) {
@@ -80,14 +84,14 @@ export async function runBoundedConnectorSupervisor<T>(options: {
         return;
       }
       failures++;
-      const detail = error as Error & { exitCode?: number | null; exitSignal?: NodeJS.Signals | null };
+      const detail = error as Error & { exitCode?: number | null; exitSignal?: NodeJS.Signals | null; component?: string };
       if (failures > maxRestartAttempts) {
         await options.onState({
           status: "terminal_failed",
           restartAttempt: maxRestartAttempts,
           maxRestartAttempts,
           lastFailureAt: new Date(now()).toISOString(),
-          lastFailureComponent: "runtime",
+          lastFailureComponent: detail.component ?? "runtime",
           lastExitCode: detail.exitCode,
           lastExitSignal: detail.exitSignal,
           lastFailureMessage: detail.message,
