@@ -92,8 +92,8 @@ export async function runBoundedConnectorSupervisor<T>(options: {
           maxRestartAttempts,
           lastFailureAt: new Date(now()).toISOString(),
           lastFailureComponent: detail.component ?? "runtime",
-          lastExitCode: detail.exitCode,
-          lastExitSignal: detail.exitSignal,
+          ...(detail.exitCode !== undefined ? { lastExitCode: detail.exitCode } : {}),
+          ...(detail.exitSignal !== undefined ? { lastExitSignal: detail.exitSignal } : {}),
           lastFailureMessage: detail.message,
         });
         throw new Error("Connector restart budget exhausted.");
