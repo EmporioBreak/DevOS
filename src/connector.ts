@@ -550,6 +550,7 @@ async function stopBackground(root: string) {
   const serviceFile = join(dir, backgroundStateName);
   const state = await backgroundState(root);
   const supervisorOwned = backgroundOwned(root, state);
+  const runtimeWasOwned = runtimeOwned(root, await runtimeState(root));
 
   if (supervisorOwned) {
     try {
@@ -569,7 +570,7 @@ async function stopBackground(root: string) {
   await cleanupOwnedRuntime(root);
   await rm(serviceFile, { force: true });
   await rm(join(dir, "supervisor.json"), { force: true });
-  if (!supervisorOwned && !(await runtimeState(root)).pid)
+  if (!supervisorOwned && !runtimeWasOwned)
     process.stdout.write("DevOS background is already stopped.\n");
   else
     process.stdout.write(
@@ -870,7 +871,10 @@ export async function connectorRuntime(root: string) {
         stop();
       },
     });
-    if (stopping) return;
+    if (stopping) {
+      if (failureReason) throw new Error(failureReason);
+      return;
+    }
     await writeFile(
       join(dir, "ngrok.yml"),
       `version: "2"\nweb_addr: 127.0.0.1:${config.ngrokApiPort}\nconsole_ui: false\nupdate_check: false\n`,
