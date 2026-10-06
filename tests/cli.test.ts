@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import type { RunState, StateStore } from "../src/orchestrator.js";
-import { isCliEntrypoint, parseCliArgs, prepareRunState } from "../src/cli.js";
+import {
+  chooseReadyTask,
+  isCliEntrypoint,
+  parseCliArgs,
+  parseIssueNumber,
+  prepareRunState,
+} from "../src/cli.js";
+import type { ReadyTask } from "../src/ready-tasks.js";
 
 class TrackingStore implements StateStore {
   cleared = 0;
@@ -14,22 +21,42 @@ class TrackingStore implements StateStore {
   async clear(): Promise<void> { this.cleared += 1; }
 }
 
-test("accepts run and restart commands", () => {
+test("accepts interactive, file, and issue run commands", () => {
+  assert.deepEqual(parseCliArgs([]), { kind: "select" });
   assert.deepEqual(parseCliArgs(["run", ".devos/workflow.json"]), {
+    kind: "run",
     mode: "run",
-    workflowPath: ".devos/workflow.json",
+    target: ".devos/workflow.json",
   });
-  assert.deepEqual(parseCliArgs(["restart", ".devos/workflow.json"]), {
+  assert.deepEqual(parseCliArgs(["restart", "35"]), {
+    kind: "run",
     mode: "restart",
-    workflowPath: ".devos/workflow.json",
+    target: "35",
   });
 });
 
 test("rejects unsupported CLI shapes including watch", () => {
-  assert.throws(() => parseCliArgs([]), /Usage: devos <run\|restart>/);
-  assert.throws(() => parseCliArgs(["start", "workflow.json"]), /Usage: devos <run\|restart>/);
-  assert.throws(() => parseCliArgs(["run"]), /Usage: devos <run\|restart>/);
-  assert.throws(() => parseCliArgs(["watch", "owner/product"]), /Usage: devos <run\|restart>/);
+  assert.throws(() => parseCliArgs(["start", "workflow.json"]), /Usage: \.\/devos/);
+  assert.throws(() => parseCliArgs(["run"]), /Usage: \.\/devos/);
+  assert.throws(() => parseCliArgs(["watch", "owner/product"]), /Usage: \.\/devos/);
+});
+
+test("parses positive numeric targets as issue numbers", () => {
+  assert.equal(parseIssueNumber("35"), 35);
+  assert.equal(parseIssueNumber(".devos/workflow.json"), null);
+  assert.equal(parseIssueNumber("35.json"), null);
+  assert.throws(() => parseIssueNumber("0"), /positive integer/);
+});
+
+test("selects a ready task by menu position", () => {
+  const tasks = [
+    { issue: 35, title: "A" },
+    { issue: 36, title: "B" },
+  ] as ReadyTask[];
+
+  assert.equal(chooseReadyTask(tasks, "2").issue, 36);
+  assert.throws(() => chooseReadyTask(tasks, "0"), /Invalid task selection/);
+  assert.throws(() => chooseReadyTask(tasks, "x"), /Invalid task selection/);
 });
 
 test("restart clears state while run preserves it", async () => {
