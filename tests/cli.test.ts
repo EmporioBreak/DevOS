@@ -7,6 +7,7 @@ import test from "node:test";
 import type { RunState, StateStore } from "../src/orchestrator.js";
 import {
   assertMainAgentDecisionPending,
+  assertWorkflowMatchesProject,
   chooseReadyTask,
   formatRunResult,
   isCliEntrypoint,
@@ -187,4 +188,16 @@ test("main-agent decision requires an existing final-review handoff", () => {
       mainAgentReviewPending: true,
     }),
   );
+});
+
+
+test("rejects workflow repository mismatch before execution", () => {
+  assert.doesNotThrow(() => assertWorkflowMatchesProject(
+    { version: 1, task: { repo: "owner/project", issue: 1 }, start: "worker", workers: [{ id: "worker", executor: "codex", prompt: "x", on: { done: null } }] },
+    { repo: "owner/project", chatgptProjectUrl: "https://chatgpt.com/" },
+  ));
+  assert.throws(() => assertWorkflowMatchesProject(
+    { version: 1, task: { repo: "other/repo", issue: 1 }, start: "worker", workers: [{ id: "worker", executor: "codex", prompt: "x", on: { done: null } }] },
+    { repo: "owner/project", chatgptProjectUrl: "https://chatgpt.com/" },
+  ), /Workflow repository other\/repo does not match current project owner\/project/);
 });
