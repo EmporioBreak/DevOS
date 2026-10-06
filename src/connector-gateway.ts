@@ -256,7 +256,7 @@ export async function startGateway(options: {
     },
   );
   app.all(
-    "/mcp",
+    ["/mcp", "/"],
     (req, res, next) => bearer!(req, res, next),
     express.json({ limit: "1mb" }),
     async (req, res) => {
