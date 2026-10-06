@@ -94,6 +94,7 @@ export class Orchestrator {
           currentWorkerId: state.currentWorkerId,
           completedRuns: state.completedRuns,
           sessions: state.sessions,
+          ...(state.sessionProjectRoots ? { sessionProjectRoots: state.sessionProjectRoots } : {}),
           ...(state.browserWorkersStarted
             ? { browserWorkersStarted: state.browserWorkersStarted }
             : {}),
@@ -109,6 +110,7 @@ export class Orchestrator {
         currentWorkerId: workflow.start,
         completedRuns: state.completedRuns,
         sessions: state.sessions,
+        ...(state.sessionProjectRoots ? { sessionProjectRoots: state.sessionProjectRoots } : {}),
         ...(state.browserWorkersStarted
           ? { browserWorkersStarted: state.browserWorkersStarted }
           : {}),
@@ -305,6 +307,7 @@ export class Orchestrator {
           currentWorkerId: workflow.start,
           completedRuns: state.completedRuns,
           sessions: state.sessions,
+          ...(state.sessionProjectRoots ? { sessionProjectRoots: state.sessionProjectRoots } : {}),
           ...(state.browserWorkersStarted
             ? { browserWorkersStarted: state.browserWorkersStarted }
             : {}),
