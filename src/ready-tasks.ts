@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { validateChatGptUrl } from "./browser-config.js";
 import type { CommandRunner } from "./command-runner.js";
@@ -111,7 +111,7 @@ export async function listReadyTasks(
       record.number,
       record.title,
     );
-    if (task) tasks.push(task);
+    if (task && !(await isTaskCompleted(projectRoot, task.issue))) tasks.push(task);
   }
 
   return tasks.sort((a, b) => a.issue - b.issue);
@@ -123,6 +123,7 @@ export async function loadReadyTask(
   projectRoot: string,
   runner: CommandRunner,
   allowClosed = false,
+  allowCompleted = false,
 ): Promise<ReadyTask> {
   const result = await runner.run(
     "gh",
@@ -176,7 +177,49 @@ export async function loadReadyTask(
   if (!task) {
     throw new Error(`Issue #${issue} is not a ready DevOS task`);
   }
+  if (!allowCompleted && (await isTaskCompleted(projectRoot, issue))) {
+    throw new Error(
+      `Issue #${issue} has already completed. Use ./devos restart ${issue} after an explicit replan.`,
+    );
+  }
   return task;
+}
+
+export async function isTaskCompleted(
+  projectRoot: string,
+  issue: number,
+): Promise<boolean> {
+  try {
+    await access(completionPath(projectRoot, issue));
+    return true;
+  } catch (error) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
+}
+
+export async function markTaskCompleted(
+  projectRoot: string,
+  issue: number,
+): Promise<void> {
+  const path = completionPath(projectRoot, issue);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, "completed\n", "utf8");
+}
+
+export async function clearTaskCompletion(
+  projectRoot: string,
+  issue: number,
+): Promise<void> {
+  try {
+    await unlink(completionPath(projectRoot, issue));
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
+}
+
+function completionPath(projectRoot: string, issue: number): string {
+  return join(projectRoot, ".devos", "completed", String(issue));
 }
 
 export function parseReadyTaskBody(
