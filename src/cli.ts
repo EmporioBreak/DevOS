@@ -5,16 +5,18 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
+import { loadChatGptBrowserConfig } from "./browser-config.js";
 import { ChatGptBrowserExecutor } from "./chatgpt-browser-executor.js";
 import { CodexExecutor } from "./codex-executor.js";
 import { LocalCommandRunner } from "./command-runner.js";
 import type { Executor } from "./executor.js";
 import { JsonStateStore } from "./json-state-store.js";
-import { Orchestrator, type StateStore } from "./orchestrator.js";
+import { Orchestrator, type RunState, type StateStore } from "./orchestrator.js";
 import {
   listReadyTasks,
   loadOrCreateProjectConfig,
   loadReadyTask,
+  type ProjectConfig,
   type ReadyTask,
 } from "./ready-tasks.js";
 import type { Workflow } from "./workflow.js";
@@ -56,15 +58,18 @@ export async function runWorkflow(
   workflow: Workflow,
   mode: "run" | "restart",
   cwd: string,
-): Promise<number> {
+  config?: ProjectConfig,
+): Promise<RunState> {
   const commandRunner = new LocalCommandRunner();
   const codex = new CodexExecutor(commandRunner);
-  const chatgpt = new ChatGptBrowserExecutor();
+  const chatgpt = new ChatGptBrowserExecutor(
+    loadChatGptBrowserConfig(process.env, config?.chatgptProjectUrl),
+  );
   const stateStore = new JsonStateStore(cwd, workflow.task);
   await prepareRunState(mode, stateStore);
 
   try {
-    const state = await new Orchestrator({
+    return await new Orchestrator({
       projectRoot: cwd,
       workflow,
       executors: new Map<string, Executor>([
@@ -73,8 +78,6 @@ export async function runWorkflow(
       ]),
       stateStore,
     }).run();
-
-    return state.completedRuns;
   } finally {
     await chatgpt.close();
   }
@@ -126,10 +129,8 @@ export async function main(
     }
 
     process.stdout.write(`\nStarting #${task.issue}: ${task.title}\n`);
-    const completedRuns = await runWorkflow(task.workflow, task.mode, cwd);
-    process.stdout.write(
-      `DevOS complete: #${task.issue}, ${completedRuns} worker runs.\n`,
-    );
+    const state = await runWorkflow(task.workflow, task.mode, cwd, config);
+    writeRunResult(task.workflow, state, `#${task.issue}`);
     return;
   }
 
@@ -138,17 +139,38 @@ export async function main(
     const runner = new LocalCommandRunner();
     const config = await loadOrCreateProjectConfig(cwd, runner);
     const task = await loadReadyTask(config, issue, cwd, runner);
-    const completedRuns = await runWorkflow(task.workflow, command.mode, cwd);
+    const state = await runWorkflow(task.workflow, command.mode, cwd, config);
+    writeRunResult(task.workflow, state, `#${task.issue}`);
+    return;
+  }
+
+  const runner = new LocalCommandRunner();
+  const config = await loadOrCreateProjectConfig(cwd, runner);
+  const workflowPath = resolve(cwd, command.target);
+  const workflow = await loadWorkflow(workflowPath);
+  const state = await runWorkflow(workflow, command.mode, cwd, config);
+  writeRunResult(workflow, state);
+}
+
+export function writeRunResult(
+  workflow: Workflow,
+  state: RunState,
+  label?: string,
+): void {
+  if (state.ownerReviewPending) {
     process.stdout.write(
-      `DevOS complete: #${task.issue}, ${completedRuns} worker runs.\n`,
+      `DEVOS_OWNER_HANDOFF ${JSON.stringify({
+        status: "FINAL_REVIEW_REQUIRED",
+        task: workflow.task,
+      })}\n`,
     );
     return;
   }
 
-  const workflowPath = resolve(cwd, command.target);
-  const workflow = await loadWorkflow(workflowPath);
-  const completedRuns = await runWorkflow(workflow, command.mode, cwd);
-  process.stdout.write(`DevOS complete: ${completedRuns} worker runs.\n`);
+  const subject = label ? `${label}, ` : "";
+  process.stdout.write(
+    `DevOS complete: ${subject}${state.completedRuns} worker runs.\n`,
+  );
 }
 
 export function parseIssueNumber(value: string): number | null {
