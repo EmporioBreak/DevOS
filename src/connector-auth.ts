@@ -136,8 +136,14 @@ export class ConnectorAuth implements OAuthServerProvider {
       throw new InvalidRequestError("Invalid MCP resource.");
     if (!/^[A-Za-z0-9_-]{43}$/.test(params.codeChallenge))
       throw new InvalidRequestError("Invalid S256 challenge.");
-    if (params.scopes?.some((s) => s !== "mcp:tools"))
-      throw new InvalidScopeError("Only mcp:tools scope is supported.");
+    if (
+      params.scopes?.some(
+        (scope) => scope !== "mcp:tools" && scope !== "offline_access",
+      )
+    )
+      throw new InvalidScopeError(
+        "Only mcp:tools and offline_access scopes are supported.",
+      );
     this.capacity(this.pending);
     const ticket = opaque();
     this.pending.set(ticket, {
@@ -205,18 +211,27 @@ export class ConnectorAuth implements OAuthServerProvider {
       (resource && resource.href !== this.resource.href)
     )
       throw new InvalidGrantError("Invalid redirect or resource.");
-    const tokens = this.issue(client.client_id, opaque());
+    const tokens = this.issue(
+      client.client_id,
+      opaque(),
+      grant.params.scopes?.length ? grant.params.scopes : ["mcp:tools"],
+    );
     this.codes.delete(code);
     return tokens;
   }
-  private issue(clientId: string, family: string): OAuthTokens {
+  private issue(
+    clientId: string,
+    family: string,
+    scopes: string[] = ["mcp:tools"],
+  ): OAuthTokens {
     this.capacity(this.access);
     this.capacity(this.refresh);
     const access = opaque(),
       refresh = opaque();
+    const normalizedScopes = [...new Set(scopes)];
     const data = {
       clientId,
-      scopes: ["mcp:tools"],
+      scopes: normalizedScopes,
       resource: this.resource,
       family,
     };
@@ -227,7 +242,7 @@ export class ConnectorAuth implements OAuthServerProvider {
       refresh_token: refresh,
       token_type: "Bearer",
       expires_in: 3600,
-      scope: "mcp:tools",
+      scope: normalizedScopes.join(" "),
     };
   }
   async exchangeRefreshToken(
@@ -246,10 +261,14 @@ export class ConnectorAuth implements OAuthServerProvider {
       (resource && resource.href !== this.resource.href)
     )
       throw new InvalidGrantError("Invalid refresh token or resource.");
-    if (scopes?.some((s) => s !== "mcp:tools"))
+    if (scopes?.some((scope) => !data.scopes.includes(scope)))
       throw new InvalidScopeError("Invalid scope.");
     this.capacity(this.usedRefresh);
-    const tokens = this.issue(data.clientId, data.family);
+    const tokens = this.issue(
+      data.clientId,
+      data.family,
+      scopes?.length ? scopes : data.scopes,
+    );
     this.usedRefresh.set(token, data);
     this.refresh.delete(token);
     return tokens;

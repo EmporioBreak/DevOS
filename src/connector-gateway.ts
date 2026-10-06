@@ -127,7 +127,7 @@ export async function startGateway(options: {
       provider,
       issuerUrl: identity,
       resourceServerUrl: resource,
-      scopesSupported: ["mcp:tools"],
+      scopesSupported: ["mcp:tools", "offline_access"],
       resourceName: "DevOS Desktop Commander",
     });
     bearer = requireBearerAuth({

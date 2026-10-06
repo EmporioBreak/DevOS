@@ -26,7 +26,7 @@ export async function oauthToken(
     code_challenge: challenge,
     code_challenge_method: "S256",
     state: "test-state",
-    scope: "mcp:tools",
+    scope: "mcp:tools offline_access",
     resource,
   });
   const authorize = await fetch(base + "/authorize?" + params, {
@@ -88,6 +88,7 @@ export async function oauthToken(
   const response = await exchange();
   assert.equal(response.status, 200);
   const tokens: any = await response.json();
+  assert.equal(tokens.scope, "mcp:tools offline_access");
   assert.equal(
     (await exchange()).status,
     400,
