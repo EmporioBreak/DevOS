@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CommandRunner } from "./command-runner.js";
 import type { Workflow } from "./workflow.js";
@@ -16,6 +16,39 @@ export interface ReadyTask {
   title: string;
   mode: "run" | "restart";
   workflow: Workflow;
+}
+
+function completionPath(projectRoot: string, issue: number): string {
+  return join(projectRoot, ".devos", "completed", String(issue));
+}
+
+export async function isTaskCompleted(
+  projectRoot: string,
+  issue: number,
+): Promise<boolean> {
+  try {
+    await readFile(completionPath(projectRoot, issue), "utf8");
+    return true;
+  } catch (error) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
+}
+
+export async function markTaskCompleted(
+  projectRoot: string,
+  issue: number,
+): Promise<void> {
+  const path = completionPath(projectRoot, issue);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, "completed\n", "utf8");
+}
+
+export async function clearTaskCompletion(
+  projectRoot: string,
+  issue: number,
+): Promise<void> {
+  await rm(completionPath(projectRoot, issue), { force: true });
 }
 
 export async function loadOrCreateProjectConfig(
@@ -109,7 +142,9 @@ export async function listReadyTasks(
       record.number,
       record.title,
     );
-    if (task) tasks.push(task);
+    if (task && !(await isTaskCompleted(projectRoot, record.number))) {
+      tasks.push(task);
+    }
   }
 
   return tasks.sort((a, b) => a.issue - b.issue);
@@ -120,6 +155,7 @@ export async function loadReadyTask(
   issue: number,
   projectRoot: string,
   runner: CommandRunner,
+  allowCompleted: boolean = false,
 ): Promise<ReadyTask> {
   const result = await runner.run(
     "gh",
@@ -170,6 +206,11 @@ export async function loadReadyTask(
   );
   if (!task) {
     throw new Error(`Issue #${issue} is not a ready DevOS task`);
+  }
+  if (!allowCompleted && (await isTaskCompleted(projectRoot, issue))) {
+    throw new Error(
+      `Issue #${issue} has already completed. Use ./devos restart ${issue} after an explicit replan.`,
+    );
   }
   return task;
 }
