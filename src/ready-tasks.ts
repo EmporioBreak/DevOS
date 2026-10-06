@@ -122,6 +122,7 @@ export async function loadReadyTask(
   issue: number,
   projectRoot: string,
   runner: CommandRunner,
+  allowClosed = false,
 ): Promise<ReadyTask> {
   const result = await runner.run(
     "gh",
@@ -155,8 +156,10 @@ export async function loadReadyTask(
   }
 
   const record = value as Record<string, unknown>;
+  const loadableState =
+    record.state === "OPEN" || (allowClosed && record.state === "CLOSED");
   if (
-    record.state !== "OPEN" ||
+    !loadableState ||
     record.number !== issue ||
     typeof record.title !== "string" ||
     typeof record.body !== "string"
