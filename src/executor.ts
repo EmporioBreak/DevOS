@@ -5,6 +5,7 @@ export interface WorkerRequest {
   prompt: string;
   sessionId?: string;
   enforceProjectScope?: boolean;
+  onSession?: (sessionId: string) => void | Promise<void>;
 }
 
 export interface Executor {
