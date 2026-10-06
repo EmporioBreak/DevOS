@@ -100,10 +100,18 @@ export class ChatGptBrowserExecutor implements Executor {
         }
       };
       const response = sendAndRead(page, request.prompt, this.timeoutMs, assertSubmissionScope).then(
-        text => ({ text } as const),
-        error => ({ error } as const),
+        text => ({ kind: "response" as const, text }),
+        error => ({ kind: "response" as const, error }),
       );
-      const sessionId = await waitForConversationUrl(page, this.timeoutMs);
+      const session = waitForConversationUrl(page, this.timeoutMs).then(
+        sessionId => ({ kind: "session" as const, sessionId }),
+        error => ({ kind: "session" as const, error }),
+      );
+      const first = await Promise.race([response, session]);
+      if ("error" in first) throw first.error;
+      const sessionId = first.kind === "session"
+        ? first.sessionId
+        : (await session).sessionId;
       if (projectScope) {
         assertChatGptProjectScope(this.config.projectUrl, sessionId, true);
       }
