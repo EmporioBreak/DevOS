@@ -29,7 +29,24 @@ function redact(value: unknown, key = ""): unknown {
   if (typeof value === "string") {
     return value
       .replace(/(authorization:\s*bearer\s+)[^\s]+/gi, "$1[REDACTED]")
-      .replace(/([?&](?:token|auth|key)=)[^&\s]+/gi, "$1[REDACTED]");
+      .replace(/([?&])([^=&#\s]+)=([^&#\s]*)/g, (match, separator: string, key: string) =>
+        isCredentialQueryKey(key) ? `${separator}${key}=[REDACTED]` : match,
+      );
   }
   return value;
+}
+
+function isCredentialQueryKey(key: string): boolean {
+  let decodedKey = key;
+  try {
+    decodedKey = decodeURIComponent(key);
+  } catch {
+    // Keep malformed query keys intact; normalize the readable characters below.
+  }
+  const normalized = decodedKey
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase();
+  return /(?:^|[_-])(?:token|secret|password|credential|authorization|auth|key)(?:[_-]|$)/.test(
+    normalized,
+  );
 }
