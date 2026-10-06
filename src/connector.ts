@@ -547,6 +547,16 @@ export async function connector(
     const url = alive
       ? await publicEndpoint(config.ngrokApiPort, config.gatewayPort)
       : undefined;
+    const background = await backgroundState(root);
+    let supervisor = "foreground-or-absent";
+    if (background.pid && processAlive(background.pid)) {
+      const actual = await captureProcessIdentity(background.pid);
+      supervisor = actual && backgroundOwnershipMatches(background, actual, root)
+        ? "owned"
+        : "invalid";
+    } else if (background.pid) {
+      supervisor = "stale";
+    }
     // Do not probe public tool endpoints or claim external reachability from local agent state.
     const lifecycle = state.lifecycle ?? (alive ? "degraded" : "stopped");
     const restart = state.restartAttempt !== undefined && state.maxRestartAttempts !== undefined
@@ -556,7 +566,7 @@ export async function connector(
       ? `; last failure ${state.lastFailureComponent}${state.lastExitCode !== undefined ? ` exit=${state.lastExitCode}` : ""}${state.lastFailureAt ? ` at ${state.lastFailureAt}` : ""}`
       : "";
     process.stdout.write(
-      `Connector ${lifecycle}; runtime ${alive ? "running" : "stopped"}; local gateway ${local ? "healthy" : "unavailable"}; ngrok ${url && url === state.publicUrl ? "HTTPS endpoint registered" : "unavailable"}${restart}${failure}; public reachability not tested.\n`,
+      `Connector ${lifecycle}; supervisor ${supervisor}; runtime ${alive ? "running" : "stopped"}; local gateway ${local ? "healthy" : "unavailable"}; ngrok ${url && url === state.publicUrl ? "HTTPS endpoint registered" : "unavailable"}${restart}${failure}; public reachability not tested.\n`,
     );
     return;
   }
