@@ -166,8 +166,11 @@ export async function main(
 
 export function formatOrchestrationEvent(event: OrchestrationEvent): string {
   switch (event.type) {
-    case "task_started":
-      return `Task #${event.task.issue} ${event.resumed ? "resumed" : "started"}\n`;
+    case "task_status":
+      if (event.status === "running") {
+        return `Task #${event.task.issue} — running (${event.resumed ? "resume" : "start"})\n`;
+      }
+      return `Task #${event.task.issue} — ${event.status}\n`;
     case "worker_started":
       if (event.executor === "chatgpt_browser") {
         return event.session === "resumed"
@@ -180,7 +183,7 @@ export function formatOrchestrationEvent(event: OrchestrationEvent): string {
     case "transition":
       return `→ ${event.to}\n`;
     case "owner_handoff":
-      return "Final review required by task owner\n";
+      return "Owner handoff\n";
   }
 }
 
@@ -201,7 +204,7 @@ export function formatRunResult(
   }
 
   const subject = label ? `${label}, ` : "";
-  return `DevOS complete: ${subject}${state.completedRuns} worker runs.\n`;
+  return `Task ${subject}completed (${state.completedRuns} worker runs).\n`;
 }
 
 export function writeRunResult(
