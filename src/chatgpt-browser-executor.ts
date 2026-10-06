@@ -39,14 +39,9 @@ export class ChatGptBrowserExecutor implements Executor {
     const page = await context.newPage();
 
     try {
-      const projectScope = request.requireProject
+      const projectScope = request.enforceProjectScope
         ? getChatGptProjectScope(this.config.projectUrl)
         : null;
-      if (request.requireProject && !projectScope) {
-        throw new Error(
-          "chatgpt_browser worker requires a configured ChatGPT Project URL",
-        );
-      }
       const url = request.sessionId ?? this.config.projectUrl;
       validateChatGptUrl(url);
       if (projectScope && request.sessionId) {
