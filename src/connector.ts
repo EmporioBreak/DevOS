@@ -16,6 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
+import { loadConnectorSecrets, type ConnectorSecrets } from "./connector-env.js";
 import {
   startGateway,
   ownerAuth,
@@ -305,7 +306,7 @@ export async function connectorBackgroundRunning(root: string): Promise<boolean>
 async function startBackground(root: string, config: {
   gatewayPort: number;
   ngrokApiPort: number;
-}) {
+}, secrets: ConnectorSecrets) {
   const dir = join(root, ".devos/connector");
   const serviceFile = join(dir, backgroundStateName);
   const existing = await backgroundState(root);
@@ -323,8 +324,8 @@ async function startBackground(root: string, config: {
     stdio: "ignore",
     env: {
       ...safeEnvironment(process.env),
-      NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN,
-      DEVOS_CONNECTOR_OWNER_SECRET: process.env.DEVOS_CONNECTOR_OWNER_SECRET,
+      NGROK_AUTHTOKEN: secrets.ngrokAuthtoken,
+      DEVOS_CONNECTOR_OWNER_SECRET: secrets.ownerSecret,
     },
   });
   await writeFile(
@@ -406,7 +407,7 @@ async function stopBackground(root: string) {
   process.stdout.write("DevOS background stopped; owned connector processes cleaned up.\n");
 }
 
-async function superviseRun(root: string) {
+async function superviseRun(root: string, secrets: ConnectorSecrets) {
   const runner = join(softwareRoot, "dist/src/connector-runner.js");
   await access(runner);
   const child = spawn(process.execPath, [runner, root], {
@@ -414,8 +415,8 @@ async function superviseRun(root: string) {
     stdio: ["pipe", "inherit", "inherit"],
     env: {
       ...safeEnvironment(process.env),
-      NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN,
-      DEVOS_CONNECTOR_OWNER_SECRET: process.env.DEVOS_CONNECTOR_OWNER_SECRET,
+      NGROK_AUTHTOKEN: secrets.ngrokAuthtoken,
+      DEVOS_CONNECTOR_OWNER_SECRET: secrets.ownerSecret,
     },
   });
   const stop = () => {
@@ -510,13 +511,10 @@ export async function connector(
   }
   await checkDesktop();
   await checkedVersion(binary);
-  ownerAuth(process.env.DEVOS_CONNECTOR_OWNER_SECRET);
-  if (!process.env.NGROK_AUTHTOKEN?.trim())
-    throw new Error(
-      "Missing ngrok auth: set NGROK_AUTHTOKEN before connector run/doctor.",
-    );
+  const secrets = await loadConnectorSecrets(root);
+  ownerAuth(secrets.ownerSecret);
   if (action === "start") {
-    await startBackground(root, config);
+    await startBackground(root, config, secrets);
     return;
   }
   if (action === "doctor") {
@@ -528,7 +526,7 @@ export async function connector(
     return;
   }
   if (!ownerLifetime) {
-    await superviseRun(root);
+    await superviseRun(root, secrets);
     return;
   }
   const lock = await acquire(root);
@@ -578,9 +576,8 @@ export async function connector(
         stdio: ["ignore", "ignore", "ignore", "ipc"],
         env: {
           ...safeEnvironment(process.env),
-          NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN,
-          DEVOS_CONNECTOR_OWNER_SECRET:
-            process.env.DEVOS_CONNECTOR_OWNER_SECRET,
+          NGROK_AUTHTOKEN: secrets.ngrokAuthtoken,
+          DEVOS_CONNECTOR_OWNER_SECRET: secrets.ownerSecret,
         },
       },
     );
