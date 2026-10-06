@@ -5,9 +5,12 @@ import { join } from "node:path";
 import test from "node:test";
 import type { CommandResult, CommandRunner } from "../src/command-runner.js";
 import {
+  clearTaskCompletion,
+  isTaskCompleted,
   listReadyTasks,
   loadOrCreateProjectConfig,
   loadReadyTask,
+  markTaskCompleted,
   parseGitHubRepo,
   parseReadyTaskBody,
 } from "../src/ready-tasks.js";
@@ -190,4 +193,62 @@ test("direct issue load can read a closed task for guarded owner continuation", 
 
   assert.equal(task.issue, 42);
   assert.equal(task.workflow.task.issue, 42);
+});
+
+
+test("tracks project-local completion markers", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-completed-task-"));
+  try {
+    assert.equal(await isTaskCompleted(root, 42), false);
+    await markTaskCompleted(root, 42);
+    assert.equal(await isTaskCompleted(root, 42), true);
+    await clearTaskCompletion(root, 42);
+    assert.equal(await isTaskCompleted(root, 42), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hides completed ready tasks from the picker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-completed-picker-"));
+  const runner = new FakeRunner([{
+    exitCode: 0,
+    stdout: JSON.stringify([{ number: 42, title: "Homepage", body: body() }]),
+    stderr: "",
+  }]);
+  try {
+    await markTaskCompleted(root, 42);
+    const tasks = await listReadyTasks(
+      { version: 1, repo: "owner/product" }, root, runner,
+    );
+    assert.deepEqual(tasks, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("direct run refuses completed tasks while explicit restart may load them", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-completed-direct-"));
+  const response = {
+    exitCode: 0,
+    stdout: JSON.stringify({ number: 42, title: "Homepage", body: body(), state: "OPEN" }),
+    stderr: "",
+  };
+  try {
+    await markTaskCompleted(root, 42);
+    await assert.rejects(
+      loadReadyTask(
+        { version: 1, repo: "owner/product" }, 42, root,
+        new FakeRunner([response]), false, false,
+      ),
+      /already completed.*restart 42/i,
+    );
+    const task = await loadReadyTask(
+      { version: 1, repo: "owner/product" }, 42, root,
+      new FakeRunner([response]), false, true,
+    );
+    assert.equal(task.issue, 42);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
