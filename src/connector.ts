@@ -394,13 +394,23 @@ function ownedCommand(
   executableMarker: string,
   extraMarker?: string,
 ): boolean {
-  if (identity !== projectIdentity(root) || !fingerprint) return false;
   const command = processCommand(pid);
-  return !!command &&
-    processFingerprint(pid) === fingerprint &&
+  const commandMatches =
+    !!command &&
     command.includes(executableMarker) &&
     command.includes(root) &&
     (!extraMarker || command.includes(extraMarker));
+  if (!commandMatches) return false;
+
+  // Legacy pre-#77 state had only a PID. Permit one-time migration only when
+  // both new identity fields are absent and the live command line proves this
+  // is the expected project-local connector process. New state must match both.
+  if (identity === undefined && fingerprint === undefined) return true;
+  return (
+    identity === projectIdentity(root) &&
+    !!fingerprint &&
+    processFingerprint(pid) === fingerprint
+  );
 }
 
 function backgroundOwned(root: string, state: BackgroundState): boolean {
@@ -445,12 +455,17 @@ async function startBackground(root: string, config: {
       DEVOS_CONNECTOR_OWNER_SECRET: process.env.DEVOS_CONNECTOR_OWNER_SECRET,
     },
   });
+  const backgroundFingerprint = processFingerprint(child.pid);
+  if (!backgroundFingerprint) {
+    try { process.kill(child.pid!, "SIGTERM"); } catch {}
+    throw new Error("Could not establish background supervisor identity.");
+  }
   await atomicWrite(
     serviceFile,
     JSON.stringify({
       pid: child.pid,
       identity: projectIdentity(root),
-      fingerprint: processFingerprint(child.pid),
+      fingerprint: backgroundFingerprint,
       startedAt: new Date().toISOString(),
     }) + "\n",
   );
@@ -514,7 +529,7 @@ async function cleanupOwnedRuntime(root: string) {
   const stateFile = join(root, ".devos/connector/state.json");
   const state = await runtimeState(root);
   if (!runtimeOwned(root, state)) {
-    if (!processAlive(state.pid)) await rm(stateFile, { force: true });
+    await rm(stateFile, { force: true });
     return;
   }
   try { process.kill(-state.pid!, "SIGTERM"); } catch {}
@@ -784,10 +799,13 @@ export async function connector(
         );
       });
     });
+    const runtimeFingerprint = processFingerprint(runtime.pid);
+    if (!runtimeFingerprint)
+      throw new Error("Could not establish connector runtime identity.");
     const runtimeIdentity = {
       pid: runtime.pid,
       identity: projectIdentity(root),
-      fingerprint: processFingerprint(runtime.pid),
+      fingerprint: runtimeFingerprint,
     };
     await atomicWrite(stateFile, JSON.stringify(runtimeIdentity) + "\n");
     const url = await ready;
