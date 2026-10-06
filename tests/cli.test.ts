@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import type { RunState, StateStore } from "../src/orchestrator.js";
 import {
+  assertOwnerDecisionPending,
   chooseReadyTask,
   formatRunResult,
   isCliEntrypoint,
@@ -159,5 +160,31 @@ test("parent-process handoff uses PR resolved during execution", () => {
   assert.equal(
     line,
     'DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED","task":{"repo":"owner/product","issue":39,"pr":40}}\n',
+  );
+});
+
+
+test("owner decision requires an existing final-review handoff", () => {
+  assert.throws(
+    () => assertOwnerDecisionPending(null),
+    /requires an existing task waiting for final review/,
+  );
+  assert.throws(
+    () =>
+      assertOwnerDecisionPending({
+        currentWorkerId: "reviewer",
+        completedRuns: 1,
+        sessions: {},
+      }),
+    /requires an existing task waiting for final review/,
+  );
+
+  assert.doesNotThrow(() =>
+    assertOwnerDecisionPending({
+      currentWorkerId: "reviewer",
+      completedRuns: 1,
+      sessions: {},
+      ownerReviewPending: true,
+    }),
   );
 });
