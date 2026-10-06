@@ -38,7 +38,7 @@ async function fixture(options: { selfHost?: boolean; runtimeHead?: string; spac
   await executable(path.join(bin, "node"), 'echo "node:$*" >> "$DEVOS_TEST_LOG"; echo "node-cwd:$PWD" >> "$DEVOS_TEST_LOG"');
   await executable(
     path.join(bin, "npm"),
-    'echo "npm:$PWD:$*" >> "$DEVOS_TEST_LOG"; if [ "$1 $2" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi',
+    `echo "npm:$PWD:$*" >> '${log}'; if [ "$1 $2" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi`,
   );
   await executable(
     path.join(bin, "git"),
@@ -213,4 +213,53 @@ test('explicit connector uses current checkout on a dirty task branch without gh
   const log=await readFile(f.log,'utf8');
   assert.match(log,/node:.*dist\/src\/cli.js connector status/);
   assert.doesNotMatch(log,/gh:|git:|repo clone/);
+});
+
+test('connector bootstrap/build cannot inherit or print runtime/admin keys or debug settings',async()=>{
+  for(const bootstrap of [false,true]) {
+    const f=await fixture({selfHost:true});
+    try {
+      await writeFile(path.join(f.project,'package.json'),'{}');
+      await writeFile(path.join(f.project,'src/connector.ts'),'');
+      if(bootstrap) await (await import('node:fs/promises')).rm(path.join(f.project,'node_modules'),{recursive:true});
+      await executable(path.join(f.root,'bin/npm'),`echo "npm:$*" >> '${f.log}'
+if [ -n "\${CONTROL_PLANE_API_KEY-}\${OPENAI_API_KEY-}\${OPENAI_ADMIN_KEY-}\${DEVOS_DEBUG-}\${NODE_OPTIONS-}" ]; then
+  echo "unsafe-env" >> '${f.log}'
+fi
+printf '%s' "\${CONTROL_PLANE_API_KEY-}" >&2
+if [ "$1 $2" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi`);
+      const synthetic='launcher-fake-only';
+      const result=spawnSync(path.join(f.project,'devos'),['connector','status'],{cwd:f.project,env:{...f.env,CONTROL_PLANE_API_KEY:synthetic,OPENAI_API_KEY:synthetic,OPENAI_ADMIN_KEY:synthetic,DEVOS_DEBUG:'1',NODE_OPTIONS:'--no-warnings'},encoding:'utf8'});
+      const log=await readFile(f.log,'utf8');
+      assert.equal(result.status,0);
+      assert.doesNotMatch(log,/unsafe-env/);
+      assert.ok(!(result.stdout+result.stderr).includes(synthetic));
+      assert.match(log,/npm:run build/);
+      if(bootstrap) assert.match(log,/npm:ci --ignore-scripts/);
+    } finally {await (await import('node:fs/promises')).rm(f.root,{recursive:true,force:true});}
+  }
+});
+
+test('connector external-project runtime bootstrap isolates gh/npm and suppresses failing build output',async()=>{
+  const synthetic='bootstrap-synthetic-only';
+  const f=await fixture();
+  try {
+    await executable(path.join(f.root,'bin/gh'),`echo "gh:$*" >> '${f.log}'
+if [ -n "\${CONTROL_PLANE_API_KEY-}\${OPENAI_API_KEY-}\${OPENAI_ADMIN_KEY-}\${DEVOS_DEBUG-}\${NODE_OPTIONS-}" ]; then echo unsafe-env >> '${f.log}'; fi
+if [ "$1" = "api" ]; then echo current-sha; else mkdir -p "$4/dist/src"; fi`);
+    await executable(path.join(f.root,'bin/npm'),`echo "npm:$*" >> '${f.log}'
+if [ -n "\${CONTROL_PLANE_API_KEY-}\${OPENAI_API_KEY-}\${OPENAI_ADMIN_KEY-}\${DEVOS_DEBUG-}\${NODE_OPTIONS-}" ]; then echo unsafe-env >> '${f.log}'; fi
+if [ "$1 $2" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi`);
+    const env={...f.env,CONTROL_PLANE_API_KEY:synthetic,OPENAI_ADMIN_KEY:synthetic,DEVOS_DEBUG:'1'};
+    const success=spawnSync(path.join(f.project,'devos'),['connector','status'],{cwd:f.project,env,encoding:'utf8'});
+    assert.equal(success.status,0,success.stderr);
+    const log=await readFile(f.log,'utf8');assert.doesNotMatch(log,/unsafe-env/);assert.match(log,/npm:ci --ignore-scripts/);
+    // Also exercise fixed failure diagnostics in the source-checkout path.
+    await mkdir(path.join(f.project,'src'));
+    await writeFile(path.join(f.project,'src/connector.ts'),'');await writeFile(path.join(f.project,'package.json'),'{}');
+    await executable(path.join(f.root,'bin/npm'),`printf '%s' '${synthetic}' >&2; printf '%s' '${synthetic}'; exit 1`);
+    const failure=spawnSync(path.join(f.project,'devos'),['connector','status'],{cwd:f.project,env,encoding:'utf8'});
+    assert.equal(failure.status,1);assert.ok(!(failure.stdout+failure.stderr).includes(synthetic));
+    assert.match(failure.stderr,/bootstrap failed/);
+  }finally{await (await import('node:fs/promises')).rm(f.root,{recursive:true,force:true});}
 });

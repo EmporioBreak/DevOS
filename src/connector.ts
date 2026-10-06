@@ -5,6 +5,7 @@ import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export const TUNNEL_VERSION = 'v0.0.15';
@@ -89,7 +90,31 @@ async function readiness(file: string): Promise<boolean> {
   } catch { return false; }
 }
 
-export async function connector(action: ConnectorAction, root: string, id?: string): Promise<void> {
+// This per-run foreground child owns the mutex and tunnel group. The parent's
+// open stdin pipe is its lifetime link: EOF on crash/SIGKILL starts bounded cleanup.
+// It never survives independently as a service and does not poll for owner death.
+async function superviseRun(root: string, id: string): Promise<void> {
+  const runner = join(softwareRoot,'dist/src/connector-runner.js');
+  try { await access(runner); } catch { throw new Error('Missing connector runner; run npm run build in the DevOS software directory.'); }
+  const child = spawn(process.execPath,[runner,root,id], {
+    detached:true, stdio:['pipe','inherit','inherit'],
+    env:{...safeEnvironment(process.env),CONTROL_PLANE_API_KEY:process.env.CONTROL_PLANE_API_KEY},
+  });
+  const stop = () => { child.stdin?.end(); child.kill('SIGTERM'); };
+  process.on('SIGINT',stop); process.on('SIGTERM',stop);
+  child.stdin?.on('error',()=>{ /* EOF/EPIPE is already a lifetime shutdown. */ });
+  try {
+    const code = await new Promise<number|null>(ok => {
+      child.once('error',()=>ok(-1)); child.once('close',ok);
+    });
+    if (code !== 0) throw new Error('Connector foreground runner failed; check the local connector diagnostics.');
+  } finally {
+    child.stdin?.end();
+    process.off('SIGINT',stop); process.off('SIGTERM',stop);
+  }
+}
+
+export async function connector(action: ConnectorAction, root: string, id?: string, ownerLifetime?: Readable): Promise<void> {
   const tools = join(root,'.devos/tools');
   const binary = join(tools,'tunnel-client');
   const dir = join(root,'.devos/connector');
@@ -140,14 +165,25 @@ export async function connector(action: ConnectorAction, root: string, id?: stri
     return;
   }
   if (!process.env.CONTROL_PLANE_API_KEY?.trim()) throw new Error('Missing runtime key: set CONTROL_PLANE_API_KEY in the environment before connector run.');
+  if (!ownerLifetime) { await superviseRun(root,config.tunnelId); return; }
   const lock = await acquire(config.tunnelId);
   const healthFile = join(dir,`${config.tunnelId}.health`);
   let child: ReturnType<typeof spawn> | undefined;
   let exit: Promise<number|null> | undefined;
   let stopping = false;
+  let shutdownDeadline: number | undefined;
   let killTimer: NodeJS.Timeout | undefined;
   const killGroup = (signal: NodeJS.Signals) => { if(child?.pid) { try { process.kill(-child.pid,signal); } catch { /* already gone */ } } };
-  const stop = () => { stopping=true; killGroup('SIGTERM'); if (!killTimer) killTimer=setTimeout(()=>killGroup('SIGKILL'),3000); };
+  const stop = () => {
+    if (stopping) return;
+    stopping=true; shutdownDeadline=Date.now()+3000; killGroup('SIGTERM');
+    killTimer=setTimeout(()=>killGroup('SIGKILL'),3000);
+  };
+  const groupAlive = () => {
+    if (!child?.pid) return false;
+    try {process.kill(-child.pid,0);return true;} catch {return false;}
+  };
+  ownerLifetime.once('end',stop); ownerLifetime.once('error',stop); ownerLifetime.resume();
   process.on('SIGINT',stop); process.on('SIGTERM',stop);
   try {
     await mkdir(dir,{recursive:true});
@@ -178,11 +214,13 @@ export async function connector(action: ConnectorAction, root: string, id?: stri
   } finally {
     stop();
     // Also remove any surviving MCP descendants after a tunnel exit.
-    if (exit) await Promise.race([exit, delay(3000, undefined, {ref:false})]);
+    while (groupAlive() && Date.now() < shutdownDeadline!) await delay(25);
     killGroup('SIGKILL');
+    if (exit) await exit;
     if (killTimer) clearTimeout(killTimer);
     await rm(stateFile,{force:true}); await rm(healthFile,{force:true});
     await new Promise<void>(ok=>lock.close(()=>ok()));
     process.off('SIGINT',stop); process.off('SIGTERM',stop);
+    ownerLifetime.off('end',stop); ownerLifetime.off('error',stop);
   }
 }

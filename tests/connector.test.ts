@@ -167,3 +167,70 @@ test('real runtime logging configuration always pairs level with format',()=>{
   const args=tunnelArgs('/root',id,'/root/.devos/health');
   assert.equal(args[args.indexOf('--log.format')+1],'json');
 });
+
+async function cleanupFixture(root: string, grace: boolean) {
+  const runtime=join(root,'.devos/tools/tunnel-client');
+  await writeFile(runtime,`#!${process.execPath}
+const fs=require('node:fs'),http=require('node:http'),cp=require('node:child_process');
+if(process.argv.includes('--version')){console.log('0.0.15');process.exit(0);}
+fs.writeFileSync('runtime.pid',String(process.pid));
+const script=${JSON.stringify("const fs=require('node:fs');process.on('SIGTERM',()=>{if(process.argv[1]==='grace'&&!global.stopping){global.stopping=true;setTimeout(()=>{fs.writeFileSync('cleanup.done','done');process.exit(0)},750)}});fs.writeFileSync('cleanup.armed','yes');setInterval(()=>{},1000);")};
+const descendant=cp.spawn(process.execPath,['-e',script,${JSON.stringify(grace?'grace':'ignore')}],{stdio:'ignore'});
+fs.writeFileSync('child.pid',String(descendant.pid));
+const server=http.createServer((req,res)=>res.end('ready'));
+server.listen(0,'127.0.0.1',()=>fs.writeFileSync(process.argv[process.argv.indexOf('--health.url-file')+1],'http://127.0.0.1:'+server.address().port));
+process.on('SIGTERM',()=>process.exit(0));
+`);
+}
+async function waitFile(file: string) {
+  const deadline=Date.now()+8000;
+  while(Date.now()<deadline) {try{return await readFile(file,'utf8');}catch{await delay(25);}}
+  throw new Error('Expected fixture file was not created');
+}
+function alive(pid: number) {try{process.kill(pid,0);return true;}catch{return false;}}
+test('fast tunnel parent exit preserves descendant SIGTERM cleanup grace',async()=>{
+  const root=await fixture();await cleanupFixture(root,true);
+  const proc=start(root,['run']);let runtimePid=0;
+  try {
+    await waitReady(proc);await waitFile(join(root,'cleanup.armed'));
+    runtimePid=Number(await readFile(join(root,'runtime.pid'),'utf8'));
+    proc.child.kill('SIGTERM');assert.equal((await proc.done).code,0);
+    assert.equal(await readFile(join(root,'cleanup.done'),'utf8'),'done');
+    assert.equal(alive(Number(await readFile(join(root,'child.pid'),'utf8'))),false);
+  }finally{proc.child.kill('SIGTERM');if(runtimePid)try{process.kill(-runtimePid,'SIGKILL');}catch{}await proc.done;await rm(root,{recursive:true,force:true});}
+});
+test('abrupt CLI death cannot launch a second runtime while the first group survives',async()=>{
+  const root=await fixture(),other=await fixture();await cleanupFixture(root,false);
+  const first=start(root,['run']);let second: ReturnType<typeof start>|undefined;let oldPid=0;
+  try {
+    await waitReady(first);await waitFile(join(root,'cleanup.armed'));
+    oldPid=Number(await readFile(join(root,'runtime.pid'),'utf8'));
+    const descendant=Number(await readFile(join(root,'child.pid'),'utf8'));
+    const ownerExited=new Promise(ok=>first.child.once('exit',ok));
+    first.child.kill('SIGKILL');await ownerExited;
+    second=start(other,['run']);
+    const deadline=Date.now()+5000;
+    while(Date.now()<deadline && !second.output().includes('Duplicate') && !second.output().includes('Connector ready:')) await delay(25);
+    assert.match(second.output(),/Duplicate active connector/);
+    assert.equal((await second.done).code,1);
+    const cleaned=Date.now()+5000;while((alive(oldPid)||alive(descendant))&&Date.now()<cleaned) await delay(25);
+    assert.equal(alive(oldPid),false);assert.equal(alive(descendant),false);
+    assert.match((await start(root,['status']).done).output,/stopped/);
+    const next=start(other,['run']);second=next;await waitReady(next);next.child.kill('SIGTERM');assert.equal((await next.done).code,0);
+  }finally{first.child.kill('SIGTERM');second?.child.kill('SIGTERM');if(oldPid)try{process.kill(-oldPid,'SIGKILL');}catch{}await first.done;if(second)await second.done;await rm(root,{recursive:true,force:true});await rm(other,{recursive:true,force:true});}
+});
+
+test('unresponsive runtime parent is forcibly terminated within bounded shutdown',async()=>{
+  const root=await fixture();await cleanupFixture(root,false);
+  const binary=join(root,'.devos/tools/tunnel-client');
+  await writeFile(binary,(await readFile(binary,'utf8')).replace("process.on('SIGTERM',()=>process.exit(0));","process.on('SIGTERM',()=>{});"));
+  const proc=start(root,['run']);let pid=0;
+  try {
+    await waitReady(proc);await waitFile(join(root,'cleanup.armed'));
+    pid=Number(await readFile(join(root,'runtime.pid'),'utf8'));
+    proc.child.kill('SIGTERM');
+    const result=await Promise.race([proc.done,delay(5000,undefined,{ref:false}).then(()=>null)]);
+    assert.ok(result,'shutdown exceeded its bounded grace');assert.equal(result.code,0);
+    assert.equal(alive(pid),false);
+  }finally{if(pid)try{process.kill(-pid,'SIGKILL');}catch{}proc.child.kill('SIGTERM');await proc.done;await rm(root,{recursive:true,force:true});}
+});

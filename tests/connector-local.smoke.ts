@@ -17,6 +17,7 @@ function command(requestId: string, rpc: unknown) {
 }
 let tools: unknown;
 let polls=0;
+let lastError: unknown;
 const server=createServer(async(req,res)=>{
   res.setHeader('Content-Type','application/json');
   if(req.url?.includes('/poll')) {
@@ -30,6 +31,7 @@ const server=createServer(async(req,res)=>{
   } else if(req.url?.endsWith('/response')) {
     let body='';for await(const chunk of req) body+=chunk;
     const result=JSON.parse(body);
+    if(result.resp_json?.error) lastError=result.resp_json.error;
     if(result.request_id==='smoke-init') phase=2;
     if(result.request_id==='smoke-notify') phase=4;
     if(result.request_id==='smoke-tools') tools=result.resp_json;
@@ -46,7 +48,7 @@ try {
   const deadline=Date.now()+30_000;
   while(!tools && Date.now()<deadline) await delay(100);
   const rpc=tools as {result?:{tools?:{name:string}[]};error?:unknown};
-  if (!rpc?.result) throw new Error('Local smoke failed: '+diagnostic.replaceAll('local-fake-runtime-key','[redacted]'));
+  if (!rpc?.result) throw new Error(`Local smoke failed (phase ${phase}, polls ${polls}): `+JSON.stringify(lastError)+' '+diagnostic.replaceAll('local-fake-runtime-key','[redacted]'));
   assert.ok(rpc?.result?.tools?.some(t=>t.name==='read_file'), 'actual Desktop Commander tool catalog must return read_file');
   const base=(await readFile(health,'utf8')).trim();
   assert.equal((await fetch(new URL('/readyz',base), {signal:AbortSignal.timeout(2000)})).status,200);
