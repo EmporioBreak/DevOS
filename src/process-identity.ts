@@ -5,6 +5,7 @@ export interface ProcessIdentity {
   pid: number;
   startTime: string;
   executable: string;
+  commandLine?: string;
 }
 
 export async function processExists(pid: number): Promise<boolean> {
@@ -30,8 +31,12 @@ export async function captureProcessIdentity(
       const fields = stat.slice(commandEnd + 2).trim().split(/\s+/);
       const startTime = fields[19];
       const executable = await readlink(`/proc/${pid}/exe`);
-      if (!startTime || !executable) return null;
-      return { pid, startTime, executable };
+      const commandLine = (await readFile(`/proc/${pid}/cmdline`))
+        .toString("utf8")
+        .replace(/\0+/g, " ")
+        .trim();
+      if (!startTime || !executable || !commandLine) return null;
+      return { pid, startTime, executable, commandLine };
     } catch {
       return null;
     }
@@ -39,14 +44,13 @@ export async function captureProcessIdentity(
 
   if (process.platform !== "darwin") return null;
 
-  const output = await runPs(pid);
-  if (!output) return null;
-  const separator = output.indexOf("\t");
-  if (separator <= 0) return null;
-  const startTime = output.slice(0, separator).trim();
-  const executable = output.slice(separator + 1).trim();
-  if (!startTime || !executable) return null;
-  return { pid, startTime, executable };
+  const [startTime, executable, commandLine] = await Promise.all([
+    runPsField(pid, "lstart"),
+    runPsField(pid, "comm"),
+    runPsField(pid, "command"),
+  ]);
+  if (!startTime || !executable || !commandLine) return null;
+  return { pid, startTime, executable, commandLine };
 }
 
 export function sameProcessIdentity(
@@ -56,38 +60,36 @@ export function sameProcessIdentity(
   return (
     expected.pid === actual.pid &&
     expected.startTime === actual.startTime &&
-    expected.executable === actual.executable
+    expected.executable === actual.executable &&
+    expected.commandLine === actual.commandLine
   );
 }
 
-async function runPs(pid: number): Promise<string | null> {
+async function runPsField(
+  pid: number,
+  field: "lstart" | "comm" | "command",
+): Promise<string | null> {
   return await new Promise(resolve => {
     const child = spawn("/bin/ps", [
       "-p",
       String(pid),
       "-o",
-      "lstart=",
-      "-o",
-      "comm=",
+      `${field}=`,
     ], {
       stdio: ["ignore", "pipe", "ignore"],
     });
     let stdout = "";
+    let settled = false;
+    const finish = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", chunk => { stdout += chunk; });
-    child.once("error", () => resolve(null));
+    child.once("error", () => finish(null));
     child.once("close", code => {
-      if (code !== 0) {
-        resolve(null);
-        return;
-      }
-      const line = stdout.trim();
-      if (!line) {
-        resolve(null);
-        return;
-      }
-      const match = /^(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.+)$/.exec(line);
-      resolve(match ? `${match[1]}\t${match[2]}` : null);
+      finish(code === 0 && stdout.trim() ? stdout.trim() : null);
     });
   });
 }
