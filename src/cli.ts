@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
 import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
 import { loadChatGptBrowserConfig } from "./browser-config.js";
 import { ChatGptBrowserExecutor } from "./chatgpt-browser-executor.js";
 import { CodexExecutor } from "./codex-executor.js";
-import { LocalCommandRunner } from "./command-runner.js";
+import { LocalCommandRunner } from "./command-runner.js";\nimport { debugLog } from "./debug-log.js";
 import type { Executor } from "./executor.js";
 import { JsonStateStore } from "./json-state-store.js";
 import {
@@ -88,7 +88,7 @@ export async function runWorkflow(
       stateStore,
       ...(ownerDecision ? { ownerDecision } : {}),
       resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
-      onEvent: writeOrchestrationEvent,
+      onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
     }).run();
   } finally {
     await chatgpt.close();
