@@ -74,6 +74,7 @@ export async function runBoundedConnectorSupervisor<T>(options: {
         exitSignal: exited.signal,
       });
     } catch (error) {
+      attempt.stop("SIGTERM");
       if (options.signal?.aborted) {
         attempt.stop("SIGTERM");
         return;
