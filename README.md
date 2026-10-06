@@ -80,7 +80,7 @@ my-project/
 
 Файл поставляется как executable. Если конкретный способ скачивания сбросил executable bit, достаточно один раз выполнить `chmod +x devos`.
 
-При первом запуске launcher локально разворачивает runtime в `.devos/runtime/`. Никакого `npm -g`, системного daemon-а или общей установки DevOS на компьютер нет. Runtime и состояние принадлежат только этому проекту.
+В обычном проекте launcher локально разворачивает runtime в `.devos/runtime/`. При каждом явном запуске он сверяет revision этого runtime с текущим `main` DevOS: актуальный runtime переиспользуется без reinstall/rebuild, а устаревший заменяется перед запуском workflow. Обновляется только `.devos/runtime/`; `.devos/config.json` и `.devos/state/` остаются на месте. Проверка выполняется только по вызову `./devos` — никакого `npm -g`, daemon-а, watcher-а или фонового updater-а нет.\n\nВ самом checkout `EmporioBreak/DevOS` launcher работает иначе: он распознаёт self-hosting по Git root и `origin`, собирает текущий checkout и запускает его `dist/src/cli.js` напрямую. Вложенная копия `.devos/runtime/` для self-hosting не создаётся и не используется.
 
 Repo проекта определяется из локального `git remote origin` и сохраняется в `.devos/config.json`.
 
