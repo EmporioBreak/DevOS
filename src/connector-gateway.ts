@@ -240,7 +240,7 @@ export async function startGateway(options: {
   publicUrl?: string;
   oauthClientsPath?: string | null;
   oauthStatePath?: string | null;
-  onFailure?: () => void;
+  onFailure?: (component: "desktop_commander") => void;
 }) {
   ownerAuth(options.ownerSecret);
   let identity = options.publicUrl
@@ -279,7 +279,7 @@ export async function startGateway(options: {
   local.onerror = () => {};
   let closing = false;
   local.onclose = () => {
-    if (!closing) options.onFailure?.();
+    if (!closing) options.onFailure?.("desktop_commander");
   };
   try {
     await local.connect(stdio, { timeout: 15_000 });
