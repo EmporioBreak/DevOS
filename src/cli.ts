@@ -77,6 +77,9 @@ export async function runWorkflow(
         ["chatgpt_browser", chatgpt],
       ]),
       stateStore,
+      ...(workflow.owner?.mode === "parent_process"
+        ? { ownerDecision: parseParentOwnerDecision(process.env.DEVOS_OWNER_RESULT) }
+        : {}),
     }).run();
   } finally {
     await chatgpt.close();
@@ -171,6 +174,17 @@ export function writeRunResult(
   process.stdout.write(
     `DevOS complete: ${subject}${state.completedRuns} worker runs.\n`,
   );
+}
+
+export function parseParentOwnerDecision(
+  value: string | undefined,
+): "approved" | "changes_requested" | undefined {
+  const decision = value?.trim();
+  if (!decision) return undefined;
+  if (decision === "approved" || decision === "changes_requested") {
+    return decision;
+  }
+  throw new Error("DEVOS_OWNER_RESULT must be approved or changes_requested");
 }
 
 export function parseIssueNumber(value: string): number | null {
