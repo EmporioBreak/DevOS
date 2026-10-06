@@ -536,7 +536,7 @@ DEVOS_CONNECTOR_OWNER_SECRET=...
 
 Переменные реального process environment имеют приоритет над `.env`, поэтому их можно использовать как временный override. `.env` читается как простой `KEY=value` файл и не исполняется как shell script.
 
-Вывод run содержит только публичный **`https://…/mcp`** и фиксированные диагностики. Секреты остаются только в process environment / project-local `.env`; токены и регистрации — в памяти gateway. Desktop Commander и его инструменты получают очищенное окружение без этих секретов, telemetry отключена. Bootstrap/build также получает минимальное окружение, stdout/stderr зависимостей подавляются. Upstream/ngrok output не пересылается, ngrok request inspector выключен. При остановке временный ngrok config удаляется; никакие credentials не записываются в Git/config/logs.
+Вывод run содержит только публичный **`https://…/mcp`** и фиксированные диагностики. Секреты остаются только в process environment / project-local `.env`; durable OAuth client registry и bearer-state хранятся только в project-local connector state, причём bearer-state зашифрован. Desktop Commander и его инструменты получают очищенное окружение без этих секретов, telemetry отключена. Bootstrap/build также получает минимальное окружение, stdout/stderr зависимостей подавляются. Upstream/ngrok output не пересылается, ngrok request inspector выключен. При остановке временный ngrok config удаляется; никакие credentials не записываются в Git/config/logs.
 
 ### Подключение клиентов
 
