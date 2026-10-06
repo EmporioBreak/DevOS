@@ -46,7 +46,8 @@ export type OrchestrationEvent =
       executor: ExecutorKind;
       status: WorkerStatus;
     }
-  | { type: "transition"; from: string; to: string }\n  | { type: "worker_session_recovered"; workerId: string; executor: ExecutorKind; reason: string }
+  | { type: "transition"; from: string; to: string }
+  | { type: "worker_session_recovered"; workerId: string; executor: ExecutorKind; reason: string }
   | { type: "owner_handoff"; task: TaskRef };
 
 export interface OrchestratorOptions {
