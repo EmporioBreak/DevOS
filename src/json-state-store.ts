@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { RunState, StateStore } from "./orchestrator.js";
 import { debugLog } from "./debug-log.js";
@@ -34,7 +35,7 @@ export class JsonStateStore implements StateStore {
     debugLog("state.save", { path: this.path, state: valid });
     await mkdir(dirname(this.path), { recursive: true });
 
-    const temporaryPath = `${this.path}.tmp`;
+    const temporaryPath = stateTemporaryPath(this.path, process.pid, randomUUID());
     await writeFile(temporaryPath, `${JSON.stringify(valid, null, 2)}\n`, "utf8");
     await rename(temporaryPath, this.path);
   }
@@ -176,4 +177,13 @@ function isWorkerIdList(value: unknown): value is string[] {
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+
+export function stateTemporaryPath(
+  path: string,
+  pid: number,
+  nonce: string,
+): string {
+  return `${path}.tmp.${pid}.${nonce}`;
 }
