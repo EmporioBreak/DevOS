@@ -10,9 +10,21 @@ The main agent owns the user task and final judgment. DevOS owns coordination, n
 
 - GitHub Issue and linked PR are the source of truth for the task.
 - Keep one task-scoped worker graph per Issue. Do not invent new workers, roles, routes, or lifecycle stages during execution.
-- Browser workers are normal workers. Local Codex is used for host-local work and for the main-agent role when DevOS returns final review to the local caller.
+- All worker tasks start with ChatGPT in the browser. Local Codex workers are a fallback after a browser worker reports `needs_local_worker` with a concrete environment limitation.
 - Final task acceptance is not a worker role. The main agent decides `approved` or `changes_requested`.
 - If the main agent requests changes, continue the same task and preserve task-scoped worker sessions and the existing PR.
+
+## Main-agent execution boundary
+
+1. The main agent receives the user task, clarifies requirements, plans the complete worker graph, and records the task contracts and acceptance criteria in GitHub Issues.
+2. The main agent launches DevOS with the declared graph, then waits for its final-review handoff.
+3. DevOS workers perform all implementation, testing, intermediate review, and rework. They review each other and continue their correction loop within the same task.
+4. Before the final-review handoff, the main agent may only diagnose an actual execution failure or blocker. Diagnosis must not become parallel implementation, testing, product review, or a takeover of worker work.
+5. After the handoff, the main agent performs the final review, decides `approved` or `changes_requested`, and presents the accepted result to the user.
+
+Do not spawn additional subagents or reviewers outside the declared DevOS graph, including through Codex collaboration tools. Do not perform parallel code checks, tests, or early product reviews while workers are executing. Do not add roles or change routing during execution to bypass a worker limitation.
+
+On `changes_requested`, send the findings back through the existing DevOS continuation and wait for another final-review handoff. Preserve the Issue, PR, graph, and saved worker sessions; do not restart the task or create replacement workers.
 
 ## Canonical statuses
 
@@ -44,7 +56,7 @@ Do not reintroduce `needs_host` or create alternative human-readable aliases for
 
 ## Main-agent handoff
 
-When DevOS returns:
+Enter final task review only when DevOS returns:
 
 ```text
 DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED", ...}
@@ -73,8 +85,9 @@ Do not silently create a standalone ChatGPT conversation when a project is confi
 
 ## Local-work rules
 
-- Prefer browser workers for normal repository implementation/review when the declared graph routes there.
-- Use local Codex when `needs_local_worker` is returned or when host-local reproduction/verification is genuinely required.
+- Browser workers must attempt each task first, including implementation, testing, review, and verification.
+- Use a local Codex worker only after that browser attempt returns `needs_local_worker` and identifies the missing capability. Task complexity or an anticipated need for host-local tools does not justify routing directly to a local worker.
+- This fallback rule concerns worker execution; the main agent still owns planning, execution-failure diagnosis, and final judgment within the boundaries above.
 - Do not claim local verification that was not actually run.
 - Keep changes minimal and scoped to the active task.
 - Do not mix unrelated browser reliability work, lifecycle changes, or cleanup into a focused task.
@@ -91,5 +104,7 @@ Do not silently create a standalone ChatGPT conversation when a project is confi
 ## Change discipline
 
 Small, obvious repository maintenance does not need a new DevOS Issue or worker graph when the main agent can safely perform it directly. Use a normal small PR when appropriate.
+
+This exception covers routine maintenance such as correcting this operational document. It does not permit the main agent to take over substantive worker tasks or bypass the execution boundary of an active DevOS task.
 
 For substantive product behavior, use the Issue/PR workflow and keep the task contract explicit.
