@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RunState, StateStore } from "./orchestrator.js";
+import { debugLog } from "./debug-log.js";
 import type { TaskRef } from "./workflow.js";
 
 export class JsonStateStore implements StateStore {
@@ -19,7 +20,9 @@ export class JsonStateStore implements StateStore {
     try {
       const raw = await readFile(this.path, "utf8");
       const value: unknown = JSON.parse(raw);
-      return validateState(value);
+      const state = validateState(value);
+      debugLog("state.load", { path: this.path, state });
+      return state;
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") return null;
       throw error;
@@ -28,6 +31,7 @@ export class JsonStateStore implements StateStore {
 
   async save(state: RunState): Promise<void> {
     const valid = validateState(state);
+    debugLog("state.save", { path: this.path, state: valid });
     await mkdir(dirname(this.path), { recursive: true });
 
     const temporaryPath = `${this.path}.tmp`;
@@ -36,6 +40,7 @@ export class JsonStateStore implements StateStore {
   }
 
   async clear(): Promise<void> {
+    debugLog("state.clear", { path: this.path });
     await rm(this.path, { force: true });
   }
 }
