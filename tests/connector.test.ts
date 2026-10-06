@@ -79,6 +79,18 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
     await client.connect(transport as Transport);
     const tools = await client.listTools();
     assert.ok(tools.tools.some((t) => t.name === "read_file"));
+    for (const tool of tools.tools) {
+      const descriptor = tool as any;
+      assert.equal(typeof descriptor.title, "string");
+      assert.equal(typeof descriptor.annotations?.readOnlyHint, "boolean");
+      assert.equal(typeof descriptor.annotations?.destructiveHint, "boolean");
+      assert.equal(typeof descriptor.annotations?.openWorldHint, "boolean");
+      assert.deepEqual(
+        descriptor._meta?.securitySchemes,
+        [{ type: "oauth2", scopes: ["mcp:tools"] }],
+        `remote tool ${tool.name} must advertise its OAuth policy`,
+      );
+    }
     const file = join(
       tmpdir(),
       "devos-gateway-" + randomBytes(8).toString("hex"),

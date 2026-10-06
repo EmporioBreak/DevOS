@@ -228,6 +228,68 @@ export async function startGateway(options: {
                 : {}),
             });
             await Promise.all(writes);
+
+            // ChatGPT imports remote MCP actions from tools/list and expects each
+            // authenticated tool to advertise its OAuth policy explicitly. The
+            // local Desktop Commander is a provider-neutral stdio server and has
+            // no knowledge of the public gateway's OAuth scope, so add that policy
+            // only at this remote boundary without changing the upstream tool.
+            if (
+              request.method === "tools/list" &&
+              result &&
+              typeof result === "object" &&
+              Array.isArray((result as { tools?: unknown[] }).tools)
+            ) {
+              const listed = result as {
+                tools: Array<Record<string, unknown>>;
+                [key: string]: unknown;
+              };
+              return {
+                ...listed,
+                tools: listed.tools.map((tool) => {
+                  const annotations =
+                    tool.annotations && typeof tool.annotations === "object"
+                      ? (tool.annotations as Record<string, unknown>)
+                      : {};
+                  const readOnly = annotations.readOnlyHint === true;
+                  const title =
+                    typeof tool.title === "string"
+                      ? tool.title
+                      : typeof annotations.title === "string"
+                        ? annotations.title
+                        : String(tool.name ?? "Desktop Commander tool");
+                  const meta =
+                    tool._meta && typeof tool._meta === "object"
+                      ? (tool._meta as Record<string, unknown>)
+                      : {};
+                  return {
+                    ...tool,
+                    title,
+                    annotations: {
+                      ...annotations,
+                      readOnlyHint: readOnly,
+                      destructiveHint:
+                        typeof annotations.destructiveHint === "boolean"
+                          ? annotations.destructiveHint
+                          : !readOnly,
+                      openWorldHint:
+                        typeof annotations.openWorldHint === "boolean"
+                          ? annotations.openWorldHint
+                          : !readOnly,
+                    },
+                    _meta: {
+                      ...meta,
+                      // OpenAI compatibility mirror. SDK 1.32.1 preserves
+                      // arbitrary _meta while its ToolSchema predates the
+                      // top-level securitySchemes field.
+                      securitySchemes: [
+                        { type: "oauth2", scopes: ["mcp:tools"] },
+                      ],
+                    },
+                  };
+                }),
+              };
+            }
             return result;
           };
           server.fallbackNotificationHandler = async (notification) => {
