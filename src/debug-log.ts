@@ -27,13 +27,30 @@ function redact(value: unknown, key = ""): unknown {
     );
   }
   if (typeof value === "string") {
-    return value
+    return redactSerializedCredentials(value)
       .replace(/(authorization:\s*bearer\s+)[^\s]+/gi, "$1[REDACTED]")
       .replace(/([?&])([^=&#\s]+)=([^&#\s]*)/g, (match, separator: string, key: string) =>
         isCredentialQueryKey(key) ? `${separator}${key}=[REDACTED]` : match,
       );
   }
   return value;
+}
+
+function redactSerializedCredentials(value: string): string {
+  let redacted = value.replace(
+    /"([^"\\]+)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g,
+    (match, key: string) => isCredentialQueryKey(key)
+      ? match.replace(/:\s*"[^"]*"/, ': "[REDACTED]"')
+      : match,
+  );
+
+  redacted = redacted.replace(
+    /\\\"([^"\\]+)\\\"\s*:\s*\\\"((?:\\\\.|[^"\\])*)\\\"/g,
+    (match, key: string) => isCredentialQueryKey(key)
+      ? match.replace(/:\s*\\\".*\\\"$/, ':\\\"[REDACTED]\\\"')
+      : match,
+  );
+  return redacted;
 }
 
 function isCredentialQueryKey(key: string): boolean {
@@ -46,7 +63,7 @@ function isCredentialQueryKey(key: string): boolean {
   const normalized = decodedKey
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .toLowerCase();
-  return /(?:^|[_-])(?:token|secret|password|credential|authorization|auth|key)(?:[_-]|$)/.test(
+  return /(?:^|[_-])(?:token|secret|password|credential|authorization|auth|key|cookie)(?:[_-]|$)/.test(
     normalized,
   );
 }
