@@ -98,3 +98,29 @@ test("persists a PR resolved during task execution", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test("persists browser worker start markers with task-local sessions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-state-"));
+
+  try {
+    const store = new JsonStateStore(root, { repo: "owner/product", issue: 44 });
+    await store.save({
+      currentWorkerId: "developer",
+      completedRuns: 1,
+      sessions: { developer: "https://chatgpt.com/g/g-p-project/c/dev" },
+      browserWorkersStarted: ["developer"],
+      task: { repo: "owner/product", issue: 44 },
+    });
+
+    assert.deepEqual(await store.load(), {
+      currentWorkerId: "developer",
+      completedRuns: 1,
+      sessions: { developer: "https://chatgpt.com/g/g-p-project/c/dev" },
+      browserWorkersStarted: ["developer"],
+      task: { repo: "owner/product", issue: 44 },
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
