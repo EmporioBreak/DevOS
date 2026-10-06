@@ -94,8 +94,9 @@ Do not silently create a standalone ChatGPT conversation when a project is confi
 
 ## Repository and execution rules
 
-- DevOS is project-local and one-shot.
-- No daemon, watcher, polling loop, background service, or global install.
+- DevOS is project-local. Its CLI remains a one-shot control surface, but it may start and manage a project-scoped background runtime that continues after the invoking terminal closes.
+- The background runtime must be owned by that project, explicitly startable/stoppable through DevOS, and responsible for cleaning up its own child processes and state.
+- Do not install or rely on a global/system daemon, login service, LaunchAgent, watcher, or unbounded polling loop for DevOS runtime ownership. Background work must remain project-scoped and bounded to the explicitly started DevOS instance.
 - Avoid GitHub Actions for the inner development loop unless a task explicitly requires them.
 - Do not create throwaway repositories for smoke tests unless there is a concrete need and explicit approval.
 - Preserve intentional `run` / `restart` semantics.
