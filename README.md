@@ -335,7 +335,7 @@ Workflow может явно передать финальную проверк�
 }
 ```
 
-В режиме `main_agent` DevOS не создаёт отдельного acceptance worker-а и не открывает отдельный ChatGPT conversation для владельца. Если workflow стартовал только с Issue, перед handoff DevOS один раз разрешает однозначно связанный PR из GitHub и сохраняет его в том же task-local state. После worker-ов DevOS сохраняет state и завершает выполнение структурированной строкой:
+В режиме `main_agent` DevOS не создаёт отдельного acceptance worker-а и не открывает отдельный ChatGPT conversation для владельца. Если workflow стартовал только с Issue, перед handoff DevOS ищет среди открытых PR единственную явную closing-ссылку, а при её отсутствии использует только единственное совпадение по тексту; несколько совпадений оставляют ссылку на Issue без PR. Закрытые старые PR не участвуют в поиске, чтобы случайное историческое упоминание не подменило текущую реализацию. Найденный PR сохраняется в task-local state. После worker-ов DevOS сохраняет state и завершает выполнение структурированной строкой:
 
 ```text
 DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED","task":{"repo":"owner/product","issue":42,"pr":57}}

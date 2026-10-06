@@ -18,7 +18,7 @@ export async function resolveTaskReference(
         "--repo",
         task.repo,
         "--state",
-        "all",
+        "open",
         "--search",
         `#${task.issue} in:body`,
         "--limit",
