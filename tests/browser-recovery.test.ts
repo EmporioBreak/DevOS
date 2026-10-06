@@ -387,3 +387,42 @@ test("ambiguous post-submit fresh failure preserves created identity instead of 
   assert.equal(store.state?.browserPreSubmitRetry?.includes("browser"), false);
   assert.equal(f.sends(), 1);
 });
+
+
+test("saved conversation remains identical across a pre-submit failure and ordinary retry", async () => {
+  const options = { status: 403 };
+  const f = fixture(options);
+  const workflow = recoveryWorkflow();
+  const store = new RecoveryStateStore({
+    currentWorkerId: "browser",
+    completedRuns: 1,
+    sessions: { browser: saved, other: "https://chatgpt.com/g/one/c/other" },
+    browserWorkersStarted: ["browser", "other"],
+    task: workflow.task,
+  });
+
+  await assert.rejects(
+    new Orchestrator({
+      projectRoot: "/project",
+      workflow,
+      executors: new Map([["chatgpt_browser", f.executor]]),
+      stateStore: store,
+    }).run(),
+    /HTTP 403/,
+  );
+  assert.equal(store.state?.sessions.browser, saved);
+  assert.equal(f.sends(), 0);
+
+  options.status = 200;
+  const result = await new Orchestrator({
+    projectRoot: "/project",
+    workflow,
+    executors: new Map([["chatgpt_browser", f.executor]]),
+    stateStore: store,
+  }).run();
+
+  assert.equal(result.sessions.browser, saved);
+  assert.equal(result.sessions.other, "https://chatgpt.com/g/one/c/other");
+  assert.deepEqual(f.urls, [saved, saved]);
+  assert.equal(f.sends(), 1);
+});
