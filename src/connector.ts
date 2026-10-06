@@ -327,14 +327,31 @@ async function backgroundState(root: string): Promise<ConnectorBackgroundState> 
   }
 }
 
+export function backgroundOwnershipIsProvable(
+  state: ConnectorBackgroundState,
+  root: string,
+): state is ConnectorBackgroundState & {
+  pid: number;
+  projectRoot: string;
+  identity: ProcessIdentity;
+} {
+  return (
+    Number.isSafeInteger(state.pid) &&
+    !!state.pid &&
+    state.pid > 0 &&
+    state.projectRoot === root &&
+    !!state.identity &&
+    state.identity.pid === state.pid
+  );
+}
+
 export function backgroundOwnershipMatches(
   state: ConnectorBackgroundState,
   actual: ProcessIdentity,
   root: string,
 ): boolean {
   return (
-    !!state.identity &&
-    state.projectRoot === root &&
+    backgroundOwnershipIsProvable(state, root) &&
     state.pid === actual.pid &&
     sameProcessIdentity(state.identity, actual)
   );
@@ -366,16 +383,23 @@ async function startBackground(root: string, config: {
   const serviceFile = join(dir, backgroundStateName);
   const existing = await backgroundState(root);
   if (processAlive(existing.pid) && existing.pid) {
+    if (!backgroundOwnershipIsProvable(existing, root)) {
+      throw new Error(
+        "Cannot prove ownership of the existing DevOS background PID; refusing to replace its state.",
+      );
+    }
     const actual = await captureProcessIdentity(existing.pid);
     if (!actual) {
-      throw new Error("Cannot prove ownership of the existing DevOS background PID; refusing to replace it.");
+      throw new Error("Cannot inspect the existing DevOS background PID; refusing to replace its state.");
     }
     if (backgroundOwnershipMatches(existing, actual, root)) {
       process.stdout.write("DevOS is already running in background.\n");
       return;
     }
+    await rm(serviceFile, { force: true });
+  } else {
+    await rm(serviceFile, { force: true });
   }
-  await rm(serviceFile, { force: true });
   await mkdir(dir, { recursive: true, mode: 0o700 });
 
   const runner = join(softwareRoot, "dist/src/connector-runner.js");
@@ -453,9 +477,14 @@ async function stopBackground(root: string) {
     process.stdout.write("DevOS background is already stopped.\n");
     return;
   }
+  if (!backgroundOwnershipIsProvable(state, root)) {
+    throw new Error(
+      "Cannot prove DevOS background process ownership from stored state; refusing to signal or remove it.",
+    );
+  }
   const actual = await captureProcessIdentity(state.pid);
   if (!actual) {
-    throw new Error("Cannot prove DevOS background process ownership; refusing to signal the stored PID.");
+    throw new Error("Cannot inspect DevOS background process ownership; refusing to signal the stored PID.");
   }
   if (!backgroundOwnershipMatches(state, actual, root)) {
     await rm(serviceFile, { force: true });
