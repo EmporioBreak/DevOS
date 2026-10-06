@@ -28,8 +28,8 @@ function redact(value: unknown, key = ""): unknown {
   }
   if (typeof value === "string") {
     return value
-      .replace(/(authorization:\\s*bearer\\s+)[^\\s]+/gi, "$1[REDACTED]")
-      .replace(/([?&](?:token|auth|key)=)[^&\\s]+/gi, "$1[REDACTED]");
+      .replace(/(authorization:\s*bearer\s+)[^\s]+/gi, "$1[REDACTED]")
+      .replace(/([?&](?:token|auth|key)=)[^&\s]+/gi, "$1[REDACTED]");
   }
   return value;
 }

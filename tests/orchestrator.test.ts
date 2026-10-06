@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexResumeUnavailableError } from "../src/codex-executor.js";
+import { BrowserResumeUnavailableError } from "../src/chatgpt-browser-executor.js";
 import type { Executor, WorkerRequest } from "../src/executor.js";
-import { Orchestrator, type RunState, type StateStore } from "../src/orchestrator.js";
+import { Orchestrator, type OrchestrationEvent, type RunState, type StateStore } from "../src/orchestrator.js";
 import type { ExecutorKind, WorkerOutput, Workflow } from "../src/workflow.js";
 
 class MemoryStore implements StateStore {
@@ -460,6 +461,70 @@ test("persists an early browser session when response loading fails after conver
   assert.equal(result.completedRuns, 1);
 });
 
+test("recovers only the current browser worker after a persisted conversation cannot resume", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 108, pr: 50 },
+    start: "reviewer",
+    workers: [{ id: "reviewer", executor: "chatgpt_browser", prompt: "Review.", on: { done: null } }],
+  };
+  const store = new MemoryStore();
+  store.state = {
+    currentWorkerId: "reviewer",
+    completedRuns: 2,
+    sessions: { developer: "https://chatgpt.com/g/g-p-project/c/developer" },
+    browserWorkersStarted: ["developer"],
+    task: workflow.task,
+  };
+  const originalSession = "https://chatgpt.com/g/g-p-project/c/broken";
+  const fresh: Executor = {
+    kind: "chatgpt_browser",
+    async run(request) {
+      assert.equal(request.sessionId, undefined);
+      await request.onSession?.(originalSession);
+      throw new Error("simulated response loader failure after conversation creation");
+    },
+  };
+  await assert.rejects(
+    () => new Orchestrator({
+      projectRoot: "/product",
+      workflow,
+      executors: new Map([["chatgpt_browser", fresh]]),
+      stateStore: store,
+    }).run(),
+    /simulated response loader failure/,
+  );
+  assert.equal(store.state?.sessions.reviewer, originalSession);
+
+  const requests: WorkerRequest[] = [];
+  let call = 0;
+  const resumed: Executor = {
+    kind: "chatgpt_browser",
+    async run(request) {
+      requests.push(request);
+      if (call++ === 0) throw new BrowserResumeUnavailableError(request.sessionId!, "redirected outside configured Project");
+      const replacement = "https://chatgpt.com/g/g-p-project/c/recovered";
+      await request.onSession?.(replacement);
+      return { text: 'DEVOS_RESULT {"status":"done"}', sessionId: replacement };
+    },
+  };
+  const events: OrchestrationEvent[] = [];
+  const result = await new Orchestrator({
+    projectRoot: "/product", workflow,
+    executors: new Map([["chatgpt_browser", resumed]]),
+    stateStore: store,
+    onEvent: event => { events.push(event); },
+  }).run();
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0]?.sessionId, "https://chatgpt.com/g/g-p-project/c/broken");
+  assert.equal(requests[1]?.sessionId, undefined);
+  assert.equal(result.sessions.reviewer, "https://chatgpt.com/g/g-p-project/c/recovered");
+  assert.equal(result.sessions.developer, "https://chatgpt.com/g/g-p-project/c/developer");
+  assert.deepEqual(result.task, workflow.task);
+  assert.ok(events.some(event => event.type === "worker_session_recovered" && event.executor === "chatgpt_browser"));
+});
+
 
 test("rejects needs_local_worker from an already-local Codex worker", async () => {
   const workflow: Workflow = {
@@ -503,16 +568,19 @@ test("does not resume a Codex session saved for another project root", async () 
   const codex = new QueueExecutor("codex", [
     { text: 'DEVOS_RESULT {"status":"done"}', sessionId: "new-thread" },
   ]);
+  const events: OrchestrationEvent[] = [];
   const result = await new Orchestrator({
     projectRoot: "/product",
     workflow,
     executors: new Map([["codex", codex]]),
     stateStore: store,
+    onEvent: event => { events.push(event); },
   }).run();
   assert.equal(codex.requests[0]?.sessionId, undefined);
   assert.equal(codex.requests[0]?.projectRoot, "/product");
   assert.equal(result.sessions.local, "new-thread");
   assert.equal(result.sessionProjectRoots?.local, "/product");
+  assert.ok(events.some(event => event.type === "worker_session_recovered" && event.reason.includes("different project root")));
 });
 
 test("recovers only the current Codex worker when resume fails", async () => {

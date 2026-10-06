@@ -13,12 +13,21 @@ test("DEVOS_DEBUG writes task-local append-only JSONL with credential redaction"
   try {
     process.env.DEVOS_DEBUG = "1";
     process.env.DEVOS_DEBUG_FILE = file;
-    debugLog("one", { path: "/project", token: "secret-token", output: "ordinary repository context" });
+    debugLog("one", {
+      path: "/project",
+      token: "secret-token",
+      output: "ordinary repository context",
+      diagnostic: "Authorization: Bearer bearer-secret https://chatgpt.com/path?auth=query-secret&next=ok",
+    });
     debugLog("two", { password: "secret-password" });
     const lines = (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     assert.equal(lines.length, 2);
     assert.equal(lines[0].data.token, "[REDACTED]");
     assert.equal(lines[0].data.output, "ordinary repository context");
+    assert.equal(
+      lines[0].data.diagnostic,
+      "Authorization: Bearer [REDACTED] https://chatgpt.com/path?auth=[REDACTED]&next=ok",
+    );
     assert.equal(lines[1].data.password, "[REDACTED]");
   } finally {
     if (oldDebug === undefined) delete process.env.DEVOS_DEBUG; else process.env.DEVOS_DEBUG = oldDebug;

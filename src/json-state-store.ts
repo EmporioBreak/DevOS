@@ -54,6 +54,7 @@ function validateState(value: unknown): RunState {
   const task = record.task;
   const ownerReviewPending = record.ownerReviewPending;
   const browserWorkersStarted = record.browserWorkersStarted;
+  const browserSessionRecovery = record.browserSessionRecovery;
   const sessionProjectRoots = record.sessionProjectRoots;
 
   if (task !== undefined && !isTaskRef(task)) {
@@ -74,6 +75,12 @@ function validateState(value: unknown): RunState {
   ) {
     throw new Error("Invalid DevOS state");
   }
+  if (
+    browserSessionRecovery !== undefined &&
+    !isWorkerIdList(browserSessionRecovery)
+  ) {
+    throw new Error("Invalid DevOS state");
+  }
 
   if (
     Object.keys(record).some(
@@ -83,6 +90,7 @@ function validateState(value: unknown): RunState {
         key !== "sessions" &&
         key !== "sessionProjectRoots" &&
         key !== "browserWorkersStarted" &&
+        key !== "browserSessionRecovery" &&
         key !== "task" &&
         key !== "ownerReviewPending",
     ) ||
@@ -104,6 +112,9 @@ function validateState(value: unknown): RunState {
     ...(browserWorkersStarted === undefined
       ? {}
       : { browserWorkersStarted: [...browserWorkersStarted] }),
+    ...(browserSessionRecovery === undefined
+      ? {}
+      : { browserSessionRecovery: [...browserSessionRecovery] }),
     ...(task === undefined ? {} : { task }),
     ...(ownerReviewPending === undefined ? {} : { ownerReviewPending }),
   };

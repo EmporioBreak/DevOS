@@ -213,7 +213,9 @@ export function formatOrchestrationEvent(event: OrchestrationEvent): string {
     case "transition":
       return `→ ${event.to}\n`;
     case "worker_session_recovered":
-      return `[${event.workerId}] ${event.executor} — saved session unusable; starting fresh in project root\n`;
+      return event.executor === "chatgpt_browser"
+        ? `[${event.workerId}] ${event.executor} — saved session unusable; recovering in configured Project\n`
+        : `[${event.workerId}] ${event.executor} — saved session unusable; starting fresh in project root\n`;
     case "owner_handoff":
       return "Owner handoff\n";
   }

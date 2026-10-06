@@ -13,6 +13,19 @@ import {
 } from "./browser-config.js";
 import { CHATGPT_RESPONSE_LOADER_SOURCE } from "./chatgpt-response-loader.js";
 
+export class BrowserResumeUnavailableError extends Error {
+  constructor(readonly sessionId: string, message: string) {
+    super(message);
+    this.name = "BrowserResumeUnavailableError";
+  }
+}
+
+export function isBrowserResumeUnavailableError(
+  error: unknown,
+): error is BrowserResumeUnavailableError {
+  return error instanceof BrowserResumeUnavailableError;
+}
+
 const COMPOSER = [
   '[data-testid="prompt-textarea"]:visible',
   '#prompt-textarea:visible',
@@ -46,23 +59,35 @@ export class ChatGptBrowserExecutor implements Executor {
         : null;
       const url = request.sessionId ?? this.config.projectUrl;
       debugLog("browser.session", { decision: request.sessionId ? "resume" : "fresh", requestedUrl: url, projectRoot: request.projectRoot });
-      validateChatGptUrl(url);
-      if (projectScope && request.sessionId) {
-        assertChatGptProjectScope(this.config.projectUrl, request.sessionId, true);
-      }
+      try {
+        validateChatGptUrl(url);
+        if (projectScope && request.sessionId) {
+          assertChatGptProjectScope(this.config.projectUrl, request.sessionId, true);
+        }
 
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: this.timeoutMs });
-      debugLog("browser.navigation", { requestedUrl: url, actualUrl: page.url() });
-      await page.locator(COMPOSER).first().waitFor({
-        state: "visible",
-        timeout: this.timeoutMs,
-      });
-      if (projectScope) {
-        assertChatGptProjectScope(
-          this.config.projectUrl,
-          page.url(),
-          request.sessionId !== undefined,
-        );
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: this.timeoutMs });
+        debugLog("browser.navigation", { requestedUrl: url, actualUrl: page.url() });
+        await page.locator(COMPOSER).first().waitFor({
+          state: "visible",
+          timeout: this.timeoutMs,
+        });
+        if (projectScope) {
+          assertChatGptProjectScope(
+            this.config.projectUrl,
+            page.url(),
+            request.sessionId !== undefined,
+          );
+          if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) {
+            throw new Error("ChatGPT redirected to a different conversation while resuming");
+          }
+        }
+      } catch (error) {
+        if (request.sessionId) {
+          const message = error instanceof Error ? error.message : String(error);
+          debugLog("browser.resume.unavailable", { requestedUrl: request.sessionId, actualUrl: page.url(), reason: message });
+          throw new BrowserResumeUnavailableError(request.sessionId, message);
+        }
+        throw error;
       }
 
       const response = sendAndRead(page, request.prompt, this.timeoutMs).then(
@@ -111,6 +136,16 @@ export class ChatGptBrowserExecutor implements Executor {
     this.context = context;
     return context;
   }
+}
+
+export function isSameChatGptConversation(requestedUrl: string, actualUrl: string): boolean {
+  const conversationId = (value: string): string | null => {
+    const match = /^\/g\/[^/]+\/c\/([^/]+)(?:\/|$)/.exec(new URL(value).pathname);
+    if (!match?.[1]) return null;
+    try { return decodeURIComponent(match[1]); } catch { return match[1]; }
+  };
+  const requested = conversationId(requestedUrl);
+  return requested !== null && requested === conversationId(actualUrl);
 }
 
 export async function sendAndRead(

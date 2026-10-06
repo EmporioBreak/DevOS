@@ -1,4 +1,5 @@
 import { isCodexResumeUnavailableError } from "./codex-executor.js";
+import { isBrowserResumeUnavailableError } from "./chatgpt-browser-executor.js";
 import type { Executor } from "./executor.js";
 import { parseDevosResult } from "./result.js";
 import type { ExecutorKind, TaskRef, WorkerOutput, WorkerStatus, Workflow, WorkerSpec } from "./workflow.js";
@@ -9,6 +10,7 @@ export interface RunState {
   sessions: Record<string, string>;
   sessionProjectRoots?: Record<string, string>;
   browserWorkersStarted?: string[];
+  browserSessionRecovery?: string[];
   task?: TaskRef;
   ownerReviewPending?: boolean;
 }
@@ -100,6 +102,9 @@ export class Orchestrator {
           ...(state.browserWorkersStarted
             ? { browserWorkersStarted: state.browserWorkersStarted }
             : {}),
+          ...(state.browserSessionRecovery
+            ? { browserSessionRecovery: state.browserSessionRecovery }
+            : {}),
           task: state.task ?? workflow.task,
         };
         await this.emitTaskStatus(completed, "completed");
@@ -115,6 +120,9 @@ export class Orchestrator {
         ...(state.sessionProjectRoots ? { sessionProjectRoots: state.sessionProjectRoots } : {}),
         ...(state.browserWorkersStarted
           ? { browserWorkersStarted: state.browserWorkersStarted }
+          : {}),
+        ...(state.browserSessionRecovery
+          ? { browserSessionRecovery: state.browserSessionRecovery }
           : {}),
         task: state.task ?? workflow.task,
       };
@@ -145,11 +153,20 @@ export class Orchestrator {
         state = { ...state, sessions, sessionProjectRoots };
         sessionId = undefined;
         await stateStore.save(state);
+        await this.emit({
+          type: "worker_session_recovered",
+          workerId: worker.id,
+          executor: worker.executor,
+          reason: "saved Codex session belongs to a different project root",
+        });
       }
       const browserWorkerAlreadyStarted =
         worker.executor === "chatgpt_browser" &&
         state.browserWorkersStarted?.includes(worker.id) === true;
-      if (browserWorkerAlreadyStarted && !sessionId) {
+      const browserRecoveryPending =
+        worker.executor === "chatgpt_browser" &&
+        state.browserSessionRecovery?.includes(worker.id) === true;
+      if (browserWorkerAlreadyStarted && !sessionId && !browserRecoveryPending) {
         await stateStore.save(state);
         throw new Error(
           `Missing saved browser session for previously started worker: ${worker.id}`,
@@ -189,6 +206,13 @@ export class Orchestrator {
                     ...state.sessions,
                     [worker.id]: reportedSessionId,
                   },
+                  ...(state.browserSessionRecovery
+                    ? {
+                        browserSessionRecovery: state.browserSessionRecovery.filter(
+                          id => id !== worker.id,
+                        ),
+                      }
+                    : {}),
                 };
                 await stateStore.save(state);
               },
@@ -196,23 +220,60 @@ export class Orchestrator {
           : {}),
         });
       } catch (error) {
-        if (worker.executor !== "codex" || !sessionId || !isCodexResumeUnavailableError(error)) throw error;
-        const sessions = { ...state.sessions };
-        const sessionProjectRoots = { ...(state.sessionProjectRoots ?? {}) };
-        delete sessions[worker.id];
-        delete sessionProjectRoots[worker.id];
-        state = { ...state, sessions, sessionProjectRoots };
-        await stateStore.save(state);
-        await this.emit({
-          type: "worker_session_recovered",
-          workerId: worker.id,
-          executor: worker.executor,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-        output = await executor.run({
-          projectRoot: this.options.projectRoot,
-          prompt: buildWorkerPrompt(activeWorkflow, worker),
-        });
+        if (worker.executor === "codex" && sessionId && isCodexResumeUnavailableError(error)) {
+          const sessions = { ...state.sessions };
+          const sessionProjectRoots = { ...(state.sessionProjectRoots ?? {}) };
+          delete sessions[worker.id];
+          delete sessionProjectRoots[worker.id];
+          state = { ...state, sessions, sessionProjectRoots };
+          await stateStore.save(state);
+          await this.emit({
+            type: "worker_session_recovered",
+            workerId: worker.id,
+            executor: worker.executor,
+            reason: error.message,
+          });
+          output = await executor.run({
+            projectRoot: this.options.projectRoot,
+            prompt: buildWorkerPrompt(activeWorkflow, worker),
+          });
+        } else if (
+          worker.executor === "chatgpt_browser" &&
+          sessionId &&
+          isBrowserResumeUnavailableError(error)
+        ) {
+          const sessions = { ...state.sessions };
+          delete sessions[worker.id];
+          const browserSessionRecovery = [
+            ...(state.browserSessionRecovery ?? []).filter(id => id !== worker.id),
+            worker.id,
+          ];
+          state = { ...state, sessions, browserSessionRecovery };
+          await stateStore.save(state);
+          await this.emit({
+            type: "worker_session_recovered",
+            workerId: worker.id,
+            executor: worker.executor,
+            reason: error.message,
+          });
+          output = await executor.run({
+            projectRoot: this.options.projectRoot,
+            prompt: buildWorkerPrompt(activeWorkflow, worker),
+            enforceProjectScope: true,
+            onSession: async reportedSessionId => {
+              state = {
+                ...state,
+                sessions: { ...state.sessions, [worker.id]: reportedSessionId },
+                browserSessionRecovery: (state.browserSessionRecovery ?? []).filter(
+                  id => id !== worker.id,
+                ),
+              };
+              await stateStore.save(state);
+            },
+          });
+        } else {
+          throw error;
+        }
       }
 
       const sessions =
@@ -312,6 +373,9 @@ export class Orchestrator {
           ...(state.sessionProjectRoots ? { sessionProjectRoots: state.sessionProjectRoots } : {}),
           ...(state.browserWorkersStarted
             ? { browserWorkersStarted: state.browserWorkersStarted }
+            : {}),
+          ...(state.browserSessionRecovery
+            ? { browserSessionRecovery: state.browserSessionRecovery }
             : {}),
           task: state.task ?? workflow.task,
         };
