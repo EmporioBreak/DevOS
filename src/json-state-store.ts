@@ -48,7 +48,7 @@ function validateState(value: unknown): RunState {
   const record = value as Record<string, unknown>;
   const task = record.task;
   const ownerReviewPending = record.ownerReviewPending;
-  const browserWorkersStarted = record.browserWorkersStarted;
+  const browserWorkersStarted = record.browserWorkersStarted;\n  const sessionProjectRoots = record.sessionProjectRoots;
 
   if (task !== undefined && !isTaskRef(task)) {
     throw new Error("Invalid DevOS state");
@@ -71,7 +71,7 @@ function validateState(value: unknown): RunState {
       key =>
         key !== "currentWorkerId" &&
         key !== "completedRuns" &&
-        key !== "sessions" &&
+        key !== "sessions" &&\n        key !== "sessionProjectRoots" &&
         key !== "browserWorkersStarted" &&
         key !== "task" &&
         key !== "ownerReviewPending",
@@ -89,7 +89,7 @@ function validateState(value: unknown): RunState {
   return {
     currentWorkerId: record.currentWorkerId,
     completedRuns: record.completedRuns,
-    sessions: { ...record.sessions },
+    sessions: { ...record.sessions },\n    ...(sessionProjectRoots === undefined ? {} : { sessionProjectRoots: { ...sessionProjectRoots } }),
     ...(browserWorkersStarted === undefined
       ? {}
       : { browserWorkersStarted: [...browserWorkersStarted] }),
