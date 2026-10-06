@@ -40,7 +40,7 @@ const loader = fileURLToPath(import.meta.resolve('tsx'));
 const id = 'tunnel_'+randomBytes(16).toString('hex');
 const secret = 'fake-secret-for-tests-only';
 async function fixture() {
-  const root=await realpath(await mkdtemp(join(tmpdir(),'devos connector spaces '))); 
+  const root=await realpath(await mkdtemp(join(tmpdir(),'devos connector spaces ')));
   await mkdir(join(root,'.devos/tools'),{recursive:true});
   const binary=join(root,'.devos/tools/tunnel-client');
   await writeFile(binary,`#!${process.execPath}
