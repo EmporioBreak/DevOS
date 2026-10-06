@@ -96,6 +96,21 @@ function loadCredentials(root: string) {
   process.env.DEVOS_CONNECTOR_OWNER_SECRET ||= keychain(root, "owner-secret");
   process.env.NGROK_AUTHTOKEN ||= keychain(root, "ngrok-authtoken");
 }
+
+async function secureStatePermissions(dir: string) {
+  for (const name of [
+    "background.json",
+    "state.json",
+    "supervisor.json",
+    "diagnostic.json",
+    "auth-diagnostic.json",
+    "oauth-state.enc",
+    "oauth-clients.json",
+    "ngrok.yml",
+  ]) {
+    try { await chmod(join(dir, name), 0o600); } catch {}
+  }
+}
 export function desktopCommand(root: string) {
   return {
     file: process.execPath,
@@ -506,6 +521,8 @@ export async function connector(
   const binary = join(root, ".devos/tools/ngrok"),
     dir = join(root, ".devos/connector"),
     stateFile = join(dir, "state.json");
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await secureStatePermissions(dir);
   if (action === "setup") {
     try {
       await checkDesktop();
