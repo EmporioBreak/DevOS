@@ -5,6 +5,7 @@ import type { WorkerOutput } from "./workflow.js";
 import {
   assertChatGptProjectScope,
   getChatGptProjectScope,
+  isProvisionalChatGptConversationId,
   loadChatGptBrowserConfig,
   validateChatGptUrl,
   type ChatGptBrowserConfig,
@@ -173,7 +174,10 @@ export async function waitForConversationUrl(
 
   while (Date.now() < deadline) {
     const current = validateChatGptUrl(page.url());
-    if (/\/c\/[^/?#]+/.test(current.pathname)) return current.href;
+    const conversation = /\/c\/([^/?#]+)/.exec(current.pathname)?.[1];
+    if (conversation && !isProvisionalChatGptConversationId(conversation)) {
+      return current.href;
+    }
     await new Promise(resolve => setTimeout(resolve, 250));
   }
 
