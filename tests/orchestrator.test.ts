@@ -60,6 +60,8 @@ test("reuses each worker session across review loops", async () => {
   });
   assert.equal(codex.requests[1]?.sessionId, "codex-1");
   assert.equal(chat.requests[1]?.sessionId, "https://chatgpt.com/c/review-1");
+  assert.equal(chat.requests[0]?.requireProject, true);
+  assert.equal(chat.requests[1]?.requireProject, true);
   assert.match(chat.requests[0]?.prompt ?? "", /Issue #12/);
   assert.match(chat.requests[0]?.prompt ?? "", /PR #34/);
   assert.match(
@@ -202,6 +204,7 @@ test("keeps persisted state after worker failure", async () => {
     currentWorkerId: "worker",
     completedRuns: 1,
     sessions: { worker: "session-2" },
+    browserWorkersStarted: ["worker"],
     task: { repo: "owner/product", issue: 102 },
   });
 });
@@ -246,7 +249,94 @@ for (const status of ["needs_local_worker", "changes_requested"] as const) {
       currentWorkerId: "worker",
       completedRuns: 1,
       sessions: { worker: "session-3" },
+      browserWorkersStarted: ["worker"],
       task: { repo: "owner/product", issue: 103 },
     });
   });
 }
+
+
+test("refuses to silently recreate a previously started browser worker without its saved session", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 104 },
+    start: "worker",
+    workers: [
+      {
+        id: "worker",
+        executor: "chatgpt_browser",
+        prompt: "Resume the task.",
+        on: { done: null },
+      },
+    ],
+  };
+
+  const store = new MemoryStore();
+  store.state = {
+    currentWorkerId: "worker",
+    completedRuns: 1,
+    sessions: {},
+    browserWorkersStarted: ["worker"],
+    task: { repo: "owner/product", issue: 104 },
+  };
+  const chat = new QueueExecutor("chatgpt_browser", []);
+
+  await assert.rejects(
+    () =>
+      new Orchestrator({
+        projectRoot: "/project",
+        workflow,
+        executors: new Map([["chatgpt_browser", chat]]),
+        stateStore: store,
+      }).run(),
+    /Missing saved browser session for previously started worker: worker/,
+  );
+
+  assert.equal(chat.requests.length, 0);
+  assert.deepEqual(store.state, {
+    currentWorkerId: "worker",
+    completedRuns: 1,
+    sessions: {},
+    browserWorkersStarted: ["worker"],
+    task: { repo: "owner/product", issue: 104 },
+  });
+});
+
+test("marks a browser worker as started before its first executor call", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 105 },
+    start: "worker",
+    workers: [
+      {
+        id: "worker",
+        executor: "chatgpt_browser",
+        prompt: "Start the task.",
+        on: { done: null },
+      },
+    ],
+  };
+
+  const store = new MemoryStore();
+  const chat: Executor = {
+    kind: "chatgpt_browser",
+    async run(): Promise<WorkerOutput> {
+      assert.deepEqual(store.state?.browserWorkersStarted, ["worker"]);
+      throw new Error("simulated browser interruption");
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      new Orchestrator({
+        projectRoot: "/project",
+        workflow,
+        executors: new Map([["chatgpt_browser", chat]]),
+        stateStore: store,
+      }).run(),
+    /simulated browser interruption/,
+  );
+
+  assert.deepEqual(store.state?.browserWorkersStarted, ["worker"]);
+  assert.deepEqual(store.state?.sessions, {});
+});
