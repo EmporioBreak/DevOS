@@ -815,8 +815,8 @@ export async function connectorRuntime(root: string) {
     gateway.setPublicUrl(url);
     process.send?.({ publicUrl: url });
     await exit;
-    if (!stopping)
-      throw new Error(failureReason ?? "ngrok exited unexpectedly.");
+    if (failureReason) throw new Error(failureReason);
+    if (!stopping) throw new Error("ngrok exited unexpectedly.");
   } finally {
     stop();
     await gateway?.close();
