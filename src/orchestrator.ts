@@ -1,3 +1,6 @@
+import {
+  isBrowserPreSubmitFailureError,
+} from "./chatgpt-browser-executor.js";
 import { isCodexResumeUnavailableError } from "./codex-executor.js";
 import type { Executor } from "./executor.js";
 import { parseDevosResult } from "./result.js";
@@ -10,6 +13,7 @@ export interface RunState {
   sessionProjectRoots?: Record<string, string>;
   browserWorkersStarted?: string[];
   browserSessionRecovery?: string[];
+  browserPreSubmitRetry?: string[];
   task?: TaskRef;
   mainAgentReviewPending?: boolean;
   completionApproved?: boolean;
@@ -121,6 +125,9 @@ export class Orchestrator {
         ...(state.browserSessionRecovery
           ? { browserSessionRecovery: state.browserSessionRecovery }
           : {}),
+        ...(state.browserPreSubmitRetry
+          ? { browserPreSubmitRetry: state.browserPreSubmitRetry }
+          : {}),
         task: state.task ?? workflow.task,
       };
       await stateStore.save(state);
@@ -160,7 +167,10 @@ export class Orchestrator {
       const browserWorkerAlreadyStarted =
         worker.executor === "chatgpt_browser" &&
         state.browserWorkersStarted?.includes(worker.id) === true;
-      if (browserWorkerAlreadyStarted && !sessionId) {
+      const browserPreSubmitRetryPending =
+        worker.executor === "chatgpt_browser" &&
+        state.browserPreSubmitRetry?.includes(worker.id) === true;
+      if (browserWorkerAlreadyStarted && !sessionId && !browserPreSubmitRetryPending) {
         await stateStore.save(state);
         throw new Error(
           `Missing saved browser session for previously started worker: ${worker.id}`,
@@ -190,6 +200,7 @@ export class Orchestrator {
           sessions: { ...state.sessions, [worker.id]: reportedSessionId },
           ...(worker.executor === "codex" ? { sessionProjectRoots: { ...(state.sessionProjectRoots ?? {}), [worker.id]: this.options.projectRoot } } : {}),
           ...(state.browserSessionRecovery ? { browserSessionRecovery: state.browserSessionRecovery.filter(id => id !== worker.id) } : {}),
+          ...(state.browserPreSubmitRetry ? { browserPreSubmitRetry: state.browserPreSubmitRetry.filter(id => id !== worker.id) } : {}),
         };
         await stateStore.save(state);
       };
@@ -221,7 +232,32 @@ export class Orchestrator {
             prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot),
             onSession,
           });
+        } else if (
+          worker.executor === "chatgpt_browser" &&
+          !sessionId &&
+          isBrowserPreSubmitFailureError(error)
+        ) {
+          state = {
+            ...state,
+            browserPreSubmitRetry: [
+              ...(state.browserPreSubmitRetry ?? []).filter(id => id !== worker.id),
+              worker.id,
+            ],
+          };
+          await stateStore.save(state);
+          throw error;
         } else {
+          if (
+            worker.executor === "chatgpt_browser" &&
+            !sessionId &&
+            state.browserPreSubmitRetry?.includes(worker.id)
+          ) {
+            state = {
+              ...state,
+              browserPreSubmitRetry: state.browserPreSubmitRetry.filter(id => id !== worker.id),
+            };
+            await stateStore.save(state);
+          }
           throw error;
         }
       }
@@ -310,6 +346,9 @@ export class Orchestrator {
             : {}),
           ...(state.browserSessionRecovery
             ? { browserSessionRecovery: state.browserSessionRecovery }
+            : {}),
+          ...(state.browserPreSubmitRetry
+            ? { browserPreSubmitRetry: state.browserPreSubmitRetry }
             : {}),
           task: state.task ?? workflow.task,
         };
