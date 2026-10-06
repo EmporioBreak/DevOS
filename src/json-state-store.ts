@@ -56,6 +56,7 @@ function validateState(value: unknown): RunState {
   const mainAgentReviewPending = record.mainAgentReviewPending ?? record.ownerReviewPending;
   const browserWorkersStarted = record.browserWorkersStarted;
   const browserSessionRecovery = record.browserSessionRecovery;
+  const browserPreSubmitRetry = record.browserPreSubmitRetry;
   const sessionProjectRoots = record.sessionProjectRoots;
 
   if (completionApproved !== undefined && typeof completionApproved !== "boolean") throw new Error("Invalid DevOS state");
@@ -85,6 +86,10 @@ function validateState(value: unknown): RunState {
     throw new Error("Invalid DevOS state");
   }
 
+  if (browserPreSubmitRetry !== undefined && !isWorkerIdList(browserPreSubmitRetry)) {
+    throw new Error("Invalid DevOS state");
+  }
+
   if (
     Object.keys(record).some(
       key =>
@@ -94,6 +99,7 @@ function validateState(value: unknown): RunState {
         key !== "sessionProjectRoots" &&
         key !== "browserWorkersStarted" &&
         key !== "browserSessionRecovery" &&
+        key !== "browserPreSubmitRetry" &&
         key !== "task" &&
         key !== "ownerReviewPending" &&
         key !== "mainAgentReviewPending" &&
@@ -120,6 +126,9 @@ function validateState(value: unknown): RunState {
     ...(browserSessionRecovery === undefined
       ? {}
       : { browserSessionRecovery: [...browserSessionRecovery] }),
+    ...(browserPreSubmitRetry === undefined
+      ? {}
+      : { browserPreSubmitRetry: [...browserPreSubmitRetry] }),
     ...(completionApproved === undefined ? {} : { completionApproved }),
     ...(task === undefined ? {} : { task }),
     ...(mainAgentReviewPending === undefined ? {} : { mainAgentReviewPending }),

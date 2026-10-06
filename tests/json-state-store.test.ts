@@ -190,3 +190,16 @@ test("validates approval and project-root fields, preserves legacy state migrati
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("rejects malformed proven pre-submit retry markers", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-presubmit-state-"));
+  try {
+    const store = new JsonStateStore(root, { repo: "owner/product", issue: 620 });
+    const state = { currentWorkerId: "browser", completedRuns: 0, sessions: {}, browserWorkersStarted: ["browser"] };
+    await store.save(state);
+    for (const browserPreSubmitRetry of ["browser", [1], ["browser", "browser"], [""]]) {
+      await writeFile(store.path, JSON.stringify({ ...state, browserPreSubmitRetry }));
+      await assert.rejects(store.load(), /Invalid DevOS state/);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

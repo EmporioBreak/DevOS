@@ -26,6 +26,21 @@ export function isBrowserResumeUnavailableError(
   return error instanceof BrowserResumeUnavailableError;
 }
 
+export class BrowserPreSubmitFailureError extends Error {
+  readonly safeToRetryFresh = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "BrowserPreSubmitFailureError";
+  }
+}
+
+export function isBrowserPreSubmitFailureError(
+  error: unknown,
+): error is BrowserPreSubmitFailureError {
+  return error instanceof BrowserPreSubmitFailureError;
+}
+
 const COMPOSER = [
   '[data-testid="prompt-textarea"]:visible',
   '#prompt-textarea:visible',
@@ -50,59 +65,40 @@ export class ChatGptBrowserExecutor implements Executor {
   ) {}
 
   async run(request: WorkerRequest): Promise<WorkerOutput> {
-    const context = await this.getContext();
-    const page = await context.newPage();
-
+    const projectScope = request.enforceProjectScope
+      ? getChatGptProjectScope(this.config.projectUrl)
+      : null;
+    const url = request.sessionId ?? this.config.projectUrl;
+    // Invalid saved identity/configuration is definitive, before any navigation.
+    validateChatGptUrl(url);
+    if (projectScope && request.sessionId) {
+      assertChatGptProjectScope(this.config.projectUrl, request.sessionId, true);
+    }
+    debugLog("browser.session", { decision: request.sessionId ? "resume" : "fresh", requestedUrl: url, projectRoot: request.projectRoot });
+    const {
+      page,
+      prepared: preparedMessage,
+      getBackendFailure,
+    } = await this.prepare(request, !!projectScope);
+    let mayHaveSubmitted = false;
     try {
-      const projectScope = request.enforceProjectScope
-        ? getChatGptProjectScope(this.config.projectUrl)
-        : null;
-      const url = request.sessionId ?? this.config.projectUrl;
-      debugLog("browser.session", { decision: request.sessionId ? "resume" : "fresh", requestedUrl: url, projectRoot: request.projectRoot });
-      try {
-        validateChatGptUrl(url);
-        if (projectScope && request.sessionId) {
-          assertChatGptProjectScope(this.config.projectUrl, request.sessionId, true);
-        }
-
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: this.timeoutMs });
-        debugLog("browser.navigation", { requestedUrl: url, actualUrl: page.url() });
-        await page.locator(COMPOSER).first().waitFor({
-          state: "visible",
-          timeout: this.timeoutMs,
-        });
-        if (projectScope) {
-          assertChatGptProjectScope(
-            this.config.projectUrl,
-            page.url(),
-            request.sessionId !== undefined,
-          );
-        }
-        if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) {
-          throw new Error("ChatGPT redirected to a different conversation while resuming");
-        }
-      } catch (error) {
-        if (request.sessionId) {
-          const message = error instanceof Error ? error.message : String(error);
-          debugLog("browser.resume.unavailable", { requestedUrl: request.sessionId, actualUrl: page.url(), reason: message });
-          throw new BrowserResumeUnavailableError(request.sessionId, message);
-        }
-        throw error;
-      }
-
       let submissionStarted!: () => void;
       const submission = new Promise<void>(resolve => { submissionStarted = resolve; });
       const assertSubmissionScope = () => {
         try {
+          const backendFailure = getBackendFailure();
+          if (backendFailure) throw backendFailure;
           if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), request.sessionId !== undefined);
           if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation before submission");
+          mayHaveSubmitted = true;
           submissionStarted();
         } catch (error) {
-          if (request.sessionId) throw new BrowserResumeUnavailableError(request.sessionId, error instanceof Error ? error.message : String(error));
-          throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          if (request.sessionId) throw new BrowserResumeUnavailableError(request.sessionId, message);
+          throw new BrowserPreSubmitFailureError(message);
         }
       };
-      const response = sendAndRead(page, request.prompt, this.timeoutMs, assertSubmissionScope).then(
+      const response = sendAndRead(page, request.prompt, this.timeoutMs, assertSubmissionScope, preparedMessage).then(
         text => ({ text } as const),
         error => ({ error } as const),
       );
@@ -131,8 +127,18 @@ export class ChatGptBrowserExecutor implements Executor {
       const outcome = await response;
       if ("error" in outcome) throw outcome.error;
       if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
+      if (!isSameChatGptConversation(sessionId, page.url())) throw new Error("ChatGPT changed fresh conversation after submission");
       debugLog("browser.response", { sessionId, text: outcome.text });
       return { text: outcome.text, sessionId };
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      if (mayHaveSubmitted) {
+        // Stream state is not durable across reloads. Without a provable matching
+        // completed answer, stop; never re-arm/send or read an arbitrary DOM answer.
+        debugLog("browser.recovery", { attempt: 1, phase: "post-submit", cause, sessionId: request.sessionId ?? page.url(), decision: "stop-no-replay" });
+        throw new Error(`Browser recovery attempt=1 phase=post-submit: prompt not replayed; saved identity preserved; ${cause}`);
+      }
+      throw error;
     } finally {
       await page.close().catch(() => undefined);
     }
@@ -144,11 +150,128 @@ export class ChatGptBrowserExecutor implements Executor {
     if (context) await context.close();
   }
 
-  private async getContext(): Promise<BrowserContext> {
+  private async prepare(
+    request: WorkerRequest,
+    enforceScope: boolean,
+  ): Promise<{
+    page: Page;
+    prepared: PreparedMessage;
+    getBackendFailure: () => Error | undefined;
+  }> {
+    const url = request.sessionId ?? this.config.projectUrl;
+    const deadline = Date.now() + Math.min(this.timeoutMs, 45_000);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      let page: Page | undefined;
+      let phase = "context";
+      let expired = false;
+      let backendFailure: Error | undefined;
+      const budget = Math.min(15_000, deadline - Date.now());
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        if (budget <= 0) throw new Error("Timeout: preparation deadline exhausted");
+        const preparation = async () => {
+          const context = await this.getContext(budget);
+          if (expired) { await context.close().catch(() => undefined); throw new Error("Timeout: preparation deadline exhausted"); }
+          phase = "new-page";
+          page = await context.newPage();
+          if (expired) { await page.close(); throw new Error("Timeout: preparation deadline exhausted"); }
+          const currentPage = page;
+          currentPage.on("response", response => {
+            const target = new URL(response.url());
+            const status = response.status();
+            if (target.origin === new URL(url).origin && target.pathname.startsWith("/backend-api/") && (status === 401 || status === 403)) {
+              const challenge = (response.headers()["content-type"] ?? "").includes("text/html");
+              backendFailure = new Error(`ChatGPT ${challenge ? "authentication/challenge" : "authentication/access"} blocked backend (HTTP ${status})`);
+            }
+          });
+          phase = "navigation";
+          const response = await currentPage.goto(url, { waitUntil: "domcontentloaded", timeout: budget });
+          debugLog("browser.navigation", { requestedUrl: url, actualUrl: currentPage.url(), attempt });
+          const status = response?.status();
+          if (status === 401 || status === 403) throw new Error(`ChatGPT authentication/challenge blocked navigation (HTTP ${status})`);
+          if (status === 404 || status === 410) throw new Error(`ChatGPT conversation unavailable (HTTP ${status})`);
+          if (status && status >= 500) throw new Error(`Transient navigation HTTP ${status}`);
+          if (status && status >= 400) throw new Error(`ChatGPT navigation rejected (HTTP ${status})`);
+          phase = "page-state";
+          const body = await currentPage.evaluate(() => {
+            // Conversation history can discuss login/challenge errors. Only
+            // classify actual page surfaces, never text from earlier turns.
+            const turns = '[data-message-author-role], [data-testid^="conversation-turn"]';
+            if (!document.querySelector(turns)) return document.body?.innerText ?? "";
+            return Array.from(document.querySelectorAll('[role="alert"], [role="dialog"], main h1, main h2'))
+              .filter(node => !node.closest(turns))
+              .map(node => (node as HTMLElement).innerText ?? "").join("\n");
+          });
+          if (typeof body === "string") {
+            if (/cloudflare|verify you are human|just a moment|checking your browser|провер.*человек/i.test(body)) throw new Error("ChatGPT authentication/challenge required");
+            if (/unable to load conversation|conversation (?:not found|unavailable)|не удалось загрузить (?:разговор|чат)/i.test(body)) throw new Error("ChatGPT conversation unavailable");
+            if (/log in to chatgpt|sign in to chatgpt|необходимо войти/i.test(body)) throw new Error("ChatGPT authentication required");
+          }
+          const actual = validateChatGptUrl(currentPage.url());
+          if (/^\/(?:auth|login|signin)(?:\/|$)/i.test(actual.pathname)) throw new Error("ChatGPT authentication required");
+          // A root redirect without a composer can be transient during account
+          // loading. Other wrong routes/scopes are definitive before waiting.
+          const rootRedirect = enforceScope && actual.pathname === "/";
+          if (!rootRedirect) this.assertIdentity(request, currentPage, enforceScope);
+          phase = "composer";
+          if (backendFailure) throw backendFailure;
+          try {
+            await currentPage.locator(COMPOSER).first().waitFor({ state: "visible", timeout: budget });
+          } catch (error) {
+            throw backendFailure ?? error;
+          }
+          if (backendFailure) throw backendFailure;
+          this.assertIdentity(request, currentPage, enforceScope);
+          phase = "prepare-message";
+          const prepared = await prepareMessage(currentPage, request.prompt, budget);
+          if (backendFailure) throw backendFailure;
+          this.assertIdentity(request, currentPage, enforceScope);
+          return {
+            page: currentPage,
+            prepared,
+            getBackendFailure: () => backendFailure,
+          };
+        };
+        const outcome = await Promise.race([
+          preparation(),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => { expired = true; reject(new Error("Timeout: preparation deadline exhausted")); }, budget); }),
+        ]);
+        debugLog("browser.recovery", { attempt, phase, decision: "ready", requestedUrl: url });
+        return outcome;
+      } catch (error) {
+        expired = true;
+        const effectiveError = backendFailure ?? error;
+        const cause = effectiveError instanceof Error ? effectiveError.message : String(effectiveError);
+        const transient = isTransientBrowserFailure(effectiveError);
+        await closeBeforeDeadline(() => page?.close() ?? Promise.resolve(), deadline);
+        if (/closed|crashed|disconnected/i.test(cause)) {
+          await closeBeforeDeadline(() => this.close(), deadline);
+        }
+        const retry = transient && attempt < 3 && Date.now() < deadline;
+        debugLog("browser.recovery", { attempt, phase, cause, requestedUrl: url, actualUrl: page?.url(), decision: retry ? "retry-same-session" : "stop" });
+        if (!retry) {
+          const message = `Browser recovery attempt=${attempt} phase=${phase} ${transient ? "transient" : "definitive"}: ${cause}; saved identity preserved`;
+          if (request.sessionId) throw new BrowserResumeUnavailableError(request.sessionId, message);
+          throw new BrowserPreSubmitFailureError(message);
+        }
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    throw new Error("Browser preparation exhausted");
+  }
+
+  private assertIdentity(request: WorkerRequest, page: Page, enforceScope: boolean): void {
+    if (enforceScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), request.sessionId !== undefined);
+    if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT redirected to a different conversation while resuming");
+  }
+
+  private async getContext(timeout = 15_000): Promise<BrowserContext> {
     if (this.context) return this.context;
 
     await mkdir(this.config.profileDir, { recursive: true });
     const context = await chromium.launchPersistentContext(this.config.profileDir, {
+      timeout,
       channel: this.config.browserChannel,
       headless: this.config.headless,
       viewport: null,
@@ -156,12 +279,18 @@ export class ChatGptBrowserExecutor implements Executor {
       ignoreDefaultArgs: ["--enable-automation"],
     });
 
-    await context.addInitScript({
-      content:
-        "Object.defineProperty(navigator, 'webdriver', { get: function () { return undefined; } });",
-    });
-    await context.addInitScript({ content: CHATGPT_RESPONSE_LOADER_SOURCE });
     this.context = context;
+    context.on("close", () => { if (this.context === context) this.context = undefined; });
+    try {
+      await context.addInitScript({
+        content: "Object.defineProperty(navigator, 'webdriver', { get: function () { return undefined; } });",
+      });
+      await context.addInitScript({ content: CHATGPT_RESPONSE_LOADER_SOURCE });
+    } catch (error) {
+      if (this.context === context) this.context = undefined;
+      await context.close().catch(() => undefined);
+      throw error;
+    }
     return context;
   }
 }
@@ -176,25 +305,49 @@ export function isSameChatGptConversation(requestedUrl: string, actualUrl: strin
   } catch { return false; }
 }
 
+async function closeBeforeDeadline(close: () => Promise<void>, deadline: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Issue cleanup even at exhaustion; do not let browser transport cleanup
+    // extend the recovery budget. The owned close request may settle later.
+    await Promise.race([
+      close().catch(() => undefined),
+      new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, deadline - Date.now())); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+interface PreparedMessage { token: number; useButton: boolean }
+
+async function prepareMessage(page: Page, prompt: string, timeoutMs: number): Promise<PreparedMessage> {
+  await page.locator(COMPOSER).first().fill(prompt, { timeout: timeoutMs });
+  const token = await page.evaluate(() => {
+    const arm = (window as unknown as { __DEVOS_ARM_STREAM__?: () => number }).__DEVOS_ARM_STREAM__;
+    if (!arm) throw new Error("ChatGPT response loader is not installed");
+    return arm();
+  });
+  return { token, useButton: await page.locator(SEND).first().isVisible() };
+}
+
+export function isTransientBrowserFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Timeout|net::ERR_(?:CONNECTION_RESET|CONNECTION_CLOSED|TIMED_OUT|NETWORK_CHANGED|INTERNET_DISCONNECTED)|Execution context was destroyed|Cannot find context with specified id|Target (?:page|browser|context).*closed|(?:page|browser).*crashed|browser.*disconnected|Transient navigation HTTP 5\d\d/i.test(message);
+}
+
 export async function sendAndRead(
   page: Page,
   prompt: string,
   timeoutMs: number,
   beforeSubmit?: () => void,
+  prepared?: PreparedMessage,
 ): Promise<string> {
+  const message = prepared ?? await prepareMessage(page, prompt, timeoutMs);
+  const request = message.token;
   const composer = page.locator(COMPOSER).first();
-  await composer.fill(prompt, { timeout: timeoutMs });
-
-  const request = await page.evaluate(() => {
-    const arm = (
-      window as unknown as { __DEVOS_ARM_STREAM__?: () => number }
-    ).__DEVOS_ARM_STREAM__;
-    if (!arm) throw new Error("ChatGPT response loader is not installed");
-    return arm();
-  });
-
   const send = page.locator(SEND).first();
-  if (await send.isVisible()) {
+  if (message.useButton) {
     beforeSubmit?.();
     await send.click({ timeout: timeoutMs });
   } else {
