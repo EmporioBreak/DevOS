@@ -17,6 +17,8 @@ export interface RunState {
   task?: TaskRef;
   mainAgentReviewPending?: boolean;
   completionApproved?: boolean;
+  startedAt?: string;
+  reviewLoops?: number;
 }
 
 export interface StateStore {
@@ -66,6 +68,10 @@ export interface OrchestratorOptions {
   finalizeTask?: (state: RunState) => Promise<void>;
   resolveTask?: (task: TaskRef) => Promise<TaskRef>;
   onEvent?: (event: OrchestrationEvent) => void | Promise<void>;
+  maxWorkerRuns?: number;
+  maxReviewLoops?: number;
+  maxWallClockDurationMs?: number;
+  now?: () => number;
 }
 
 export class Orchestrator {
@@ -81,7 +87,18 @@ export class Orchestrator {
         completedRuns: 0,
         sessions: {},
         task: workflow.task,
+        startedAt: new Date((this.options.now ?? Date.now)()).toISOString(),
+        reviewLoops: 0,
       };
+
+    if (!state.startedAt || state.reviewLoops === undefined) {
+      state = {
+        ...state,
+        startedAt: state.startedAt ?? new Date((this.options.now ?? Date.now)()).toISOString(),
+        reviewLoops: state.reviewLoops ?? 0,
+      };
+      if (persistedState) await stateStore.save(state);
+    }
 
     if (!state.task || workflow.task.pr !== undefined) {
       state = { ...state, task: workflow.task };
@@ -117,6 +134,8 @@ export class Orchestrator {
       state = {
         currentWorkerId: workflow.start,
         completedRuns: state.completedRuns,
+        startedAt: state.startedAt,
+        reviewLoops: (state.reviewLoops ?? 0) + 1,
         sessions: state.sessions,
         ...(state.sessionProjectRoots ? { sessionProjectRoots: state.sessionProjectRoots } : {}),
         ...(state.browserWorkersStarted
@@ -138,6 +157,7 @@ export class Orchestrator {
     }
 
     while (true) {
+      await this.assertBudgets(state);
       const worker = workers.get(state.currentWorkerId);
       if (!worker) throw new Error(`Unknown worker: ${state.currentWorkerId}`);
 
@@ -287,6 +307,9 @@ export class Orchestrator {
         sessions,
         ...(sessionProjectRoots ? { sessionProjectRoots } : {}),
         completedRuns: state.completedRuns + 1,
+        ...(result.status === "changes_requested"
+          ? { reviewLoops: (state.reviewLoops ?? 0) + 1 }
+          : {}),
       };
       await this.emit({
         type: "worker_result",
@@ -374,6 +397,25 @@ export class Orchestrator {
       state = { ...state, currentWorkerId: nextWorkerId };
       await stateStore.save(state);
     }
+  }
+
+  private async assertBudgets(state: RunState): Promise<void> {
+    const maxWorkerRuns = this.options.maxWorkerRuns ?? 30;
+    const maxReviewLoops = this.options.maxReviewLoops ?? 8;
+    const maxWallClockDurationMs = this.options.maxWallClockDurationMs ?? 6 * 60 * 60_000;
+    const now = this.options.now ?? Date.now;
+    let failure: string | undefined;
+    if (state.completedRuns >= maxWorkerRuns) {
+      failure = `DevOS orchestration exceeded maxWorkerRuns=${maxWorkerRuns}`;
+    } else if ((state.reviewLoops ?? 0) > maxReviewLoops) {
+      failure = `DevOS orchestration exceeded maxReviewLoops=${maxReviewLoops}`;
+    } else if (state.startedAt && now() - Date.parse(state.startedAt) > maxWallClockDurationMs) {
+      failure = `DevOS orchestration exceeded maxWallClockDurationMs=${maxWallClockDurationMs}`;
+    }
+    if (!failure) return;
+    await this.options.stateStore.save(state);
+    await this.emitTaskStatus(state, "failed");
+    throw new Error(failure);
   }
 
   private async finishApproved(state: RunState): Promise<RunState> {
