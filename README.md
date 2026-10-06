@@ -114,19 +114,20 @@ Select task: 1
 
 Starting #35: Build homepage
 ...
-DevOS complete: #35, 4 worker runs.
+Task #35, completed (4 worker runs).
 ```
 
 Во время исполнения DevOS также печатает короткие lifecycle-строки, сформированные самим оркестратором. Они показывают worker ID, executor, результат worker-а и следующий переход без вывода prompt-ов, ответов агента или conversation URL:
 
 ```text
-Task #41 started
+Task #41 — running (start)
 [developer] chatgpt_browser — starting fresh conversation
 [developer] chatgpt_browser — done
 → reviewer
 [reviewer] chatgpt_browser — resuming existing session
 [reviewer] chatgpt_browser — approved
-Final review required by task owner
+Owner handoff
+Task #41 — final_review_required
 DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED","task":{"repo":"owner/product","issue":41,"pr":57}}
 ```
 
