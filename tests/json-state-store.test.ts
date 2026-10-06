@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { JsonStateStore } from "../src/json-state-store.js";
+import { JsonStateStore, stateTemporaryPath } from "../src/json-state-store.js";
 
 test("isolates state by GitHub task", async () => {
   const root = await mkdtemp(join(tmpdir(), "devos-state-"));
@@ -202,4 +202,14 @@ test("rejects malformed proven pre-submit retry markers", async () => {
       await assert.rejects(store.load(), /Invalid DevOS state/);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test("state saves use unique same-directory temporary paths", () => {
+  const target = "/tmp/project/.devos/state/owner%2Frepo-issue-1.json";
+  const first = stateTemporaryPath(target, 123, "one");
+  const second = stateTemporaryPath(target, 123, "two");
+  assert.notEqual(first, second);
+  assert.equal(first, target + ".tmp.123.one");
+  assert.equal(second, target + ".tmp.123.two");
 });
