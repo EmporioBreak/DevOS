@@ -19,6 +19,7 @@ import {
   type ProjectConfig,
   type ReadyTask,
 } from "./ready-tasks.js";
+import { resolveTaskReference } from "./task-reference.js";
 import type { Workflow } from "./workflow.js";
 import { loadWorkflow } from "./workflow-loader.js";
 
@@ -81,6 +82,7 @@ export async function runWorkflow(
       ]),
       stateStore,
       ...(ownerDecision ? { ownerDecision } : {}),
+      resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
     }).run();
   } finally {
     await chatgpt.close();
@@ -164,7 +166,7 @@ export function formatRunResult(
   if (state.ownerReviewPending) {
     return `DEVOS_OWNER_HANDOFF ${JSON.stringify({
       status: "FINAL_REVIEW_REQUIRED",
-      task: workflow.task,
+      task: state.task ?? workflow.task,
     })}\n`;
   }
 
