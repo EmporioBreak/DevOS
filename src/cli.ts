@@ -150,7 +150,18 @@ export async function main(
   if (issue !== null) {
     const runner = new LocalCommandRunner();
     const config = await loadOrCreateProjectConfig(cwd, runner);
-    const task = await loadReadyTask(config, issue, cwd, runner);
+    const ownerDecision = parseParentOwnerDecision(process.env.DEVOS_OWNER_RESULT);
+    const task = await loadReadyTask(
+      config,
+      issue,
+      cwd,
+      runner,
+      ownerDecision !== undefined,
+    );
+    if (ownerDecision !== undefined) {
+      const pendingState = await new JsonStateStore(cwd, task.workflow.task).load();
+      assertOwnerDecisionPending(pendingState);
+    }
     const state = await runWorkflow(task.workflow, command.mode, cwd, config);
     writeRunResult(task.workflow, state, `#${task.issue}`);
     return;
@@ -224,6 +235,14 @@ export function parseParentOwnerDecision(
     return decision;
   }
   throw new Error("DEVOS_OWNER_RESULT must be approved or changes_requested");
+}
+
+export function assertOwnerDecisionPending(state: RunState | null): void {
+  if (!state?.ownerReviewPending) {
+    throw new Error(
+      "DEVOS_OWNER_RESULT requires an existing task waiting for final review",
+    );
+  }
 }
 
 export function parseIssueNumber(value: string): number | null {
