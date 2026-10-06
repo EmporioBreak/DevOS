@@ -57,6 +57,7 @@ export async function listReadyTasks(
   config: ProjectConfig,
   projectRoot: string,
   runner: CommandRunner,
+  onWarning: (message: string) => void = message => { process.stderr.write(`${message}\n`); },
 ): Promise<ReadyTask[]> {
   const result = await runner.run(
     "gh",
@@ -106,12 +107,13 @@ export async function listReadyTasks(
       continue;
     }
 
-    const task = parseReadyTaskBody(
-      record.body,
-      config.repo,
-      record.number,
-      record.title,
-    );
+    let task: ReadyTask | null;
+    try {
+      task = parseReadyTaskBody(record.body, config.repo, record.number, record.title);
+    } catch (error) {
+      onWarning(`Skipping Issue #${record.number}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
     if (task && !(await isTaskCompleted(projectRoot, task.issue))) {
       tasks.push(task);
     }

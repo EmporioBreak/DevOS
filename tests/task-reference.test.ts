@@ -39,7 +39,7 @@ test("resolves a PR created after an Issue-only workflow started", async () => {
     "--state",
     "open",
     "--search",
-    "#39 in:body",
+    "39 in:body",
     "--limit",
     "100",
     "--json",
@@ -200,4 +200,17 @@ test("refuses ambiguity between multiple closing references", async () => {
     await resolveTaskReference({ repo: "owner/product", issue: 39 }, "/project", runner),
     { repo: "owner/product", issue: 39 },
   );
+});
+
+test("URL-only PR candidates are fetched without a shorthand-only search", async () => {
+  const runner: CommandRunner = { async run(_command, args) {
+    const shorthandOnly = args.includes("#39 in:body");
+    return { exitCode: 0, stderr: "", stdout: JSON.stringify(shorthandOnly ? [] : [{ number: 61, body: "Fixes https://github.com/owner/product/issues/39." }]) };
+  } };
+  assert.equal((await resolveTaskReference({ repo: "owner/product", issue: 39 }, "/project", runner)).pr, 61);
+});
+
+test("cross-repo shorthand and longer issue numbers cannot match", async () => {
+  const runner = new FakeRunner({ exitCode: 0, stderr: "", stdout: JSON.stringify([{ number: 61, body: "Fixes other/product#39 and #390" }]) });
+  assert.equal((await resolveTaskReference({ repo: "owner/product", issue: 39 }, "/project", runner)).pr, undefined);
 });

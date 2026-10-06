@@ -99,7 +99,7 @@ export async function runWorkflow(
   await prepareRunState(mode, stateStore);
   if (mode === "restart") {
     await clearTaskCompleted(cwd, workflow.task.issue);
-  } else if (await isTaskCompleted(cwd, workflow.task.issue)) {
+  } else if (await isTaskCompleted(cwd, workflow.task.issue) && !(await stateStore.load())?.completionApproved) {
     throw new Error(
       `Issue #${workflow.task.issue} is already completed; use restart to replan and run it again`,
     );
@@ -118,10 +118,10 @@ export async function runWorkflow(
       ]),
       stateStore,
       ...(mainAgentDecision ? { mainAgentDecision } : {}),
+      finalizeTask: state => recordTaskCompletion(cwd, workflow.task.issue, state),
       resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
       onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
     }).run();
-    await recordTaskCompletion(cwd, workflow.task.issue, state);
     return state;
   } finally {
     await chatgpt.close();
@@ -184,17 +184,18 @@ export async function main(
     const runner = new LocalCommandRunner();
     const config = await loadOrCreateProjectConfig(cwd, runner);
     const mainAgentDecision = parseMainAgentDecision(process.env.DEVOS_OWNER_RESULT);
+    const pendingState = await new JsonStateStore(cwd, { repo: config.repo, issue }).load();
+    const finalizationPending = pendingState?.completionApproved === true;
     const task = await loadReadyTask(
       config,
       issue,
       cwd,
       runner,
-      mainAgentDecision !== undefined,
-      command.mode === "restart",
+      mainAgentDecision !== undefined || command.mode === "restart" || finalizationPending,
+      command.mode === "restart" || finalizationPending,
     );
     if (mainAgentDecision !== undefined) {
-      const pendingState = await new JsonStateStore(cwd, task.workflow.task).load();
-      assertMainAgentDecisionPending(pendingState);
+      assertMainAgentDecisionPending(pendingState, mainAgentDecision);
     }
     const state = await runWorkflow(task.workflow, command.mode, cwd, config);
     writeRunResult(task.workflow, state, `#${task.issue}`);
@@ -275,7 +276,8 @@ export function parseMainAgentDecision(
   throw new Error("DEVOS_OWNER_RESULT must be approved or changes_requested");
 }
 
-export function assertMainAgentDecisionPending(state: RunState | null): void {
+export function assertMainAgentDecisionPending(state: RunState | null, decision?: "approved" | "changes_requested"): void {
+  if (state?.completionApproved && decision === "approved") return;
   if (!state?.mainAgentReviewPending) {
     throw new Error(
       "DEVOS_OWNER_RESULT requires an existing task waiting for final review",

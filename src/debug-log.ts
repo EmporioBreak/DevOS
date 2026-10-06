@@ -17,7 +17,7 @@ export function debugLog(event: string, data: unknown): void {
 }
 
 function redact(value: unknown, key = ""): unknown {
-  if (/token|cookie|password|secret|authorization|private.?key/i.test(key)) {
+  if (isCredentialQueryKey(key) || /token|cookie|password|secret|authorization|private.?key/i.test(key)) {
     return "[REDACTED]";
   }
   if (Array.isArray(value)) return value.map(item => redact(item));
@@ -37,10 +37,19 @@ function redact(value: unknown, key = ""): unknown {
 }
 
 function redactSerializedCredentials(value: string): string {
-  let redacted = value.replace(
-    /"([^"\\]+)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g,
-    (match, key: string) => isCredentialQueryKey(key)
-      ? match.replace(/:\s*"[^"]*"/, ': "[REDACTED]"')
+  // Decode serialized JSON/JSONL first so nested stringified command output is
+  // redacted with the same key rules as structured debug data.
+  const lines = value.split("\n").map(line => {
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (parsed && (typeof parsed === "object" || typeof parsed === "string")) return JSON.stringify(redact(parsed));
+    } catch { /* Mixed prose falls through to the credential-field patterns. */ }
+    return line;
+  });
+  let redacted = lines.join("\n").replace(
+    /("([^"\\]+)"\s*:\s*)"(?:\\.|[^"\\])*"/g,
+    (match, prefix: string, key: string) => isCredentialQueryKey(key)
+      ? `${prefix}"[REDACTED]"`
       : match,
   );
 

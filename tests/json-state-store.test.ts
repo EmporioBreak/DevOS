@@ -173,3 +173,20 @@ test("persists a pending one-worker browser recovery for the next invocation", a
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("validates approval and project-root fields, preserves legacy state migration", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-state-"));
+  try {
+    const store = new JsonStateStore(root, { repo: "owner/product", issue: 59 });
+    const legacy = { currentWorkerId: "worker", completedRuns: 1, sessions: { worker: "thread" } };
+    await store.save(legacy);
+    assert.deepEqual(await store.load(), legacy);
+    const approved = { ...legacy, sessionProjectRoots: { worker: root }, completionApproved: true };
+    await store.save(approved);
+    assert.deepEqual(await store.load(), approved);
+    for (const invalid of [ { ...legacy, completionApproved: "true" }, { ...approved, mainAgentReviewPending: true }, { ...legacy, sessionProjectRoots: { worker: 123 } } ]) {
+      await writeFile(store.path, JSON.stringify(invalid));
+      await assert.rejects(store.load(), /Invalid DevOS state/);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -45,10 +45,24 @@ export class CodexExecutor implements Executor {
         )
       : buildCodexArgs(request.projectRoot, request.prompt, this.options);
 
+    let reportedSessionId: string | undefined;
+    const reportSession = async (stdout: string) => {
+      const event = parseEvents(stdout).find(event => event.type === "thread.started" && typeof event.thread_id === "string" && event.thread_id.trim());
+      if (!event) return;
+      const id = event.thread_id as string;
+      if (request.sessionId && id !== request.sessionId) throw new Error(`Codex resume changed session id: expected ${request.sessionId}, received ${id}`);
+      if (reportedSessionId && id !== reportedSessionId) throw new Error("Codex changed session id during execution");
+      if (!reportedSessionId) {
+        await request.onSession?.(id);
+        reportedSessionId = id;
+      }
+    };
     const result = await this.runner.run("codex", args, request.projectRoot, request.prompt, {
+      onOutput: stdout => reportSession(stdout.slice(0, stdout.lastIndexOf("\n") + 1)),
       completeWhenOutput: stdout => isCompleteWorkerOutput(stdout, request.sessionId),
     });
 
+    await reportSession(result.stdout);
     if (result.exitCode !== 0 && result.completedEarly !== true) {
       const message =
         `Codex exited with code ${result.exitCode}: ${result.stderr.trim() || "no stderr"}`;
@@ -61,6 +75,9 @@ export class CodexExecutor implements Executor {
       throw new Error(message);
     }
 
+    const failure = parseEvents(result.stdout).find(event => event.type === "turn.failed" || event.type === "error");
+    if (failure) throw new Error(`Codex logical failure: ${JSON.stringify(failure)}`);
+
     const sessionId = parseThreadId(result.stdout);
     if (request.sessionId && sessionId !== request.sessionId) {
       throw new Error(
@@ -68,6 +85,9 @@ export class CodexExecutor implements Executor {
       );
     }
 
+    if (!isCompleteWorkerOutput(`${result.stdout}\n`, request.sessionId)) {
+      throw new Error("Codex did not complete a valid worker turn");
+    }
     return {
       text: parseFinalAgentMessage(result.stdout),
       sessionId,
