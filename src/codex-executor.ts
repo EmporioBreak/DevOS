@@ -44,7 +44,7 @@ export class CodexExecutor implements Executor {
         )
       : buildCodexArgs(request.projectRoot, request.prompt, this.options);
 
-    const result = await this.runner.run("codex", args, request.projectRoot);
+    const result = await this.runner.run("codex", args, request.projectRoot, request.prompt);
 
     if (result.exitCode !== 0) {
       const message =
@@ -80,7 +80,7 @@ export function buildCodexArgs(
   const args = ["exec", "-C", projectRoot];
   appendRootOptions(args, options);
   appendRunOptions(args, options);
-  args.push("--json", prompt);
+  args.push("--json");
   return args;
 }
 
@@ -94,7 +94,7 @@ export function buildCodexResumeArgs(
   appendRootOptions(args, options);
   args.push("resume", sessionId);
   appendRunOptions(args, options);
-  args.push("--json", prompt);
+  args.push("--json");
   return args;
 }
 
