@@ -1,6 +1,6 @@
 import type { Executor } from "./executor.js";
 import { parseDevosResult } from "./result.js";
-import type { ExecutorKind, TaskRef, WorkerStatus, Workflow, WorkerSpec } from "./workflow.js";
+import type { ExecutorKind, TaskRef, WorkerOutput, WorkerStatus, Workflow, WorkerSpec } from "./workflow.js";
 
 export interface RunState {
   currentWorkerId: string;
@@ -169,7 +169,7 @@ export class Orchestrator {
         session: sessionId ? "resumed" : "fresh",
       });
       const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
-      let output;
+      let output: WorkerOutput;
       try {
         output = await executor.run({
         projectRoot: this.options.projectRoot,
