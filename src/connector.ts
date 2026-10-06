@@ -742,6 +742,7 @@ export async function connectorRuntime(root: string) {
   const config = await readConfig(root);
   const dir = join(root, ".devos/connector");
   let stopping = false,
+    failureReason: string | undefined,
     child: ReturnType<typeof spawn> | undefined,
     gateway: Awaited<ReturnType<typeof startGateway>> | undefined;
   const stop = () => {
@@ -760,7 +761,10 @@ export async function connectorRuntime(root: string) {
       ownerSecret: ownerAuth(process.env.DEVOS_CONNECTOR_OWNER_SECRET),
       oauthClientsPath: join(root, ".devos/connector/oauth-clients.json"),
       oauthStatePath: join(root, ".devos/connector/oauth-state.enc"),
-      onFailure: stop,
+      onFailure: (reason) => {
+        failureReason = reason;
+        stop();
+      },
     });
     if (stopping) return;
     await writeFile(
@@ -784,10 +788,12 @@ export async function connectorRuntime(root: string) {
     let exited = false;
     const exit = new Promise<void>((ok) => {
       child!.once("error", () => {
+        failureReason = "ngrok process failed to start.";
         exited = true;
         ok();
       });
       child!.once("exit", () => {
+        if (!stopping) failureReason = "ngrok exited unexpectedly.";
         exited = true;
         ok();
       });
@@ -800,11 +806,17 @@ export async function connectorRuntime(root: string) {
       await delay(100);
     }
     if (!url || stopping || exited)
-      throw new Error("Connector runtime startup failed.");
+      throw new Error(
+        failureReason ??
+          (exited
+            ? "ngrok exited during connector startup."
+            : "ngrok tunnel registration timed out."),
+      );
     gateway.setPublicUrl(url);
     process.send?.({ publicUrl: url });
     await exit;
-    if (!stopping) throw new Error("ngrok exited unexpectedly.");
+    if (!stopping)
+      throw new Error(failureReason ?? "ngrok exited unexpectedly.");
   } finally {
     stop();
     await gateway?.close();
