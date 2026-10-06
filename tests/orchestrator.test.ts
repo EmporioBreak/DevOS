@@ -60,8 +60,8 @@ test("reuses each worker session across review loops", async () => {
   });
   assert.equal(codex.requests[1]?.sessionId, "codex-1");
   assert.equal(chat.requests[1]?.sessionId, "https://chatgpt.com/c/review-1");
-  assert.equal(chat.requests[0]?.requireProject, true);
-  assert.equal(chat.requests[1]?.requireProject, true);
+  assert.equal(chat.requests[0]?.enforceProjectScope, true);
+  assert.equal(chat.requests[1]?.enforceProjectScope, true);
   assert.match(chat.requests[0]?.prompt ?? "", /Issue #12/);
   assert.match(chat.requests[0]?.prompt ?? "", /PR #34/);
   assert.match(
