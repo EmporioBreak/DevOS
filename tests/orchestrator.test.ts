@@ -458,3 +458,95 @@ test("persists an early browser session when response loading fails after conver
   assert.equal(result.sessions.worker, sessionId);
   assert.equal(result.completedRuns, 1);
 });
+
+
+test("rejects needs_local_worker from an already-local Codex worker", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 146 },
+    start: "local",
+    workers: [{ id: "local", executor: "codex", prompt: "Work locally.", on: { needs_local_worker: null } }],
+  };
+  const store = new MemoryStore();
+  const codex = new QueueExecutor("codex", [
+    { text: 'DEVOS_RESULT {"status":"needs_local_worker"}', sessionId: "thread-local" },
+  ]);
+  await assert.rejects(
+    () => new Orchestrator({
+      projectRoot: "/product",
+      workflow,
+      executors: new Map([["codex", codex]]),
+      stateStore: store,
+    }).run(),
+    /uses codex and cannot return needs_local_worker/,
+  );
+  assert.equal(store.state?.sessions.local, "thread-local");
+  assert.equal(store.state?.sessionProjectRoots?.local, "/product");
+});
+
+test("does not resume a Codex session saved for another project root", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 147 },
+    start: "local",
+    workers: [{ id: "local", executor: "codex", prompt: "Continue.", on: { done: null } }],
+  };
+  const store = new MemoryStore();
+  store.state = {
+    currentWorkerId: "local",
+    completedRuns: 1,
+    sessions: { local: "old-thread" },
+    sessionProjectRoots: { local: "/wrong-root" },
+    task: workflow.task,
+  };
+  const codex = new QueueExecutor("codex", [
+    { text: 'DEVOS_RESULT {"status":"done"}', sessionId: "new-thread" },
+  ]);
+  const result = await new Orchestrator({
+    projectRoot: "/product",
+    workflow,
+    executors: new Map([["codex", codex]]),
+    stateStore: store,
+  }).run();
+  assert.equal(codex.requests[0]?.sessionId, undefined);
+  assert.equal(codex.requests[0]?.projectRoot, "/product");
+  assert.equal(result.sessions.local, "new-thread");
+  assert.equal(result.sessionProjectRoots?.local, "/product");
+});
+
+test("recovers only the current Codex worker when resume fails", async () => {
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 148 },
+    start: "local",
+    workers: [{ id: "local", executor: "codex", prompt: "Continue.", on: { done: null } }],
+  };
+  const store = new MemoryStore();
+  store.state = {
+    currentWorkerId: "local",
+    completedRuns: 2,
+    sessions: { local: "broken-thread", reviewer: "browser-session" },
+    sessionProjectRoots: { local: "/product" },
+    task: workflow.task,
+  };
+  const requests: WorkerRequest[] = [];
+  let call = 0;
+  const codex: Executor = {
+    kind: "codex",
+    async run(request) {
+      requests.push(request);
+      if (call++ === 0) throw new Error("resume failed");
+      return { text: 'DEVOS_RESULT {"status":"done"}', sessionId: "replacement-thread" };
+    },
+  };
+  const result = await new Orchestrator({
+    projectRoot: "/product",
+    workflow,
+    executors: new Map([["codex", codex]]),
+    stateStore: store,
+  }).run();
+  assert.equal(requests[0]?.sessionId, "broken-thread");
+  assert.equal(requests[1]?.sessionId, undefined);
+  assert.equal(result.sessions.local, "replacement-thread");
+  assert.equal(result.sessions.reviewer, "browser-session");
+});
