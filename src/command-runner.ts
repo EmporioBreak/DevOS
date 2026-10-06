@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from "node:child_process";\nimport { debugLog } from "./debug-log.js";
 
 export interface CommandResult {
   exitCode: number;
@@ -25,7 +25,7 @@ export class LocalCommandRunner implements CommandRunner {
       child.stderr.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => { stdout += chunk; });
       child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-      child.on("error", reject);
+      child.on("error", error => { debugLog("process.error", { command, cwd, error: error.message, elapsedMs: Date.now() - startedAt }); reject(error); });
       child.on("close", (code) => {
         resolve({
           exitCode: code ?? 1,
