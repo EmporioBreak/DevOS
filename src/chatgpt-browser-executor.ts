@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { chromium, type BrowserContext, type Page } from "playwright";
-import type { Executor, WorkerRequest } from "./executor.js";\nimport { debugLog } from "./debug-log.js";
+import type { Executor, WorkerRequest } from "./executor.js";
+import { debugLog } from "./debug-log.js";
 import type { WorkerOutput } from "./workflow.js";
 import {
   assertChatGptProjectScope,
@@ -43,13 +44,15 @@ export class ChatGptBrowserExecutor implements Executor {
       const projectScope = request.enforceProjectScope
         ? getChatGptProjectScope(this.config.projectUrl)
         : null;
-      const url = request.sessionId ?? this.config.projectUrl;\n      debugLog("browser.session", { decision: request.sessionId ? "resume" : "fresh", requestedUrl: url, projectRoot: request.projectRoot });
+      const url = request.sessionId ?? this.config.projectUrl;
+      debugLog("browser.session", { decision: request.sessionId ? "resume" : "fresh", requestedUrl: url, projectRoot: request.projectRoot });
       validateChatGptUrl(url);
       if (projectScope && request.sessionId) {
         assertChatGptProjectScope(this.config.projectUrl, request.sessionId, true);
       }
 
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: this.timeoutMs });\n      debugLog("browser.navigation", { requestedUrl: url, actualUrl: page.url() });
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: this.timeoutMs });
+      debugLog("browser.navigation", { requestedUrl: url, actualUrl: page.url() });
       await page.locator(COMPOSER).first().waitFor({
         state: "visible",
         timeout: this.timeoutMs,
@@ -70,7 +73,8 @@ export class ChatGptBrowserExecutor implements Executor {
       if (projectScope) {
         assertChatGptProjectScope(this.config.projectUrl, sessionId, true);
       }
-      debugLog("browser.session.ready", { sessionId, actualUrl: page.url() });\n      await request.onSession?.(sessionId);
+      debugLog("browser.session.ready", { sessionId, actualUrl: page.url() });
+      await request.onSession?.(sessionId);
 
       const outcome = await response;
       if ("error" in outcome) throw outcome.error;
