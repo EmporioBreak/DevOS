@@ -5,6 +5,7 @@ export interface CommandResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  signal?: NodeJS.Signals | null;
 }
 
 export interface CommandRunner {
@@ -32,8 +33,8 @@ export class LocalCommandRunner implements CommandRunner {
         debugLog("process.error", { command, cwd, error: error.message, elapsedMs: Date.now() - startedAt });
         reject(error);
       });
-      child.on("close", (code) => {
-        const result = { exitCode: code ?? 1, stdout, stderr };
+      child.on("close", (code, signal) => {
+        const result = { exitCode: code ?? 1, stdout, stderr, signal };
         debugLog("process.end", { command, args, cwd, ...result, elapsedMs: Date.now() - startedAt });
         resolve(result);
       });
