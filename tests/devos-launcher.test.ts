@@ -123,6 +123,7 @@ test("self-hosting fast-forwards a clean main checkout that is behind origin/mai
   const log = await readFile(f.log, "utf8");
   assert.match(log, /git:-C .* fetch origin main/);
   assert.match(log, /git:-C .* merge --ff-only origin\/main/);
+  assert.match(log, /npm:.*project:install --no-package-lock/);
   assert.match(log, /npm:.*project:run build/);
 });
 
