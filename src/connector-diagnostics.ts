@@ -32,15 +32,14 @@ export async function appendConnectorDiagnostic(
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const line = Buffer.from(JSON.stringify(connectorDiagnosticRecord(state)) + "\n");
+  if (existing.length + line.length > MAX_DIAGNOSTIC_BYTES) {
+    const tail = existing.subarray(Math.max(0, existing.length - RETAIN_DIAGNOSTIC_BYTES));
+    const newline = tail.indexOf(0x0a);
+    existing = newline >= 0 ? tail.subarray(newline + 1) : tail;
+  }
   let body = Buffer.concat([existing, line]);
   if (body.length > MAX_DIAGNOSTIC_BYTES) {
-    const tail = body.subarray(Math.max(0, body.length - RETAIN_DIAGNOSTIC_BYTES));
-    const newline = tail.indexOf(0x0a);
-    body = newline >= 0 ? tail.subarray(newline + 1) : tail;
-    body = Buffer.concat([body, line]);
-    if (body.length > MAX_DIAGNOSTIC_BYTES) {
-      body = body.subarray(body.length - MAX_DIAGNOSTIC_BYTES);
-    }
+    body = body.subarray(body.length - MAX_DIAGNOSTIC_BYTES);
   }
   await writeFile(path, body, { mode: 0o600 });
 }
