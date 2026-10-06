@@ -196,3 +196,46 @@ test("CLI renders concise lifecycle lines without exposing session ids", () => {
     "→ local_reviewer\n",
   );
 });
+
+test("marks a persisted task run as resumed", async () => {
+  const store = new MemoryStore();
+  store.state = {
+    currentWorkerId: "developer",
+    completedRuns: 2,
+    sessions: { developer: "dev-session" },
+    task: { repo: "owner/product", issue: 41 },
+  };
+  const events: OrchestrationEvent[] = [];
+
+  await new Orchestrator({
+    projectRoot: "/project",
+    workflow: {
+      version: 1,
+      task: { repo: "owner/product", issue: 41 },
+      start: "developer",
+      workers: [{
+        id: "developer",
+        executor: "chatgpt_browser",
+        prompt: "Continue.",
+        on: { done: null },
+      }],
+    },
+    executors: new Map([["chatgpt_browser", new QueueExecutor("chatgpt_browser", [
+      { text: 'DEVOS_RESULT {"status":"done"}', sessionId: "dev-session" },
+    ])]]),
+    stateStore: store,
+    onEvent: event => { events.push(event); },
+  }).run();
+
+  assert.deepEqual(events[0], {
+    type: "task_started",
+    task: { repo: "owner/product", issue: 41 },
+    resumed: true,
+  });
+  assert.deepEqual(events[1], {
+    type: "worker_started",
+    workerId: "developer",
+    executor: "chatgpt_browser",
+    session: "resumed",
+  });
+});
