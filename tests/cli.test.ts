@@ -10,6 +10,7 @@ import {
   isCliEntrypoint,
   parseCliArgs,
   parseIssueNumber,
+  parseParentOwnerDecision,
   prepareRunState,
 } from "../src/cli.js";
 import type { ReadyTask } from "../src/ready-tasks.js";
@@ -81,4 +82,18 @@ test("recognizes a symlinked package bin as the CLI entry point", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+
+test("parses parent-process final review decisions", () => {
+  assert.equal(parseParentOwnerDecision(undefined), undefined);
+  assert.equal(parseParentOwnerDecision("approved"), "approved");
+  assert.equal(
+    parseParentOwnerDecision("changes_requested"),
+    "changes_requested",
+  );
+  assert.throws(
+    () => parseParentOwnerDecision("done"),
+    /DEVOS_OWNER_RESULT must be approved or changes_requested/,
+  );
 });
