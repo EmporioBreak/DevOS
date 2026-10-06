@@ -240,7 +240,7 @@ export async function startGateway(options: {
   publicUrl?: string;
   oauthClientsPath?: string | null;
   oauthStatePath?: string | null;
-  onFailure?: () => void;
+  onFailure?: (reason: string) => void;
 }) {
   ownerAuth(options.ownerSecret);
   let identity = options.publicUrl
@@ -279,7 +279,7 @@ export async function startGateway(options: {
   local.onerror = () => {};
   let closing = false;
   local.onclose = () => {
-    if (!closing) options.onFailure?.();
+    if (!closing) options.onFailure?.("Desktop Commander transport closed unexpectedly.");
   };
   try {
     await local.connect(stdio, { timeout: 15_000 });
