@@ -19,12 +19,10 @@ export class LocalCommandRunner implements CommandRunner {
     return await new Promise((resolve, reject) => {
       const child = spawn(command, args, {
         cwd,
-        stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
       });
 
-      if (stdin !== undefined) {
-        child.stdin.end(stdin);
-      }
+      child.stdin.end(stdin);
 
       let stdout = "";
       let stderr = "";
