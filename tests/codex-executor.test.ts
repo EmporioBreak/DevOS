@@ -52,7 +52,7 @@ test("parses thread id and final agent message", () => {
 });
 
 test("resumes the supplied Codex session", async () => {
-  const calls: string[][] = [];
+  const calls: Array<{ args: string[]; cwd: string }> = [];
   const runner: CommandRunner = {
     async run(_command, args): Promise<CommandResult> {
       calls.push(args);
@@ -73,6 +73,6 @@ test("resumes the supplied Codex session", async () => {
     sessionId: "session-1",
   });
 
-  assert.equal(calls[0]?.includes("resume"), true);
+  assert.equal(calls[0]?.args.includes("resume"), true);\n  assert.equal(calls[0]?.cwd, "/project");\n  assert.deepEqual(calls[0]?.args.slice(0, 3), ["exec", "-C", "/project"]);
   assert.equal(result.sessionId, "session-1");
 });
