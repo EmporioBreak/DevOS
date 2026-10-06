@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readFile, readlink } from "node:fs/promises";
 
 export interface ProcessIdentity {
   pid: number;
@@ -21,13 +22,22 @@ export async function captureProcessIdentity(
 ): Promise<ProcessIdentity | null> {
   if (!(await processExists(pid))) return null;
 
-  if (process.platform !== "darwin") {
-    return {
-      pid,
-      startTime: "unsupported-platform",
-      executable: "unsupported-platform",
-    };
+  if (process.platform === "linux") {
+    try {
+      const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd < 0) return null;
+      const fields = stat.slice(commandEnd + 2).trim().split(/\s+/);
+      const startTime = fields[19];
+      const executable = await readlink(`/proc/${pid}/exe`);
+      if (!startTime || !executable) return null;
+      return { pid, startTime, executable };
+    } catch {
+      return null;
+    }
   }
+
+  if (process.platform !== "darwin") return null;
 
   const output = await runPs(pid);
   if (!output) return null;
