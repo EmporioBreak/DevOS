@@ -24,6 +24,17 @@ test("connector exports a loopback gateway instead of a provider runtime", () =>
   assert.equal("TUNNEL_VERSION" in connectorModule, false);
 });
 
+test("ngrok failure classification distinguishes rejected credentials without leaking stderr", () => {
+  const raw = "authentication failed: authtoken synthetic-private-value is invalid";
+  const classified = connectorModule.ngrokFailureReason(raw);
+  assert.equal(classified, "ngrok credential rejected.");
+  assert.ok(!classified.includes("synthetic-private-value"));
+  assert.equal(
+    connectorModule.ngrokFailureReason("network transport closed"),
+    "ngrok exited unexpectedly.",
+  );
+});
+
 test("ChatGPT compatibility adapter restores rich Desktop Commander arguments", () => {
   const adapt = adaptChatGptToolCall;
   assert.deepEqual(
