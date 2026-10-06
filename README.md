@@ -119,6 +119,7 @@ Starting #35: Build homepage
 Task #35, completed (4 worker runs).
 ```
 
+
 Во время исполнения DevOS также печатает короткие lifecycle-строки, сформированные самим оркестратором. Они показывают worker ID, executor, результат worker-а и следующий переход без вывода prompt-ов, ответов агента или conversation URL:
 
 ```text
@@ -490,8 +491,13 @@ devos restart .devos/workflow.json
 DevOS не выбирает роли или executor-ы из этого файла. Он только исполняет уже заданный workflow.
 
 Незавершённое состояние хранится отдельно для каждой GitHub Issue в `.devos/state/`. Worker conversations являются частью этого task-local state и индексируются только по worker ID внутри конкретной Issue. После финального `approved` состояние этой задачи удаляется; при ошибке, owner handoff или `changes_requested` оно остаётся для продолжения.
-
-
 Локальные `codex` worker-сессии привязаны к project root задачи. DevOS передаёт этот root одновременно как cwd процесса и через `codex exec -C` для fresh/resume запусков; сохранённая сессия с другим root не возобновляется. Если Codex до начала выполнения явно сообщает, что сохранённый thread/session недоступен для resume, DevOS сбрасывает только session id текущего worker и один раз продолжает fresh-сессией в правильном project root, сохраняя task state и сессии остальных workers. Ошибки после начала execution/output parsing не переигрывают worker prompt автоматически: исходная session сохраняется, чтобы не дублировать уже возможные side effects. `codex` worker уже является локальным и поэтому не может вернуть `needs_local_worker`; такая попытка завершается точной executor/status ошибкой. Browser worker по-прежнему может использовать `needs_local_worker`, если fallback объявлен workflow.
 
 Для форензики одного запуска можно явно включить `DEVOS_DEBUG=1 ./devos run <issue>`. DevOS создаёт локальный append-only JSONL в `.devos/debug/<repo>-issue-<issue>.jsonl` и пишет туда CLI/project-root контекст, ordered orchestration lifecycle, browser fresh/resume/navigation/session URLs и локальные process start/end события с cwd, аргументами, stdout/stderr, exit code, termination signal и elapsed time. Поля credential-типа и очевидные auth/token значения редактируются; обычные prompts/output/path/repository context сохраняются. Режим выключен по умолчанию, ничего не отправляет наружу и не создаёт daemon/watcher/background collector.
+После terminal approval DevOS записывает локальный marker в
+`.devos/completed/<issue>`. Такие Issues скрыты из списка, а обычный
+`./devos run <issue>` отказывается запускать их повторно. Для явного
+перепланирования используйте `./devos restart <issue>` или
+`./devos restart .devos/workflow.json`. Перед продолжением финального ревью
+completion не записывается: `FINAL_REVIEW_REQUIRED` оставляет задачу ожидающей
+решения владельца.
