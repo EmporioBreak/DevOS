@@ -66,49 +66,34 @@ async function atomicWrite(path: string, content: string) {
   await chmod(path, 0o600);
 }
 
-function keychain(root: string, account: string, value?: string): string | undefined {
-  if (process.platform !== "darwin") return undefined;
-  const service = "devos.connector." + projectIdentity(root);
-  const args = value === undefined
-    ? ["find-generic-password", "-a", account, "-s", service, "-w"]
-    : ["add-generic-password", "-U", "-a", account, "-s", service, "-w"];
-  // `security ... -w` intentionally reads a new password from a terminal, not
-  // ordinary stdin. For writes, give it a short-lived pseudo-TTY via macOS
-  // `script`; the secret still travels only over stdin and never appears in
-  // argv/process listings. Reads are non-interactive and can call `security`
-  // directly.
-  const command = value === undefined ? "/usr/bin/security" : "/usr/bin/script";
-  const commandArgs = value === undefined
-    ? args
-    : ["-q", "/dev/null", "/usr/bin/security", ...args];
-  const result = spawnSync(command, commandArgs, {
-    input: value === undefined ? undefined : value + "\n" + value + "\n",
-    encoding: "utf8",
-    env: safeEnvironment(process.env),
-    stdio: value === undefined ? ["ignore", "pipe", "ignore"] : ["pipe", "ignore", "ignore"],
-  });
-  return result.status === 0 && value === undefined ? result.stdout.trim() : result.status === 0 ? "" : undefined;
-}
-
-function importCredentials(root: string) {
-  for (const [envName, account] of [
-    ["DEVOS_CONNECTOR_OWNER_SECRET", "owner-secret"],
-    ["NGROK_AUTHTOKEN", "ngrok-authtoken"],
-  ] as const) {
-    const value = process.env[envName]?.trim();
-    if (value && keychain(root, account, value) === undefined)
-      throw new Error(`Could not store ${envName} in macOS Keychain.`);
+async function importCredentials(root: string) {
+  const path = join(root, ".devos/connector/credentials.json");
+  let stored: { DEVOS_CONNECTOR_OWNER_SECRET?: string; NGROK_AUTHTOKEN?: string } = {};
+  try {
+    stored = JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      throw new Error("Invalid .devos/connector/credentials.json; delete it and run connector setup again.");
+  }
+  for (const name of ["DEVOS_CONNECTOR_OWNER_SECRET", "NGROK_AUTHTOKEN"] as const) {
+    const value = process.env[name]?.trim();
+    if (value) stored[name] = value;
+  }
+  if (stored.DEVOS_CONNECTOR_OWNER_SECRET || stored.NGROK_AUTHTOKEN) {
+    await atomicWrite(path, JSON.stringify(stored, null, 2) + "\n");
   }
 }
 
-function loadCredentials(root: string) {
-  if (!process.env.DEVOS_CONNECTOR_OWNER_SECRET) {
-    const value = keychain(root, "owner-secret");
-    if (value) process.env.DEVOS_CONNECTOR_OWNER_SECRET = value;
+async function loadCredentials(root: string) {
+  let stored: { DEVOS_CONNECTOR_OWNER_SECRET?: string; NGROK_AUTHTOKEN?: string } = {};
+  try {
+    stored = JSON.parse(await readFile(join(root, ".devos/connector/credentials.json"), "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      throw new Error("Invalid .devos/connector/credentials.json; delete it and run connector setup again.");
   }
-  if (!process.env.NGROK_AUTHTOKEN) {
-    const value = keychain(root, "ngrok-authtoken");
-    if (value) process.env.NGROK_AUTHTOKEN = value;
+  for (const name of ["DEVOS_CONNECTOR_OWNER_SECRET", "NGROK_AUTHTOKEN"] as const) {
+    if (!process.env[name] && stored[name]) process.env[name] = stored[name];
   }
 }
 
@@ -122,6 +107,7 @@ async function secureStatePermissions(dir: string) {
     "oauth-state.enc",
     "oauth-clients.json",
     "ngrok.yml",
+    "credentials.json",
   ]) {
     try { await chmod(join(dir, name), 0o600); } catch {}
   }
@@ -668,13 +654,13 @@ export async function connector(
       await installNgrok(root);
     }
     await mkdir(dir, { recursive: true, mode: 0o700 });
-    importCredentials(root);
+    await importCredentials(root);
     process.stdout.write(
-      `Connector software ready: Desktop Commander ${DESKTOP_VERSION}, ngrok ${NGROK_VERSION}.${process.env.DEVOS_CONNECTOR_OWNER_SECRET || process.env.NGROK_AUTHTOKEN ? " Supplied connector credentials stored in macOS Keychain." : ""}\n`,
+      `Connector software ready: Desktop Commander ${DESKTOP_VERSION}, ngrok ${NGROK_VERSION}.${process.env.DEVOS_CONNECTOR_OWNER_SECRET || process.env.NGROK_AUTHTOKEN ? " Supplied connector credentials stored in project-local ignored credentials.json." : ""}\n`,
     );
     return;
   }
-  loadCredentials(root);
+  await loadCredentials(root);
   const config = await readConfig(root);
   if (action === "stop") {
     await stopBackground(root);

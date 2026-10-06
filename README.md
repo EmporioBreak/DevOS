@@ -527,7 +527,7 @@ Config от прежнего transport-эксперимента нужно за�
 
 Публичный `/mcp` всегда защищён OAuth: authorization-code + PKCE S256, protected-resource/authorization-server discovery, dynamic client registration, одноразовый code, access token на час и rotating refresh token до 24 часов. Повторное использование refresh token отзывает всё его семейство. Активное bearer-state шифруется AES-256-GCM ключом, производным от owner secret, хранится project-local в `.devos/connector/oauth-state.enc` с правами 0600 и привязано к точному публичному `/mcp`; поэтому обычный restart DevOS не требует повторного OAuth. Смена owner secret, публичного MCP resource, повреждение state или истечение/revoke токенов требуют новой авторизации. MCP-сессия привязана к зарегистрированному клиенту. Анонимный/неверный bearer получает 401; до настройки HTTPS issuer gateway закрыт. Не используйте URL как пароль.
 
-`NGROK_AUTHTOKEN` — токен аккаунта ngrok для транспорта. `DEVOS_CONNECTOR_OWNER_SECRET` — **другой**, случайный секрет владельца, минимум 32 байта: он подтверждает выдачу доступа ко всем инструментам Mac на OAuth-странице. Сгенерируйте owner secret в password manager и не отправляйте его в чат/GitHub. На macOS сделайте одноразовый импорт в системный Keychain: значения передаются `security` через краткоживущий pseudo-TTY (`/usr/bin/script`) из stdin, а не argv, и привязываются к каноническому пути проекта. Повторный импорт тем же способом ротирует сохранённые значения. Переменные окружения остаются явным override и имеют приоритет.
+`NGROK_AUTHTOKEN` — токен аккаунта ngrok для транспорта. `DEVOS_CONNECTOR_OWNER_SECRET` — **другой**, случайный секрет владельца, минимум 32 байта. Для надёжного fresh-Terminal startup `./devos connector setup` сохраняет переданные env-значения в project-local `.devos/connector/credentials.json` с правами 0600. Весь `.devos/` исключён из Git. Переменные окружения остаются override и имеют приоритет; повторный `setup` обновляет сохранённые значения.
 
 ```zsh
 read -rs 'NGROK_AUTHTOKEN?ngrok auth token: '; printf '\\n'
@@ -537,7 +537,7 @@ export DEVOS_CONNECTOR_OWNER_SECRET
 ./devos connector setup
 unset NGROK_AUTHTOKEN DEVOS_CONNECTOR_OWNER_SECRET
 
-# В новой Terminal-сессии ручные export больше не нужны.
+# В новой Terminal-сессии ручные export больше не нужны: credentials читаются из .devos/connector/credentials.json.
 ./devos connector doctor
 ./devos connector start
 ```
