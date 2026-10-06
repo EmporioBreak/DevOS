@@ -602,6 +602,7 @@ export async function connector(
   const abort = new AbortController();
   let terminalFailed = false;
   let currentPid: number | undefined;
+  let currentRuntime: ReturnType<typeof spawn> | undefined;
   let currentPublicUrl: string | undefined;
   let announcedReady = false;
   const stop = () => abort.abort();
@@ -611,9 +612,12 @@ export async function connector(
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
-  const signalGroup = (pid: number | undefined, signal: NodeJS.Signals) => {
-    if (!pid) return;
-    try { process.kill(-pid, signal); } catch {}
+  const signalRuntimeGroup = (
+    runtime: ReturnType<typeof spawn> | undefined,
+    signal: NodeJS.Signals,
+  ) => {
+    if (!runtime?.pid || runtime.exitCode !== null || runtime.signalCode !== null) return;
+    try { process.kill(-runtime.pid, signal); } catch {}
   };
 
   const persistSupervisorState = async (
@@ -671,6 +675,7 @@ export async function connector(
             },
           },
         );
+        currentRuntime = runtime;
         currentPid = runtime.pid;
         currentPublicUrl = undefined;
         const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((ok) => {
@@ -707,16 +712,21 @@ export async function connector(
         return {
           ready,
           exit,
-          stop: (signal: NodeJS.Signals = "SIGTERM") => signalGroup(runtime.pid, signal),
+          stop: (signal: NodeJS.Signals = "SIGTERM") => signalRuntimeGroup(runtime, signal),
         };
       },
     });
   } finally {
     abort.abort();
-    signalGroup(currentPid, "SIGTERM");
+    signalRuntimeGroup(currentRuntime, "SIGTERM");
     const shutdownDeadline = Date.now() + 3000;
-    while (processAlive(currentPid) && Date.now() < shutdownDeadline) await delay(25);
-    signalGroup(currentPid, "SIGKILL");
+    while (
+      currentRuntime &&
+      currentRuntime.exitCode === null &&
+      currentRuntime.signalCode === null &&
+      Date.now() < shutdownDeadline
+    ) await delay(25);
+    signalRuntimeGroup(currentRuntime, "SIGKILL");
     if (!terminalFailed) await rm(stateFile, { force: true });
     await rm(join(dir, "ngrok.yml"), { force: true });
     await new Promise<void>(ok => lock.close(() => ok()));
