@@ -79,6 +79,10 @@ export class Orchestrator {
     if (state.ownerReviewPending) {
       const decision = this.options.ownerDecision;
       if (!decision) {
+        await this.emit({
+          type: "owner_handoff",
+          task: state.task ?? workflow.task,
+        });
         await this.emitTaskStatus(state, "final_review_required");
         return state;
       }
