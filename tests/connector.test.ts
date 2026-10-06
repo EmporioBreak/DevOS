@@ -41,6 +41,7 @@ async function gateway() {
     port: 0,
     ownerSecret: secret,
     publicUrl: issuer,
+    oauthClientsPath: null,
   });
 }
 import { oauthToken } from "./connector-auth-fixture.js";
@@ -58,6 +59,18 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
       assert.equal(res.status, 401);
       assert.match(res.headers.get("www-authenticate")!, /resource_metadata/);
     }
+    const rootProbe = await fetch(base + "/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 7 }),
+    });
+    assert.equal(rootProbe.status, 200);
+    assert.deepEqual(await rootProbe.json(), {
+      jsonrpc: "2.0",
+      id: 7,
+      error: { code: -32600, message: "Invalid Request" },
+    });
+
     const metadata: any = await (
       await fetch(base + "/.well-known/oauth-protected-resource/mcp")
     ).json();
@@ -173,6 +186,80 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
   } finally {
     await client?.close();
     await g.close();
+  }
+});
+test("approved public OAuth client survives connector restart while tokens do not", async () => {
+  const start = connectorModule.startGateway;
+  assert.equal(typeof start, "function");
+  const dir = await mkdtemp(join(tmpdir(), "devos-oauth-clients-"));
+  const clientsPath = join(dir, "clients.json");
+  let first: Awaited<ReturnType<typeof start>> | undefined;
+  let second: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    first = await start({
+      root: process.cwd(),
+      port: 0,
+      ownerSecret: secret,
+      publicUrl: issuer,
+      oauthClientsPath: clientsPath,
+    });
+    const firstBase = "http://127.0.0.1:" + first.address.port;
+    const { tokens, client } = await oauthToken(firstBase, secret);
+    await first.close();
+    first = undefined;
+
+    const durable = JSON.parse(await readFile(clientsPath, "utf8"));
+    assert.equal(durable.version, 1);
+    assert.equal(durable.clients.length, 1);
+    assert.equal(durable.clients[0].client_id, client.client_id);
+    assert.equal(durable.clients[0].client_secret, undefined);
+    assert.deepEqual(durable.approvedClientIds, [client.client_id]);
+
+    second = await start({
+      root: process.cwd(),
+      port: 0,
+      ownerSecret: secret,
+      publicUrl: issuer,
+      oauthClientsPath: clientsPath,
+    });
+    const secondBase = "http://127.0.0.1:" + second.address.port;
+    assert.equal(
+      (
+        await fetch(secondBase + "/mcp", {
+          method: "GET",
+          headers: { Authorization: "Bearer " + tokens.access_token },
+        })
+      ).status,
+      401,
+      "access tokens remain ephemeral across restart",
+    );
+
+    const verifier = randomBytes(32).toString("base64url");
+    const challenge = createHash("sha256")
+      .update(verifier)
+      .digest("base64url");
+    const params = new URLSearchParams({
+      client_id: client.client_id,
+      redirect_uri: client.redirect_uris[0],
+      response_type: "code",
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state: "restart-state",
+      scope: "mcp:tools offline_access",
+      resource: issuer + "/mcp",
+    });
+    const authorize = await fetch(secondBase + "/authorize?" + params, {
+      redirect: "manual",
+    });
+    assert.equal(authorize.status, 302);
+    const callback = new URL(authorize.headers.get("location")!);
+    assert.equal(callback.origin, "http://127.0.0.1:54321");
+    assert.equal(callback.searchParams.get("state"), "restart-state");
+    assert.ok(callback.searchParams.get("code"));
+  } finally {
+    await first?.close();
+    await second?.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 test("gateway cannot start without strong owner auth or a valid HTTPS public identity", async () => {

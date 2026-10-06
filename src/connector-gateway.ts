@@ -2,6 +2,7 @@ import express from "express";
 import { rateLimit } from "express-rate-limit";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -49,11 +50,69 @@ export function ownerAuth(secret: string | undefined): string {
     );
   return secret;
 }
+
+function withOpenAiSecuritySchemes(message: unknown): unknown {
+  if (!message || typeof message !== "object") return message;
+  const envelope = message as {
+    result?: { tools?: Array<Record<string, unknown>> };
+    [key: string]: unknown;
+  };
+  if (!Array.isArray(envelope.result?.tools)) return message;
+  return {
+    ...envelope,
+    result: {
+      ...envelope.result,
+      tools: envelope.result.tools.map((tool) => ({
+        ...tool,
+        securitySchemes: [{ type: "oauth2", scopes: ["mcp:tools"] }],
+        _meta: {
+          ...((tool._meta && typeof tool._meta === "object"
+            ? tool._meta
+            : {}) as Record<string, unknown>),
+          securitySchemes: [{ type: "oauth2", scopes: ["mcp:tools"] }],
+        },
+      })),
+    },
+  };
+}
+
+/**
+ * The v1 MCP SDK validates tools/list against the 2025 schema and strips the
+ * newer top-level securitySchemes field before serialization. ChatGPT's
+ * current plugin scanner expects the modern field, while still accepting the
+ * _meta mirror for compatibility. Patch only serialized tools/list envelopes
+ * so the local provider-neutral Desktop Commander can stay on its pinned v1
+ * stdio protocol.
+ */
+export function patchToolListWireBody(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed) return body;
+  try {
+    return JSON.stringify(withOpenAiSecuritySchemes(JSON.parse(trimmed)));
+  } catch {
+    // Streamable HTTP commonly frames a JSON-RPC result as SSE. Rewrite only
+    // data lines that contain a complete JSON object and preserve the framing.
+    return body
+      .split("\n")
+      .map((line) => {
+        if (!line.startsWith("data:")) return line;
+        const payload = line.slice(5).trimStart();
+        try {
+          return "data: " + JSON.stringify(withOpenAiSecuritySchemes(JSON.parse(payload)));
+        } catch {
+          return line;
+        }
+      })
+      .join("\n");
+  }
+}
+
 export async function startGateway(options: {
   root: string;
   port: number;
   ownerSecret: string;
   publicUrl?: string;
+  oauthClientsPath?: string | null;
   onFailure?: () => void;
 }) {
   ownerAuth(options.ownerSecret);
@@ -122,7 +181,14 @@ export async function startGateway(options: {
       throw new Error("Public identity already configured.");
     identity = publicIdentity(value);
     const resource = new URL("/mcp", identity);
-    provider = new ConnectorAuth(resource, options.ownerSecret);
+    provider = new ConnectorAuth(
+      resource,
+      options.ownerSecret,
+      options.oauthClientsPath === null
+        ? undefined
+        : options.oauthClientsPath ??
+            join(options.root, ".devos", "connector", "oauth-clients.json"),
+    );
     authRouter = mcpAuthRouter({
       provider,
       issuerUrl: identity,
@@ -139,6 +205,32 @@ export async function startGateway(options: {
   }
   if (identity) setPublicUrl(identity.href);
   app.get("/health", (_req, res) => res.json({ ready: !!provider }));
+
+  // ChatGPT performs a post-OAuth action-discovery probe against the public
+  // origin itself (POST /), not only the configured /mcp resource path.
+  // Returning an arbitrary 404/HTML/JSON payload makes the connector fail
+  // with MCP_ACTION_DISCOVERY_FAILED even though OAuth succeeded. Handle that
+  // probe with a valid JSON-RPC 2.0 error envelope. This route exposes no
+  // tools, accepts no credentials, and does not weaken bearer auth on /mcp.
+  app.post(
+    "/",
+    express.json({ limit: "16kb" }),
+    (req, res) => {
+      const requestId =
+        req.body &&
+        typeof req.body === "object" &&
+        !Array.isArray(req.body) &&
+        "id" in req.body
+          ? req.body.id
+          : null;
+      res.status(200).json({
+        jsonrpc: "2.0",
+        id: requestId,
+        error: { code: -32600, message: "Invalid Request" },
+      });
+    },
+  );
+
   app.use((req, res, next) => {
     if (!authRouter) {
       res.status(503).json({ error: "connector_not_ready" });
@@ -244,50 +336,76 @@ export async function startGateway(options: {
                 tools: Array<Record<string, unknown>>;
                 [key: string]: unknown;
               };
+              const excludedForChatGpt = new Set([
+                "write_pdf",
+                "edit_block",
+                "track_ui_event",
+                "set_config_value",
+              ]);
               return {
                 ...listed,
-                tools: listed.tools.map((tool) => {
-                  const annotations =
-                    tool.annotations && typeof tool.annotations === "object"
-                      ? (tool.annotations as Record<string, unknown>)
-                      : {};
-                  const readOnly = annotations.readOnlyHint === true;
-                  const title =
-                    typeof tool.title === "string"
-                      ? tool.title
-                      : typeof annotations.title === "string"
-                        ? annotations.title
-                        : String(tool.name ?? "Desktop Commander tool");
-                  const meta =
-                    tool._meta && typeof tool._meta === "object"
-                      ? (tool._meta as Record<string, unknown>)
-                      : {};
-                  return {
-                    ...tool,
-                    title,
-                    annotations: {
-                      ...annotations,
-                      readOnlyHint: readOnly,
-                      destructiveHint:
-                        typeof annotations.destructiveHint === "boolean"
-                          ? annotations.destructiveHint
-                          : !readOnly,
-                      openWorldHint:
-                        typeof annotations.openWorldHint === "boolean"
-                          ? annotations.openWorldHint
-                          : !readOnly,
-                    },
-                    _meta: {
-                      ...meta,
-                      // OpenAI compatibility mirror. SDK 1.32.1 preserves
-                      // arbitrary _meta while its ToolSchema predates the
-                      // top-level securitySchemes field.
-                      securitySchemes: [
-                        { type: "oauth2", scopes: ["mcp:tools"] },
-                      ],
-                    },
-                  };
-                }),
+                tools: listed.tools
+                  .filter(
+                    (tool) => !excludedForChatGpt.has(String(tool.name ?? "")),
+                  )
+                  .map((tool) => {
+                    const annotations =
+                      tool.annotations && typeof tool.annotations === "object"
+                        ? (tool.annotations as Record<string, unknown>)
+                        : {};
+                    const readOnly = annotations.readOnlyHint === true;
+                    const title =
+                      typeof tool.title === "string"
+                        ? tool.title
+                        : typeof annotations.title === "string"
+                          ? annotations.title
+                          : String(tool.name ?? "Desktop Commander tool");
+                    const inputSchema =
+                      tool.inputSchema && typeof tool.inputSchema === "object"
+                        ? structuredClone(
+                            tool.inputSchema as Record<string, unknown>,
+                          )
+                        : tool.inputSchema;
+                    if (
+                      inputSchema &&
+                      typeof inputSchema === "object" &&
+                      "properties" in inputSchema &&
+                      inputSchema.properties &&
+                      typeof inputSchema.properties === "object"
+                    ) {
+                      const properties = inputSchema.properties as Record<
+                        string,
+                        unknown
+                      >;
+                      delete properties.origin;
+                      delete properties.options;
+                    }
+                    return {
+                      ...tool,
+                      inputSchema,
+                      title,
+                      annotations: {
+                        ...annotations,
+                        readOnlyHint: readOnly,
+                        destructiveHint:
+                          typeof annotations.destructiveHint === "boolean"
+                            ? annotations.destructiveHint
+                            : !readOnly,
+                        openWorldHint:
+                          typeof annotations.openWorldHint === "boolean"
+                            ? annotations.openWorldHint
+                            : !readOnly,
+                      },
+                      // Desktop Commander's local UI metadata is meant for its
+                      // own host surfaces. Do not make ChatGPT scan those
+                      // resources when this connector only needs remote tools.
+                      _meta: {
+                        securitySchemes: [
+                          { type: "oauth2", scopes: ["mcp:tools"] },
+                        ],
+                      },
+                    };
+                  }),
               };
             }
             return result;

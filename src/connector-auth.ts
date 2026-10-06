@@ -4,6 +4,14 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname } from "node:path";
 import type { Response } from "express";
 import type {
   OAuthServerProvider,
@@ -42,10 +50,13 @@ type Token = {
   family: string;
 };
 
-// Ephemeral credentials belong to this foreground run. Restart revokes all grants.
+// Access/refresh credentials and grants belong to this foreground run. Public
+// dynamic-client registrations are safe to persist locally so ChatGPT can
+// reauthorize after a connector restart without changing its client_id.
 // Every map is bounded, expired entries are pruned before admitting new entries.
 export class ConnectorAuth implements OAuthServerProvider {
   private clients = new Map<string, OAuthClientInformationFull>();
+  private approvedClients = new Set<string>();
   private pending = new Map<string, Grant>();
   private codes = new Map<string, Grant>();
   private access = new Map<string, Token>();
@@ -55,8 +66,122 @@ export class ConnectorAuth implements OAuthServerProvider {
   constructor(
     private resource: URL,
     ownerSecret: string,
+    private clientsPath?: string,
   ) {
     this.ownerDigest = digest(ownerSecret);
+    this.loadPublicClients();
+  }
+
+  private validateClientMetadata(
+    metadata: Pick<
+      OAuthClientInformationFull,
+      "redirect_uris" | "token_endpoint_auth_method"
+    >,
+  ) {
+    if (
+      !metadata.redirect_uris.length ||
+      metadata.redirect_uris.length > 8 ||
+      metadata.redirect_uris.some((value) => {
+        try {
+          const u = new URL(value);
+          return (
+            !!u.username ||
+            !!u.password ||
+            !!u.hash ||
+            /[;\s]/.test(u.origin) ||
+            !(
+              u.protocol === "https:" ||
+              (u.protocol === "http:" &&
+                ["127.0.0.1", "localhost", "[::1]"].includes(u.hostname))
+            )
+          );
+        } catch {
+          return true;
+        }
+      })
+    )
+      throw new InvalidClientMetadataError(
+        "Only HTTPS or loopback callback URLs are allowed.",
+      );
+    if (
+      !["none", "client_secret_post"].includes(
+        metadata.token_endpoint_auth_method ?? "client_secret_post",
+      )
+    )
+      throw new InvalidClientMetadataError(
+        "Unsupported client authentication method.",
+      );
+  }
+
+  private loadPublicClients() {
+    if (!this.clientsPath) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(this.clientsPath, "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new Error("Invalid durable OAuth client registry.");
+    }
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      (parsed as { version?: unknown }).version !== 1 ||
+      !Array.isArray((parsed as { clients?: unknown }).clients)
+    )
+      throw new Error("Invalid durable OAuth client registry.");
+    const registry = parsed as {
+      clients: OAuthClientInformationFull[];
+      approvedClientIds?: unknown;
+    };
+    for (const candidate of registry.clients.slice(0, 256)) {
+      if (
+        !candidate ||
+        typeof candidate.client_id !== "string" ||
+        candidate.client_secret ||
+        (candidate.token_endpoint_auth_method ?? "client_secret_post") !== "none"
+      )
+        continue;
+      try {
+        this.validateClientMetadata(candidate);
+      } catch {
+        continue;
+      }
+      this.clients.set(candidate.client_id, candidate);
+    }
+    if (Array.isArray(registry.approvedClientIds))
+      for (const id of registry.approvedClientIds.slice(0, 256))
+        if (typeof id === "string" && this.clients.has(id))
+          this.approvedClients.add(id);
+  }
+
+  private persistPublicClients() {
+    if (!this.clientsPath) return;
+    mkdirSync(dirname(this.clientsPath), { recursive: true, mode: 0o700 });
+    const clients = [...this.clients.values()].filter(
+      (client) =>
+        !client.client_secret &&
+        (client.token_endpoint_auth_method ?? "client_secret_post") === "none",
+    );
+    const tmp =
+      this.clientsPath + "." + process.pid + "." + randomUUID() + ".tmp";
+    try {
+      writeFileSync(
+        tmp,
+        JSON.stringify({
+          version: 1,
+          clients,
+          approvedClientIds: [...this.approvedClients].filter((id) =>
+            clients.some((client) => client.client_id === id),
+          ),
+        }),
+        { encoding: "utf8", mode: 0o600, flag: "wx" },
+      );
+      renameSync(tmp, this.clientsPath);
+    } finally {
+      try {
+        unlinkSync(tmp);
+      } catch {}
+    }
   }
   private prune() {
     for (const map of [
@@ -85,48 +210,33 @@ export class ConnectorAuth implements OAuthServerProvider {
       >,
     ): Promise<OAuthClientInformationFull> => {
       this.capacity(this.clients);
-      if (
-        !metadata.redirect_uris.length ||
-        metadata.redirect_uris.length > 8 ||
-        metadata.redirect_uris.some((value) => {
-          try {
-            const u = new URL(value);
-            return (
-              !!u.username ||
-              !!u.password ||
-              !!u.hash ||
-              /[;\s]/.test(u.origin) ||
-              !(
-                u.protocol === "https:" ||
-                (u.protocol === "http:" &&
-                  ["127.0.0.1", "localhost", "[::1]"].includes(u.hostname))
-              )
-            );
-          } catch {
-            return true;
-          }
-        })
-      )
-        throw new InvalidClientMetadataError(
-          "Only HTTPS or loopback callback URLs are allowed.",
-        );
-      if (
-        !["none", "client_secret_post"].includes(
-          metadata.token_endpoint_auth_method ?? "client_secret_post",
-        )
-      )
-        throw new InvalidClientMetadataError(
-          "Unsupported client authentication method.",
-        );
+      this.validateClientMetadata(metadata);
       const client = {
         ...metadata,
         client_id: randomUUID(),
         client_id_issued_at: Math.floor(Date.now() / 1000),
       };
       this.clients.set(client.client_id, client);
+      if (
+        !client.client_secret &&
+        (client.token_endpoint_auth_method ?? "client_secret_post") === "none"
+      )
+        this.persistPublicClients();
       return client;
     },
   };
+
+  private redirectGrant(grant: Grant, res: Response) {
+    this.capacity(this.codes);
+    const code = opaque();
+    this.codes.set(code, { ...grant, expires: Date.now() + 60_000 });
+    const callback = new URL(grant.params.redirectUri);
+    callback.searchParams.set("code", code);
+    if (grant.params.state !== undefined)
+      callback.searchParams.set("state", grant.params.state);
+    res.set("Cache-Control", "no-store").redirect(302, callback.href);
+  }
+
   async authorize(
     client: OAuthClientInformationFull,
     params: AuthorizationParams,
@@ -144,13 +254,18 @@ export class ConnectorAuth implements OAuthServerProvider {
       throw new InvalidScopeError(
         "Only mcp:tools and offline_access scopes are supported.",
       );
-    this.capacity(this.pending);
-    const ticket = opaque();
-    this.pending.set(ticket, {
+    const grant = {
       clientId: client.client_id,
       params,
       expires: Date.now() + 300_000,
-    });
+    };
+    if (this.approvedClients.has(client.client_id)) {
+      this.redirectGrant(grant, res);
+      return;
+    }
+    this.capacity(this.pending);
+    const ticket = opaque();
+    this.pending.set(ticket, grant);
     res.set({
       "Cache-Control": "no-store",
       "Content-Security-Policy": `default-src 'none'; form-action 'self' ${new URL(params.redirectUri).origin}; frame-ancestors 'none'`,
@@ -175,15 +290,10 @@ export class ConnectorAuth implements OAuthServerProvider {
       res.status(403).json({ error: "access_denied" });
       return;
     }
-    this.capacity(this.codes);
     this.pending.delete(ticket as string);
-    const code = opaque();
-    this.codes.set(code, { ...grant, expires: Date.now() + 60_000 });
-    const callback = new URL(grant.params.redirectUri);
-    callback.searchParams.set("code", code);
-    if (grant.params.state !== undefined)
-      callback.searchParams.set("state", grant.params.state);
-    res.set("Cache-Control", "no-store").redirect(302, callback.href);
+    this.approvedClients.add(grant.clientId);
+    this.persistPublicClients();
+    this.redirectGrant(grant, res);
   }
   private grant(client: OAuthClientInformationFull, code: string) {
     this.prune();
