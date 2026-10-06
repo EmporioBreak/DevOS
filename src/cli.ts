@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { loadChatGptBrowserConfig } from "./browser-config.js";
 import { ChatGptBrowserExecutor } from "./chatgpt-browser-executor.js";
 import { CodexExecutor } from "./codex-executor.js";
 import { LocalCommandRunner } from "./command-runner.js";
+import { debugLog } from "./debug-log.js";
 import type { Executor } from "./executor.js";
 import { JsonStateStore } from "./json-state-store.js";
 import {
@@ -66,6 +67,24 @@ export async function runWorkflow(
   cwd: string,
   config?: ProjectConfig,
 ): Promise<RunState> {
+  if (process.env.DEVOS_DEBUG === "1") {
+    process.env.DEVOS_DEBUG_FILE = join(
+      cwd,
+      ".devos",
+      "debug",
+      `${encodeURIComponent(workflow.task.repo)}-issue-${workflow.task.issue}.jsonl`,
+    );
+    const runtimePath = process.argv[1] ?? "";
+    debugLog("cli.run", {
+      projectRoot: cwd,
+      task: workflow.task,
+      mode,
+      runtimePath,
+      runtimeMode: runtimePath.includes("/.devos/runtime/")
+        ? "project_local"
+        : "self_host",
+    });
+  }
   const commandRunner = new LocalCommandRunner();
   const codex = new CodexExecutor(commandRunner);
   const chatgpt = new ChatGptBrowserExecutor(
@@ -88,7 +107,7 @@ export async function runWorkflow(
       stateStore,
       ...(ownerDecision ? { ownerDecision } : {}),
       resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
-      onEvent: writeOrchestrationEvent,
+      onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
     }).run();
   } finally {
     await chatgpt.close();
@@ -193,6 +212,10 @@ export function formatOrchestrationEvent(event: OrchestrationEvent): string {
       return `[${event.workerId}] ${event.executor} — ${event.status}\n`;
     case "transition":
       return `→ ${event.to}\n`;
+    case "worker_session_recovered":
+      return event.executor === "chatgpt_browser"
+        ? `[${event.workerId}] ${event.executor} — saved session unusable; recovering in configured Project\n`
+        : `[${event.workerId}] ${event.executor} — saved session unusable; starting fresh in project root\n`;
     case "owner_handoff":
       return "Owner handoff\n";
   }
@@ -267,6 +290,7 @@ export function isCliEntrypoint(moduleUrl: string, argvPath: string | undefined)
 if (isCliEntrypoint(import.meta.url, process.argv[1])) {
   main().catch(error => {
     const message = error instanceof Error ? error.message : String(error);
+    debugLog("cli.failure", { message });
     process.stderr.write(`DevOS failed: ${message}\n`);
     process.exitCode = 1;
   });

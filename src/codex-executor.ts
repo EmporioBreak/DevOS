@@ -2,6 +2,24 @@ import type { CommandRunner } from "./command-runner.js";
 import type { Executor, WorkerRequest } from "./executor.js";
 import type { WorkerOutput } from "./workflow.js";
 
+export class CodexResumeUnavailableError extends Error {
+  readonly safeToRetryFresh = true;
+
+  constructor(
+    readonly sessionId: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "CodexResumeUnavailableError";
+  }
+}
+
+export function isCodexResumeUnavailableError(
+  error: unknown,
+): error is CodexResumeUnavailableError {
+  return error instanceof CodexResumeUnavailableError;
+}
+
 export interface CodexOptions {
   model?: string;
   reasoningEffort?: "low" | "medium" | "high";
@@ -29,9 +47,15 @@ export class CodexExecutor implements Executor {
     const result = await this.runner.run("codex", args, request.projectRoot);
 
     if (result.exitCode !== 0) {
-      throw new Error(
-        `Codex exited with code ${result.exitCode}: ${result.stderr.trim() || "no stderr"}`,
-      );
+      const message =
+        `Codex exited with code ${result.exitCode}: ${result.stderr.trim() || "no stderr"}`;
+      if (
+        request.sessionId &&
+        isResumeUnavailableBeforeExecution(result.stdout, result.stderr)
+      ) {
+        throw new CodexResumeUnavailableError(request.sessionId, message);
+      }
+      throw new Error(message);
     }
 
     const sessionId = parseThreadId(result.stdout);
@@ -127,6 +151,25 @@ function parseEvents(stdout: string): Record<string, unknown>[] {
   }
 
   return events;
+}
+
+function isResumeUnavailableBeforeExecution(
+  stdout: string,
+  stderr: string,
+): boolean {
+  const events = parseEvents(stdout);
+  const executionStarted = events.some(event =>
+    event.type === "thread.started" ||
+    event.type === "turn.started" ||
+    event.type === "item.started" ||
+    event.type === "item.completed",
+  );
+  if (executionStarted) return false;
+
+  const diagnostics = `${stderr}\n${stdout}`;
+  return /(?:thread|session|resume).*(?:not found|unknown|missing|does not exist|failed to (?:load|find|resume)|cannot (?:load|find|resume)|unable to (?:load|find|resume))/i.test(
+    diagnostics,
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

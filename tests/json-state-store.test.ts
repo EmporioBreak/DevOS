@@ -124,3 +124,22 @@ test("persists browser worker start markers with task-local sessions", async () 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("persists a pending one-worker browser recovery for the next invocation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-state-"));
+  try {
+    const store = new JsonStateStore(root, { repo: "owner/product", issue: 46 });
+    const state = {
+      currentWorkerId: "reviewer",
+      completedRuns: 2,
+      sessions: { developer: "https://chatgpt.com/g/g-p-project/c/developer" },
+      browserWorkersStarted: ["developer", "reviewer"],
+      browserSessionRecovery: ["reviewer"],
+      task: { repo: "owner/product", issue: 46, pr: 50 },
+    };
+    await store.save(state);
+    assert.deepEqual(await store.load(), state);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

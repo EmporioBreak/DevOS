@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
-import { waitForConversationUrl } from "../src/chatgpt-browser-executor.js";
+import { isSameChatGptConversation, waitForConversationUrl } from "../src/chatgpt-browser-executor.js";
+
+test("recognizes only the saved Project conversation after browser resume", () => {
+  const saved = "https://chatgpt.com/g/g-p-project/c/conversation-1";
+  assert.equal(isSameChatGptConversation(saved, saved), true);
+  assert.equal(
+    isSameChatGptConversation(saved, "https://chatgpt.com/g/g-p-project/c/conversation-2"),
+    false,
+  );
+  assert.equal(isSameChatGptConversation(saved, "https://chatgpt.com/g/g-p-project/project"), false);
+  assert.equal(isSameChatGptConversation(saved, "https://chatgpt.com/c/conversation-1"), false);
+});
 
 test("waits for ChatGPT to replace its provisional conversation URL", async () => {
   let currentUrl = "https://chatgpt.com/g/g-p-project/project";

@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RunState, StateStore } from "./orchestrator.js";
+import { debugLog } from "./debug-log.js";
 import type { TaskRef } from "./workflow.js";
 
 export class JsonStateStore implements StateStore {
@@ -19,7 +20,9 @@ export class JsonStateStore implements StateStore {
     try {
       const raw = await readFile(this.path, "utf8");
       const value: unknown = JSON.parse(raw);
-      return validateState(value);
+      const state = validateState(value);
+      debugLog("state.load", { path: this.path, state });
+      return state;
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") return null;
       throw error;
@@ -28,6 +31,7 @@ export class JsonStateStore implements StateStore {
 
   async save(state: RunState): Promise<void> {
     const valid = validateState(state);
+    debugLog("state.save", { path: this.path, state: valid });
     await mkdir(dirname(this.path), { recursive: true });
 
     const temporaryPath = `${this.path}.tmp`;
@@ -36,6 +40,7 @@ export class JsonStateStore implements StateStore {
   }
 
   async clear(): Promise<void> {
+    debugLog("state.clear", { path: this.path });
     await rm(this.path, { force: true });
   }
 }
@@ -49,6 +54,8 @@ function validateState(value: unknown): RunState {
   const task = record.task;
   const ownerReviewPending = record.ownerReviewPending;
   const browserWorkersStarted = record.browserWorkersStarted;
+  const browserSessionRecovery = record.browserSessionRecovery;
+  const sessionProjectRoots = record.sessionProjectRoots;
 
   if (task !== undefined && !isTaskRef(task)) {
     throw new Error("Invalid DevOS state");
@@ -59,9 +66,18 @@ function validateState(value: unknown): RunState {
   ) {
     throw new Error("Invalid DevOS state");
   }
+  if (sessionProjectRoots !== undefined && !isSessionMap(sessionProjectRoots)) {
+    throw new Error("Invalid DevOS state");
+  }
   if (
     browserWorkersStarted !== undefined &&
     !isWorkerIdList(browserWorkersStarted)
+  ) {
+    throw new Error("Invalid DevOS state");
+  }
+  if (
+    browserSessionRecovery !== undefined &&
+    !isWorkerIdList(browserSessionRecovery)
   ) {
     throw new Error("Invalid DevOS state");
   }
@@ -72,7 +88,9 @@ function validateState(value: unknown): RunState {
         key !== "currentWorkerId" &&
         key !== "completedRuns" &&
         key !== "sessions" &&
+        key !== "sessionProjectRoots" &&
         key !== "browserWorkersStarted" &&
+        key !== "browserSessionRecovery" &&
         key !== "task" &&
         key !== "ownerReviewPending",
     ) ||
@@ -90,9 +108,13 @@ function validateState(value: unknown): RunState {
     currentWorkerId: record.currentWorkerId,
     completedRuns: record.completedRuns,
     sessions: { ...record.sessions },
+    ...(sessionProjectRoots === undefined ? {} : { sessionProjectRoots: { ...sessionProjectRoots } }),
     ...(browserWorkersStarted === undefined
       ? {}
       : { browserWorkersStarted: [...browserWorkersStarted] }),
+    ...(browserSessionRecovery === undefined
+      ? {}
+      : { browserSessionRecovery: [...browserSessionRecovery] }),
     ...(task === undefined ? {} : { task }),
     ...(ownerReviewPending === undefined ? {} : { ownerReviewPending }),
   };

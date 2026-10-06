@@ -3,6 +3,7 @@ import test from "node:test";
 import type { CommandResult, CommandRunner } from "../src/command-runner.js";
 import {
   CodexExecutor,
+  CodexResumeUnavailableError,
   buildCodexArgs,
   buildCodexResumeArgs,
   parseFinalAgentMessage,
@@ -52,10 +53,10 @@ test("parses thread id and final agent message", () => {
 });
 
 test("resumes the supplied Codex session", async () => {
-  const calls: string[][] = [];
+  const calls: Array<{ args: string[]; cwd: string }> = [];
   const runner: CommandRunner = {
-    async run(_command, args): Promise<CommandResult> {
-      calls.push(args);
+    async run(_command, args, cwd): Promise<CommandResult> {
+      calls.push({ args, cwd });
       return {
         exitCode: 0,
         stderr: "",
@@ -73,6 +74,59 @@ test("resumes the supplied Codex session", async () => {
     sessionId: "session-1",
   });
 
-  assert.equal(calls[0]?.includes("resume"), true);
+  assert.equal(calls[0]?.args.includes("resume"), true);
+  assert.equal(calls[0]?.cwd, "/project");
+  assert.deepEqual(calls[0]?.args.slice(0, 3), ["exec", "-C", "/project"]);
   assert.equal(result.sessionId, "session-1");
+});
+
+
+test("classifies only a pre-execution missing resumed thread as safe to restart", async () => {
+  const runner: CommandRunner = {
+    async run(): Promise<CommandResult> {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: "thread not found: session-1",
+      };
+    },
+  };
+
+  await assert.rejects(
+    () => new CodexExecutor(runner).run({
+      projectRoot: "/project",
+      prompt: "Continue",
+      sessionId: "session-1",
+    }),
+    error =>
+      error instanceof CodexResumeUnavailableError &&
+      error.sessionId === "session-1",
+  );
+});
+
+test("does not classify a post-execution resume failure as safe to restart", async () => {
+  const runner: CommandRunner = {
+    async run(): Promise<CommandResult> {
+      return {
+        exitCode: 1,
+        stderr: "thread not found after execution",
+        stdout: [
+          '{"type":"thread.started","thread_id":"session-1"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"work may already have happened"}}',
+        ].join("\n"),
+      };
+    },
+  };
+
+  await assert.rejects(
+    () => new CodexExecutor(runner).run({
+      projectRoot: "/project",
+      prompt: "Continue",
+      sessionId: "session-1",
+    }),
+    error =>
+      error instanceof Error &&
+      !(error instanceof CodexResumeUnavailableError) &&
+      /Codex exited with code 1/.test(error.message),
+  );
 });
