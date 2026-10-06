@@ -671,6 +671,8 @@ export async function connectorRuntime(root: string) {
       root: softwareRoot,
       port: config.gatewayPort,
       ownerSecret: ownerAuth(process.env.DEVOS_CONNECTOR_OWNER_SECRET),
+      oauthClientsPath: join(root, ".devos/connector/oauth-clients.json"),
+      oauthStatePath: join(root, ".devos/connector/oauth-state.enc"),
       onFailure: stop,
     });
     if (stopping) return;
