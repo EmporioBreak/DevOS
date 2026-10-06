@@ -52,6 +52,7 @@ function validateState(value: unknown): RunState {
         key !== "currentWorkerId" &&
         key !== "completedRuns" &&
         key !== "sessions" &&
+        key !== "task" &&
         key !== "ownerReviewPending",
     ) ||
     typeof record.currentWorkerId !== "string" ||
@@ -60,6 +61,7 @@ function validateState(value: unknown): RunState {
     !Number.isSafeInteger(record.completedRuns) ||
     record.completedRuns < 0 ||
     !isSessionMap(record.sessions) ||
+    (record.task !== undefined && !isTaskRef(record.task)) ||
     (record.ownerReviewPending !== undefined &&
       typeof record.ownerReviewPending !== "boolean")
   ) {
@@ -70,10 +72,30 @@ function validateState(value: unknown): RunState {
     currentWorkerId: record.currentWorkerId,
     completedRuns: record.completedRuns,
     sessions: { ...record.sessions },
+    ...(record.task === undefined ? {} : { task: { ...record.task } }),
     ...(record.ownerReviewPending === undefined
       ? {}
       : { ownerReviewPending: record.ownerReviewPending }),
   };
+}
+
+function isTaskRef(value: unknown): value is TaskRef {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    Object.keys(record).every(
+      key => key === "repo" || key === "issue" || key === "pr",
+    ) &&
+    typeof record.repo === "string" &&
+    /^[^/\\s]+\\/[^/\\s]+$/.test(record.repo) &&
+    typeof record.issue === "number" &&
+    Number.isSafeInteger(record.issue) &&
+    record.issue > 0 &&
+    (record.pr === undefined ||
+      (typeof record.pr === "number" &&
+        Number.isSafeInteger(record.pr) &&
+        record.pr > 0))
+  );
 }
 
 function isSessionMap(value: unknown): value is Record<string, string> {
