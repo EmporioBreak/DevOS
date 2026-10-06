@@ -25,7 +25,7 @@ DevOS только исполняет этот workflow.
 
 Например, пользователь говорит главному агенту: «сделай главную страницу». Главный агент фиксирует задачу, заранее составляет полный worker graph и после подтверждения пользователя запускает DevOS именно для этой задачи.
 
-Один запуск DevOS проводит весь внутренний цикл:
+Один запуск DevOS проводит внутренний worker-цикл и после terminal review возвращает финальную проверку владельцу исходной задачи:
 
 ```text
 пользовательская задача
@@ -35,13 +35,12 @@ developer
         └─ done → reviewer
                     ├─ changes_requested → developer
                     ├─ needs_host → local_reviewer
-                    └─ approved → acceptance
+                    └─ approved → owner final review
                                       ├─ changes_requested → developer
-                                      ├─ needs_host → local_acceptance
                                       └─ approved → готово
 ```
 
-Баги и замечания внутри этого graph не создают новые пользовательские задачи. Workers исправляют их внутри того же цикла, пока acceptance worker не примет исходную задачу целиком.
+Баги и замечания внутри этого graph не создают новые пользовательские задачи. Workers исправляют их внутри того же task state; final acceptance не является отдельным worker-ом.
 
 DevOS не является daemon-ом и ничего не опрашивает, пока пользователь не запустил конкретную задачу. Процесс существует только во время выполнения workflow и завершается после terminal approval или блокирующей ошибки.
 
@@ -84,6 +83,18 @@ my-project/
 При первом запуске launcher локально разворачивает runtime в `.devos/runtime/`. Никакого `npm -g`, системного daemon-а или общей установки DevOS на компьютер нет. Runtime и состояние принадлежат только этому проекту.
 
 Repo проекта определяется из локального `git remote origin` и сохраняется в `.devos/config.json`.
+
+Там же можно задать обычный для проекта ChatGPT Project URL:
+
+```json
+{
+  "version": 1,
+  "repo": "owner/product",
+  "chatgptProjectUrl": "https://chatgpt.com/g/g-p-project/c/"
+}
+```
+
+Для новых `chatgpt_browser` worker-ов этот project-local URL имеет приоритет над `DEVOS_CHATGPT_PROJECT_URL`. Переменная окружения остаётся fallback-ом.
 
 Обычный запуск:
 
@@ -250,6 +261,8 @@ Worker может запускаться разными способами.
 
 Это полноценный ChatGPT-агент, открытый DevOS через Playwright в постоянной браузерной сессии. В архитектуре DevOS считается, что он имеет тот же набор возможностей и инструментов, что и главный ChatGPT-агент.
 
+Conversation URL worker-а хранится только в state текущей GitHub Issue, в `sessions[workerId]`. Поэтому повторный вход того же worker-а в рамках одной задачи открывает тот же conversation URL, а другая Issue начинает с пустого session map и создаёт новый разговор внутри настроенного ChatGPT Project. Глобального worker-session registry нет.
+
 Он может использовать доступные ему:
 
 - GitHub-инструменты;
@@ -288,6 +301,51 @@ Worker может запускаться разными способами.
 Это позволяет экономить лимиты Codex и использовать локальный executor только после фактической невозможности выполнить задачу в ChatGPT-среде.
 
 DevOS не определяет сам, нужен ли host. Он только следует статусу worker-а и переходам, которые заранее заданы главным агентом.
+
+## Финальный handoff владельцу задачи
+
+Workflow может явно указать владельца исходной задачи:
+
+```json
+{
+  "owner": {
+    "mode": "chatgpt_conversation",
+    "conversationUrl": "https://chatgpt.com/c/main-task-conversation"
+  }
+}
+```
+
+или:
+
+```json
+{
+  "owner": {
+    "mode": "parent_process"
+  }
+}
+```
+
+В режиме `chatgpt_conversation` DevOS после terminal review открывает именно указанный основной conversation URL в той же аутентифицированной браузерной сессии и отправляет короткий machine-oriented запрос на финальную проверку с URL Issue и PR, если он известен. Ответ `approved` завершает задачу; `changes_requested` возвращает workflow к его заранее объявленному `start` worker-у, при этом task-scoped `sessions` сохраняются.
+
+В режиме `parent_process` DevOS не создаёт отдельного acceptance worker-а. Он сохраняет state и завершает worker phase структурированной строкой:
+
+```text
+DEVOS_OWNER_HANDOFF {"status":"FINAL_REVIEW_REQUIRED","task":{"repo":"owner/product","issue":42,"pr":57}}
+```
+
+После финальной проверки parent process может продолжить ту же задачу без потери worker conversations:
+
+```bash
+DEVOS_OWNER_RESULT=changes_requested ./devos run 42
+```
+
+или завершить её:
+
+```bash
+DEVOS_OWNER_RESULT=approved ./devos run 42
+```
+
+Это остаётся one-shot handoff: никакого callback daemon, watcher или polling service не появляется.
 
 ## Результат worker-а
 
@@ -411,5 +469,5 @@ devos restart .devos/workflow.json
 
 DevOS не выбирает роли или executor-ы из этого файла. Он только исполняет уже заданный workflow.
 
-Незавершённое состояние хранится отдельно для каждой GitHub Issue в `.devos/state/`. После успешного завершения workflow состояние этой задачи удаляется; при ошибке или прерывании оно остаётся для продолжения.
+Незавершённое состояние хранится отдельно для каждой GitHub Issue в `.devos/state/`. Worker conversations являются частью этого task-local state и индексируются только по worker ID внутри конкретной Issue. После финального `approved` состояние этой задачи удаляется; при ошибке, owner handoff или `changes_requested` оно остаётся для продолжения.
 
