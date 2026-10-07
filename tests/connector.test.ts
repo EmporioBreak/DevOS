@@ -160,6 +160,123 @@ test("gateway does not listen if the immediate backend ping fails", async () => 
     Client.prototype.ping = originalPing;
   }
 });
+async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "initial-ping") {
+  const originalConnect = Client.prototype.connect;
+  const originalPing = Client.prototype.ping;
+  let transportToClose: Parameters<typeof originalConnect>[0] | undefined;
+  let transportCloseForCleanup: (() => Promise<void>) | undefined;
+  let transportPid: number | undefined;
+  Client.prototype.connect = async function (transport, options) {
+    await originalConnect.call(this, transport, options);
+    transportToClose = transport;
+    transportPid = (transport as unknown as { pid?: number }).pid;
+    const closeTransport = transport.close.bind(transport);
+    transportCloseForCleanup = closeTransport;
+    transport.close = async () => {
+      void closeTransport();
+      await new Promise<void>(() => {});
+    };
+    if (failurePoint === "connect") throw new Error("controlled connect failure");
+  };
+  Client.prototype.ping = async () => {
+    if (failurePoint === "initial-ping") throw new Error("controlled initial ping failure");
+    return {};
+  };
+  try {
+    const startedAt = Date.now();
+    const outcome = await Promise.race([
+      connectorModule.startGateway({ root: process.cwd(), port: 0, ownerSecret: secret })
+        .then(async (gateway) => {
+          await gateway.close();
+          return "resolved";
+        }, () => "rejected"),
+      shortDelay(2_500).then(() => "hung"),
+    ]);
+    assert.equal(outcome, "rejected", `${failurePoint} cleanup must not wait forever`);
+    assert.ok(Date.now() - startedAt < 2_500, "startup cleanup must have a fixed upper bound");
+  } finally {
+    Client.prototype.connect = originalConnect;
+    Client.prototype.ping = originalPing;
+    if (transportToClose) {
+      transportToClose.close = transportCloseForCleanup!;
+      await transportCloseForCleanup!().catch(() => {});
+    }
+    if (transportPid) {
+      const pid = transportPid;
+      await waitFor(() => dead(pid));
+    }
+  }
+}
+test("connect failure uses bounded stdio cleanup", async () => {
+  await assertStartupTransportCloseIsBounded("connect");
+});
+test("initial ping failure uses bounded stdio cleanup", async () => {
+  await assertStartupTransportCloseIsBounded("initial-ping");
+});
+test("HTTP listen failure uses bounded local-client cleanup", async () => {
+  const occupied = createServer();
+  await new Promise<void>((resolve) => occupied.listen(0, "127.0.0.1", resolve));
+  const port = (occupied.address() as { port: number }).port;
+  const originalClose = Client.prototype.close;
+  Client.prototype.close = async function (...args) {
+    void originalClose.apply(this, args);
+    await new Promise<void>(() => {});
+  };
+  try {
+    const startedAt = Date.now();
+    await assert.rejects(
+      connectorModule.startGateway({ root: process.cwd(), port, ownerSecret: secret }),
+      /Loopback gateway port unavailable/,
+    );
+    assert.ok(Date.now() - startedAt < 2_500, "HTTP startup cleanup must have a fixed upper bound");
+  } finally {
+    Client.prototype.close = originalClose;
+    await new Promise<void>((resolve) => occupied.close(() => resolve()));
+  }
+});
+test("health reports suspect after a missed heartbeat but waits for the third miss to fail", async () => {
+  const originalPing = Client.prototype.ping;
+  let pingCalls = 0;
+  const failures: string[] = [];
+  Client.prototype.ping = async () => {
+    pingCalls++;
+    if (pingCalls > 1) throw new Error("controlled heartbeat miss");
+    return {};
+  };
+  let g: Awaited<ReturnType<typeof connectorModule.startGateway>> | undefined;
+  try {
+    g = await connectorModule.startGateway({
+      root: process.cwd(),
+      port: 0,
+      ownerSecret: secret,
+      timing: {
+        heartbeatIntervalMs: 10,
+        heartbeatTimeoutMs: 10,
+        heartbeatFailureThreshold: 3,
+      },
+      onFailure: (component) => failures.push(component),
+    });
+    const base = `http://127.0.0.1:${g.address.port}`;
+    const deadline = Date.now() + 1_000;
+    let health: { ready: boolean; backendAlive: boolean; backendState: string } | undefined;
+    while (Date.now() < deadline) {
+      if (pingCalls >= 2) {
+        health = (await (await fetch(base + "/health")).json()) as typeof health;
+        if (health?.backendState === "suspect") break;
+      }
+      await shortDelay(2);
+    }
+    assert.deepEqual(health && {
+      ready: health.ready,
+      backendAlive: health.backendAlive,
+      backendState: health.backendState,
+    }, { ready: false, backendAlive: false, backendState: "suspect" });
+    assert.deepEqual(failures, [], "recovery waits for the third consecutive miss");
+  } finally {
+    await g?.close();
+    Client.prototype.ping = originalPing;
+  }
+});
 test("heartbeat failure racing local transport close reports one backend failure", async () => {
   const originalPing = Client.prototype.ping;
   let g: Awaited<ReturnType<typeof connectorModule.startGateway>> | undefined;

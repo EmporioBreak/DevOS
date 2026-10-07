@@ -1,4 +1,8 @@
-export type ConnectorBackendState = "unknown" | "alive" | "stale/dead";
+export type ConnectorBackendState =
+  | "unknown"
+  | "alive"
+  | "suspect"
+  | "stale/dead";
 
 export interface ConnectorWatchdogSnapshot {
   state: ConnectorBackendState;
@@ -68,7 +72,11 @@ export function createConnectorWatchdog(options: {
   return {
     snapshot() {
       return {
-        state: failed ? "stale/dead" : "alive",
+        state: failed
+          ? "stale/dead"
+          : consecutiveMisses > 0
+            ? "suspect"
+            : "alive",
         lastBackendOkAt: new Date(lastBackendOkAt).toISOString(),
         consecutiveMisses,
       };

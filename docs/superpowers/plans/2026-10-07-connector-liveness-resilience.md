@@ -17,7 +17,7 @@
 - Heartbeats are single-flight and `onFailure("desktop_commander")` is single-shot per gateway instance.
 - Service request absolute deadline: 60,000 ms.
 - `tools/call` idle timeout: 60,000 ms, reset by progress; absolute deadline: 180,000 ms maximum.
-- Backend state is `unknown | alive | stale/dead`; `local.connect()` alone is not proof of liveness.
+- Backend state is `unknown | alive | suspect | stale/dead`; one or two misses are `suspect`, and recovery still starts only after three consecutive misses.
 - Request timeout/cancellation do not restart the runtime; backend restart requires backend health failure or transport close.
 - Preserve process ownership, bounded restart policy, OAuth state, `.env` handling, and stock Desktop Commander process/session tools.
 - Add no CI, Keychain, new secret store, global daemon, process-name cleanup, infinite retry, or unbounded await.
@@ -27,7 +27,7 @@
 - Event loop delay or slow ping must not start overlapping heartbeat requests; test maximum one unresolved ping at a time.
 - Initial ping failure must prevent the HTTP listener/readiness from appearing and be classified as `desktop_commander`.
 - Timed-out/cancelled concurrent request A must not cancel request B, watchdog ping, or runtime.
-- `/health` must not report a backend alive before initial ping or after the stale threshold, and must not expose process or secret details.
+- `/health` must report `suspect` after one or two misses, not report backend alive before initial ping or after the stale threshold, and must not expose process or secret details.
 - SIGSTOP recovery must prove exact owned PID replacement, successful new MCP call, and absence of old/orphan children even when assertions fail.
 
 ---
@@ -39,8 +39,8 @@
 - Create: `tests/connector-watchdog.test.ts`
 
 **Interfaces:**
-- Produce `createConnectorWatchdog(options: { ping(timeoutMs: number): Promise<void>; onFailure(): void; initialSuccessAt: number; intervalMs?: number; timeoutMs?: number; failureThreshold?: number; now?: () => number })` returning `{ snapshot(): { state: "unknown" | "alive" | "stale/dead"; lastBackendOkAt?: string; consecutiveMisses: number }; stop(): Promise<void> }`. The initial success timestamp is supplied by gateway startup; optional shorter intervals/deadlines make state-machine tests fast without changing production defaults.
-- Snapshot contains `state: "unknown" | "alive" | "stale/dead"`, `lastBackendOkAt?: string`, and `consecutiveMisses`.
+- Produce `createConnectorWatchdog(options: { ping(timeoutMs: number): Promise<void>; onFailure(): void; initialSuccessAt: number; intervalMs?: number; timeoutMs?: number; failureThreshold?: number; now?: () => number })` returning `{ snapshot(): { state: "unknown" | "alive" | "suspect" | "stale/dead"; lastBackendOkAt?: string; consecutiveMisses: number }; stop(): Promise<void> }`. The initial success timestamp is supplied by gateway startup; optional shorter intervals/deadlines make state-machine tests fast without changing production defaults.
+- Snapshot contains `state: "unknown" | "alive" | "suspect" | "stale/dead"`, `lastBackendOkAt?: string`, and `consecutiveMisses`.
 - The gateway owns the immediate initial ping; the watchdog starts only after that ping succeeds.
 
 - [x] **Step 1: Add failing tests for heartbeat schedule, failure threshold, reset, and single flight.** Assert 15-second start-to-start cadence, 5-second ping deadline, no overlapping pings while unresolved, one/two misses do not fail, success resets misses, and the third miss calls `onFailure` once.

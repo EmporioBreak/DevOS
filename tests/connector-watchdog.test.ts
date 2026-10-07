@@ -49,6 +49,7 @@ test("watchdog counts consecutive misses, resets on success, and reports failure
   try {
     await waitFor(() => attempts >= 1);
     assert.equal(failures, 0, "one miss must not fail the backend");
+    assert.equal(watchdog.snapshot().state, "suspect");
     await waitFor(() => attempts >= 2);
     assert.equal(watchdog.snapshot().consecutiveMisses, 0);
     assert.equal(watchdog.snapshot().state, "alive");
@@ -57,6 +58,33 @@ test("watchdog counts consecutive misses, resets on success, and reports failure
     assert.equal(attempts, 5, "watchdog stops scheduling after threshold");
     assert.equal(failures, 1, "failure callback is single-shot");
     assert.equal(watchdog.snapshot().state, "stale/dead");
+  } finally {
+    await watchdog.stop();
+  }
+});
+
+test("one and two misses are suspect; the third is stale and triggers failure", async () => {
+  let attempts = 0;
+  let failures = 0;
+  const watchdog = createConnectorWatchdog({
+    ping: async () => {
+      attempts++;
+      throw new Error("ping missed");
+    },
+    onFailure: () => failures++,
+    initialSuccessAt: Date.now(),
+    intervalMs: 8,
+    failureThreshold: 3,
+  });
+  try {
+    await waitFor(() => attempts >= 1);
+    assert.equal(watchdog.snapshot().state, "suspect");
+    await waitFor(() => attempts >= 2);
+    assert.equal(watchdog.snapshot().state, "suspect");
+    assert.equal(failures, 0);
+    await waitFor(() => attempts >= 3);
+    assert.equal(watchdog.snapshot().state, "stale/dead");
+    assert.equal(failures, 1);
   } finally {
     await watchdog.stop();
   }

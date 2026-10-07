@@ -328,7 +328,7 @@ export async function startGateway(options: {
     await local.connect(stdio, { timeout: 15_000 });
   } catch {
     closing = true;
-    await stdio.close();
+    await settleWithin(stdio.close(), 1_500);
     throw Object.assign(
       new Error("Local Desktop Commander initialization failed."),
       { component: "desktop_commander" },
@@ -340,7 +340,7 @@ export async function startGateway(options: {
     initialSuccessAt = Date.now();
   } catch {
     closing = true;
-    await stdio.close();
+    await settleWithin(stdio.close(), 1_500);
     throw Object.assign(
       new Error("Desktop Commander initial liveness ping failed."),
       { component: "desktop_commander" },
@@ -719,7 +719,7 @@ export async function startGateway(options: {
     });
   } catch {
     closing = true;
-    await local.close();
+    await settleWithin(local.close(), 1_500);
     throw new Error("Loopback gateway port unavailable.");
   }
   return {
