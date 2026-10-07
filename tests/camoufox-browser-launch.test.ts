@@ -28,7 +28,7 @@ for (const headless of [false, true]) {
       os: "macos" as const,
       preset: { userAgent: "stable-preset" },
     };
-    t.mock.method(chatGptBrowserDeps, "loadIdentity", async profile => {
+    t.mock.method(chatGptBrowserDeps, "loadIdentity", async (profile: string) => {
       assert.equal(profile, profileDir);
       return identity;
     });
@@ -37,7 +37,7 @@ for (const headless of [false, true]) {
     t.mock.method(
       chatGptBrowserDeps,
       "launchPersistentContext",
-      async (profile: string, options) => {
+      async (profile: string, options: Parameters<typeof chatGptBrowserDeps.launchPersistentContext>[1]) => {
         launches++;
         assert.equal(profile, profileDir);
         assert.equal(options.headless, headless);
