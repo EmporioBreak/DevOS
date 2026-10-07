@@ -576,3 +576,7 @@ Main agent/пользователь после независимого review �
 Обычные `./devos run <issue>` и `./devos restart <issue>` автоматически убеждаются, что project-local background stack уже работает, и поднимают его при необходимости; worker-сессии и task state при этом остаются отдельными. В source checkout connector-команды используют текущую ветку без auto-update.
 
 Атрибуция: Desktop Commander — MIT, © 2024–2025 Eduard Ruzga and Desktop Commander Contributors ([upstream](https://github.com/wonderwhy-er/DesktopCommanderMCP)); MCP TypeScript SDK — MIT ([upstream](https://github.com/modelcontextprotocol/typescript-sdk)); ngrok — proprietary CLI ([условия](https://ngrok.com/terms-of-service)). Лицензии npm-пакетов остаются в установленных зависимостях. Актуальная оценка dependency debt и известных advisory ведётся в `docs/security/dependency-audit.md`; точный `npm audit` count подтверждается свежим локальным запуском перед merge, без `npm audit fix --force`.
+
+### Bind the current ChatGPT Project chat
+
+Write a unique `DEVOS_BIND_<random>` marker into a temporary file using Desktop Commander and send the same marker as a standalone chat message. Run `./devos bind-chat /absolute/path/to/marker-file`. The helper uses the configured Camoufox profile, checks up to 30 project chats per pass (three bounded passes), prints the matching conversation URL or fails with `bind_not_found`, and deletes the marker file after the browser attempt. Close any other process using the persistent profile before binding.

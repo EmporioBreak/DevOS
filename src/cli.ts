@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
+import { bindChat } from "./chat-binding.js";
 import { loadChatGptBrowserConfig } from "./browser-config.js";
 import {
   clearTaskCompleted,
@@ -52,10 +53,12 @@ import {
 
 export type CliCommand =
   | { kind: "connector"; action: ConnectorAction }
+  | { kind: "bind-chat"; markerFile: string }
   | { kind: "select" }
   | { kind: "run"; mode: "run" | "restart"; target: string };
 
 export function parseCliArgs(args: string[]): CliCommand {
+  if (args[0] === "bind-chat" && args.length === 2) return { kind: "bind-chat", markerFile: args[1]! };
   if (args.length === 0) {
     return { kind: "select" };
   }
@@ -200,6 +203,12 @@ export async function main(
     return;
   }
   const command = parseCliArgs(args);
+
+  if (command.kind === "bind-chat") {
+    const config = await loadOrCreateProjectConfig(cwd, new LocalCommandRunner());
+    process.stdout.write(`${await bindChat(command.markerFile, config.chatgptProjectUrl)}\n`);
+    return;
+  }
 
   if (command.kind === "connector") {
     await connector(command.action, cwd);
