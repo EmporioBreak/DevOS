@@ -199,6 +199,24 @@ test("heartbeat failure racing local transport close reports one backend failure
     Client.prototype.ping = originalPing;
   }
 });
+test("gateway close stays bounded when the local MCP client close never resolves", async () => {
+  const g = await gateway();
+  const desktopPid = g.desktopPid;
+  assert.ok(desktopPid);
+  const originalClose = Client.prototype.close;
+  Client.prototype.close = async () => new Promise<void>(() => {});
+  try {
+    const startedAt = Date.now();
+    await g.close();
+    assert.ok(Date.now() - startedAt < 4_000);
+  } finally {
+    Client.prototype.close = originalClose;
+    if (!dead(desktopPid)) {
+      process.kill(desktopPid, "SIGTERM");
+      await waitFor(() => dead(desktopPid), 2_000);
+    }
+  }
+});
 test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and real stdio tools", async () => {
   const g = await gateway();
   let client: Client | undefined;
@@ -882,6 +900,40 @@ await server.connect(new StdioServerTransport());
       backendAlive: boolean;
     };
     assert.equal(health.backendAlive, true);
+    const originalPing = Client.prototype.ping;
+    let releaseLateHeartbeat: (() => void) | undefined;
+    Client.prototype.ping = async () =>
+      new Promise((_, reject) => {
+        releaseLateHeartbeat = () => reject(new Error("late heartbeat completion"));
+      });
+    try {
+      const pendingCloseCall = client.callTool({
+        name: "controlled",
+        arguments: { hang: true },
+      });
+      const pendingCloseOutcome = pendingCloseCall.then(
+        () => "resolved",
+        () => "rejected",
+      );
+      await waitFor(() => releaseLateHeartbeat !== undefined);
+      const firstClose = g.close();
+      const secondClose = g.close();
+      const closed = await Promise.race([
+        Promise.all([firstClose, secondClose]).then(() => true),
+        shortDelay(1_000).then(() => false),
+      ]);
+      assert.equal(closed, true, "concurrent gateway close calls settle boundedly");
+      const requestOutcome = await Promise.race([
+        pendingCloseOutcome,
+        shortDelay(500).then(() => "timeout"),
+      ]);
+      assert.equal(requestOutcome, "rejected", "shutdown settles pending MCP calls promptly");
+      releaseLateHeartbeat?.();
+      await shortDelay(30);
+      assert.equal(backendFailures, 0, "late heartbeat cannot fail a closed gateway");
+    } finally {
+      Client.prototype.ping = originalPing;
+    }
   } finally {
     await client.close();
     await g.close();

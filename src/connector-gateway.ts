@@ -243,6 +243,18 @@ export const CONNECTOR_REQUEST_TIMEOUTS = {
   toolTotalMs: 180_000,
 } as const;
 
+function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    void promise
+      .catch(() => {})
+      .finally(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+  });
+}
+
 export async function startGateway(options: {
   root: string;
   port: number;
@@ -301,6 +313,9 @@ export async function startGateway(options: {
   let closing = false;
   let failureReported = false;
   let watchdog: ConnectorWatchdog | undefined;
+  let closingPromise: Promise<void> | undefined;
+  const activeRequests = new Set<AbortController>();
+  const forwardedRequests = new Set<Promise<unknown>>();
   const reportFailure = () => {
     if (closing || failureReported) return;
     failureReported = true;
@@ -522,31 +537,51 @@ export async function startGateway(options: {
                     CONNECTOR_REQUEST_TIMEOUTS.serviceMs,
                 };
             let result: Awaited<ReturnType<typeof local.request>>;
+            const requestController = new AbortController();
+            const abortFromClient = () =>
+              requestController.abort(extra.signal.reason);
+            if (extra.signal.aborted) abortFromClient();
+            else extra.signal.addEventListener("abort", abortFromClient, { once: true });
+            activeRequests.add(requestController);
+            let forwardedRequestPromise:
+              | Promise<Awaited<ReturnType<typeof local.request>>>
+              | undefined;
             try {
-              result = await local.request(forwardedRequest, ResultSchema, {
-                signal: extra.signal,
-                ...timeoutOptions,
-                ...(token !== undefined || toolCall
-                  ? {
-                      onprogress: (progress: {
-                        progress: number;
-                        total?: number | undefined;
-                        message?: string | undefined;
-                      }) => {
-                        if (token === undefined) return;
-                        writes.push(
-                          extra.sendNotification({
-                            method: "notifications/progress",
-                            params: { ...progress, progressToken: token },
-                          }),
-                        );
-                      },
-                    }
-                  : {}),
-              });
+              forwardedRequestPromise = local.request(
+                forwardedRequest,
+                ResultSchema,
+                {
+                  signal: requestController.signal,
+                  ...timeoutOptions,
+                  ...(token !== undefined || toolCall
+                    ? {
+                        onprogress: (progress: {
+                          progress: number;
+                          total?: number | undefined;
+                          message?: string | undefined;
+                        }) => {
+                          if (token === undefined) return;
+                          writes.push(
+                            extra.sendNotification({
+                              method: "notifications/progress",
+                              params: { ...progress, progressToken: token },
+                            }),
+                          );
+                        },
+                      }
+                    : {}),
+                },
+              );
+              forwardedRequests.add(forwardedRequestPromise);
+              result = await forwardedRequestPromise;
             } catch (error) {
               void Promise.allSettled(writes);
               throw error;
+            } finally {
+              activeRequests.delete(requestController);
+              extra.signal.removeEventListener("abort", abortFromClient);
+              if (forwardedRequestPromise)
+                forwardedRequests.delete(forwardedRequestPromise);
             }
             await Promise.all(writes);
 
@@ -691,16 +726,29 @@ export async function startGateway(options: {
     address: http.address() as AddressInfo,
     desktopPid: stdio.pid,
     setPublicUrl,
-    async close() {
+    close() {
+      if (closingPromise) return closingPromise;
       closing = true;
-      await watchdog?.stop();
-      await Promise.allSettled(
-        [...sessions.values()].map((s) => s.server.close()),
-      );
-      sessions.clear();
-      http.closeAllConnections();
-      await new Promise<void>((ok) => http.close(() => ok()));
-      await local.close();
+      closingPromise = (async () => {
+        await watchdog?.stop();
+        for (const request of activeRequests)
+          request.abort(new Error("Connector gateway is shutting down."));
+        await settleWithin(Promise.allSettled([...forwardedRequests]), 1_000);
+        await settleWithin(
+          Promise.allSettled(
+            [...sessions.values()].map((session) => session.server.close()),
+          ),
+          1_000,
+        );
+        sessions.clear();
+        http.closeAllConnections();
+        await settleWithin(
+          new Promise<void>((resolve) => http.close(() => resolve())),
+          1_000,
+        );
+        await settleWithin(local.close(), 1_500);
+      })();
+      return closingPromise;
     },
   };
 }
