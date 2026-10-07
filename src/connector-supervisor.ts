@@ -103,9 +103,9 @@ export async function runBoundedConnectorSupervisor<T>(options: {
         restartAttempt: failures,
         maxRestartAttempts,
         lastFailureAt: new Date(now()).toISOString(),
-        lastFailureComponent: "runtime",
-        lastExitCode: detail.exitCode,
-        lastExitSignal: detail.exitSignal,
+        lastFailureComponent: detail.component ?? "runtime",
+        ...(detail.exitCode !== undefined ? { lastExitCode: detail.exitCode } : {}),
+        ...(detail.exitSignal !== undefined ? { lastExitSignal: detail.exitSignal } : {}),
         lastFailureMessage: detail.message,
       });
       const continued = await sleepUntilRetry(
