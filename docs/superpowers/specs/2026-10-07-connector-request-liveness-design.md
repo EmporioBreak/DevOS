@@ -83,6 +83,8 @@ Reviewed upstream sources:
 - [`terminal-manager.ts`](https://github.com/wonderwhy-er/DesktopCommanderMCP/blob/main/src/terminal-manager.ts) — process/session lifecycle primitives.
 - [`test-process-wait-client-cap.js`](https://github.com/wonderwhy-er/DesktopCommanderMCP/blob/main/test/repro/test-process-wait-client-cap.js) — explicitly documents a desired process-wait cap and says the repro fails against current code; this is not evidence of a released production fix.
 
+Dependency review on 2026-10-07: the lockfile pin is `0.2.52`, and the npm `latest` dist-tag is also `0.2.52`. The [v0.2.44 release notes](https://github.com/wonderwhy-er/DesktopCommanderMCP/releases/tag/v0.2.44) already document an abortable three-minute cap for multi-minute tool calls under parallel load; the later pinned release includes that change. The [v0.2.52 release notes](https://github.com/wonderwhy-er/DesktopCommanderMCP/releases/tag/v0.2.52) describe remote readiness and pending-call recovery work, but do not claim to fix a hung local stdio process. The [upstream stdio initialization issue](https://github.com/wonderwhy-er/DesktopCommanderMCP/issues/796) reports a live/no-output hang on Windows with `0.2.47` and `0.2.51`; it does not establish that `0.2.52` fixes that issue or that the same defect occurs on macOS/Linux. No dependency change is justified.
+
 ## Constraints and exclusions
 
 - Keep `.env` as the secret source; ensure it remains ignored and untracked.
@@ -93,3 +95,21 @@ Reviewed upstream sources:
 ## Acceptance evidence
 
 Implementation is complete only after `npm ci`, `npm run build`, and full `npm test` pass; targeted gateway/supervisor/lifecycle/cancellation/concurrency/shutdown/ownership checks pass; connector smoke includes owned-process SIGSTOP recovery and post-recovery MCP request; process snapshots show no connector/DC/ngrok/runtime/runner or fixture orphans; and `.env` is ignored and untracked. Report any evidence unavailable, especially host smoke, rather than claiming it passed.
+
+## Verified process-level evidence
+
+The `SIGSTOP`/recovery integration test passed on macOS and on the user's Linux server using the real pinned Desktop Commander binary and the repository's ngrok fixture. It verifies the exact owned Desktop Commander PID remains alive and stopped with stdio open; the watchdog reports `desktop_commander` within 40 seconds; the runtime and backend PID are replaced; the old HTTP MCP session fails closed; and a newly authenticated session completes `tools/list`, `read_file`, and the stock `start_process` → `list_sessions` → `read_process_output` flow. It then injects exact-PID SIGKILL faults for Desktop Commander, the fixture ngrok process, and runtime; each reports the expected component, recovers, and accepts a new MCP `tools/list` request. Shutdown verifies the final fixture process tree is gone.
+
+The Linux host had no pre-existing DevOS connector, and no production `.env` or ngrok credential was copied there. The host run used an isolated temporary checkout and test ngrok executable, not a public ngrok tunnel. Therefore real public-tunnel registration/recovery on that host remains unverified; fake-ngrok supervisor recovery is covered locally and on the host. The pre-existing local production connector remained `healthy` and owned by its project throughout verification.
+
+Final verification on 2026-10-07: `npm ci` passed; `npm run build` passed on macOS and Linux; `npm test` passed with 285 tests, 0 failures, 0 cancelled, and 0 todo (114 seconds). The focused process-level recovery test passed in 103.7 seconds on macOS and 107.8 seconds on Linux. `git diff --check` passed; `.env` is ignored by `.gitignore` and is not tracked. Final process snapshots found no fixture connector, Desktop Commander, ngrok, runtime, or runner processes and no fixture temp directories. The only remaining local connector processes were the pre-existing project-owned runner PID 72767 and runtime PID 84064 with its Desktop Commander child PID 84072; project state remained `healthy`. No DevOS connector was running on the Linux server before or after the isolated host smoke.
+
+| Fault injection | macOS | Linux host | Evidence |
+|---|---|---|---|
+| Owned Desktop Commander SIGSTOP with stdio open | PASS | PASS | `desktop_commander` within 40 s; exact child replaced; new MCP session succeeds |
+| Desktop Commander SIGKILL / stdio EOF | PASS | PASS | Correct component; old runtime, child, ngrok, and ngrok child exit; new MCP session succeeds |
+| ngrok process SIGKILL | PASS (fixture) | PASS (fixture) | `ngrok` component; recovery and new MCP `tools/list` succeed |
+| Runtime SIGKILL | PASS | PASS | `runtime` component; recovery, all previous generation PIDs exit, new MCP `tools/list` succeeds |
+| `start_process` session and output polling | PASS | PASS | Start returns boundedly; `list_sessions` and `read_process_output` observe the running child; health remains alive |
+| Request timeout/cancellation, concurrent calls, shutdown, restart budget | PASS | covered by local suite | Full suite and focused gateway/supervisor tests |
+| Live public ngrok tunnel on Linux host | NOT RUN | NOT RUN | No connector or production credential was present; no `.env` was copied |
