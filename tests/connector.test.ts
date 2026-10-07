@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:net";
 import test from "node:test";
 import { parseCliArgs } from "../src/cli.js";
 import * as connectorModule from "../src/connector.js";
-import { adaptChatGptToolCall } from "../src/connector-gateway.js";
+import {
+  adaptChatGptToolCall,
+  CONNECTOR_REQUEST_TIMEOUTS,
+} from "../src/connector-gateway.js";
 
 test("provider-neutral CLI rejects obsolete tunnel IDs and secret flags", () => {
   for (const action of ["setup", "doctor", "run", "start", "stop", "status"])
@@ -22,6 +26,13 @@ test("connector exports a loopback gateway instead of a provider runtime", () =>
     "function",
   );
   assert.equal("TUNNEL_VERSION" in connectorModule, false);
+});
+test("connector request deadline defaults stay below the client call ceiling", () => {
+  assert.deepEqual(CONNECTOR_REQUEST_TIMEOUTS, {
+    serviceMs: 60_000,
+    toolIdleMs: 60_000,
+    toolTotalMs: 180_000,
+  });
 });
 
 test("ChatGPT compatibility adapter restores rich Desktop Commander arguments", () => {
@@ -102,6 +113,7 @@ import { join } from "node:path";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+const shortDelay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const secret = "synthetic-owner-secret-" + randomBytes(32).toString("hex");
 const issuer = "https://connector.example";
 async function gateway() {
@@ -116,12 +128,244 @@ async function gateway() {
   });
 }
 import { oauthToken } from "./connector-auth-fixture.js";
+test("gateway does not listen if the immediate backend ping fails", async () => {
+  const probe = createServer();
+  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+
+  const originalPing = Client.prototype.ping;
+  Client.prototype.ping = async () => {
+    throw new Error("controlled initial ping failure");
+  };
+  let unexpectedlyStarted: Awaited<ReturnType<typeof connectorModule.startGateway>> | undefined;
+  try {
+    await assert.rejects(
+      connectorModule
+        .startGateway({ root: process.cwd(), port, ownerSecret: secret })
+        .then((gateway) => {
+          unexpectedlyStarted = gateway;
+          throw new Error("gateway resolved before proving backend liveness");
+        }),
+      (error: Error & { component?: string }) =>
+        error.component === "desktop_commander",
+    );
+    await assert.rejects(
+      fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(200),
+      }),
+    );
+  } finally {
+    await unexpectedlyStarted?.close();
+    Client.prototype.ping = originalPing;
+  }
+});
+async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "initial-ping") {
+  const originalConnect = Client.prototype.connect;
+  const originalPing = Client.prototype.ping;
+  let transportToClose: Parameters<typeof originalConnect>[0] | undefined;
+  let transportCloseForCleanup: (() => Promise<void>) | undefined;
+  let transportPid: number | undefined;
+  Client.prototype.connect = async function (transport, options) {
+    await originalConnect.call(this, transport, options);
+    transportToClose = transport;
+    transportPid = (transport as unknown as { pid?: number }).pid;
+    const closeTransport = transport.close.bind(transport);
+    transportCloseForCleanup = closeTransport;
+    transport.close = async () => {
+      void closeTransport();
+      await new Promise<void>(() => {});
+    };
+    if (failurePoint === "connect") throw new Error("controlled connect failure");
+  };
+  Client.prototype.ping = async () => {
+    if (failurePoint === "initial-ping") throw new Error("controlled initial ping failure");
+    return {};
+  };
+  try {
+    const startedAt = Date.now();
+    const outcome = await Promise.race([
+      connectorModule.startGateway({ root: process.cwd(), port: 0, ownerSecret: secret })
+        .then(async (gateway) => {
+          await gateway.close();
+          return "resolved";
+        }, () => "rejected"),
+      shortDelay(2_500).then(() => "hung"),
+    ]);
+    assert.equal(outcome, "rejected", `${failurePoint} cleanup must not wait forever`);
+    assert.ok(Date.now() - startedAt < 2_500, "startup cleanup must have a fixed upper bound");
+  } finally {
+    Client.prototype.connect = originalConnect;
+    Client.prototype.ping = originalPing;
+    if (transportToClose) {
+      transportToClose.close = transportCloseForCleanup!;
+      await transportCloseForCleanup!().catch(() => {});
+    }
+    if (transportPid) {
+      const pid = transportPid;
+      await waitFor(() => dead(pid));
+    }
+  }
+}
+test("connect failure uses bounded stdio cleanup", async () => {
+  await assertStartupTransportCloseIsBounded("connect");
+});
+test("initial ping failure uses bounded stdio cleanup", async () => {
+  await assertStartupTransportCloseIsBounded("initial-ping");
+});
+test("HTTP listen failure uses bounded local-client cleanup", async () => {
+  const occupied = createServer();
+  await new Promise<void>((resolve) => occupied.listen(0, "127.0.0.1", resolve));
+  const port = (occupied.address() as { port: number }).port;
+  const originalClose = Client.prototype.close;
+  Client.prototype.close = async function (...args) {
+    void originalClose.apply(this, args);
+    await new Promise<void>(() => {});
+  };
+  try {
+    const startedAt = Date.now();
+    await assert.rejects(
+      connectorModule.startGateway({ root: process.cwd(), port, ownerSecret: secret }),
+      /Loopback gateway port unavailable/,
+    );
+    assert.ok(Date.now() - startedAt < 2_500, "HTTP startup cleanup must have a fixed upper bound");
+  } finally {
+    Client.prototype.close = originalClose;
+    await new Promise<void>((resolve) => occupied.close(() => resolve()));
+  }
+});
+test("health reports suspect after a missed heartbeat but waits for the third miss to fail", async () => {
+  const originalPing = Client.prototype.ping;
+  let pingCalls = 0;
+  const failures: string[] = [];
+  Client.prototype.ping = async () => {
+    pingCalls++;
+    if (pingCalls > 1) throw new Error("controlled heartbeat miss");
+    return {};
+  };
+  let g: Awaited<ReturnType<typeof connectorModule.startGateway>> | undefined;
+  try {
+    g = await connectorModule.startGateway({
+      root: process.cwd(),
+      port: 0,
+      ownerSecret: secret,
+      timing: {
+        heartbeatIntervalMs: 10,
+        heartbeatTimeoutMs: 10,
+        heartbeatFailureThreshold: 3,
+      },
+      onFailure: (component) => failures.push(component),
+    });
+    const base = `http://127.0.0.1:${g.address.port}`;
+    const deadline = Date.now() + 1_000;
+    let health: { ready: boolean; backendAlive: boolean; backendState: string } | undefined;
+    while (Date.now() < deadline) {
+      if (pingCalls >= 2) {
+        health = (await (await fetch(base + "/health")).json()) as typeof health;
+        if (health?.backendState === "suspect") break;
+      }
+      await shortDelay(2);
+    }
+    assert.deepEqual(health && {
+      ready: health.ready,
+      backendAlive: health.backendAlive,
+      backendState: health.backendState,
+    }, { ready: false, backendAlive: false, backendState: "suspect" });
+    assert.deepEqual(failures, [], "recovery waits for the third consecutive miss");
+  } finally {
+    await g?.close();
+    Client.prototype.ping = originalPing;
+  }
+});
+test("heartbeat failure racing local transport close reports one backend failure", async () => {
+  const originalPing = Client.prototype.ping;
+  let g: Awaited<ReturnType<typeof connectorModule.startGateway>> | undefined;
+  let pingCalls = 0;
+  const failures: string[] = [];
+  Client.prototype.ping = async () => {
+    pingCalls++;
+    if (pingCalls === 1) return {};
+    if (pingCalls === 4 && g?.desktopPid) {
+      try {
+        process.kill(g.desktopPid, "SIGKILL");
+      } catch {}
+    }
+    throw new Error("controlled heartbeat miss");
+  };
+  try {
+    g = await connectorModule.startGateway({
+      root: process.cwd(),
+      port: 0,
+      ownerSecret: secret,
+      timing: {
+        heartbeatIntervalMs: 10,
+        heartbeatTimeoutMs: 10,
+        heartbeatFailureThreshold: 3,
+      },
+      onFailure: (component) => failures.push(component),
+    });
+    const desktopPid = g.desktopPid;
+    assert.ok(desktopPid);
+    await waitFor(() => failures.length > 0);
+    assert.deepEqual(failures, ["desktop_commander"]);
+    await waitFor(() => dead(desktopPid));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.deepEqual(failures, ["desktop_commander"]);
+  } finally {
+    await g?.close();
+    Client.prototype.ping = originalPing;
+  }
+});
+test("gateway close stays bounded when the local MCP client close never resolves", async () => {
+  const g = await gateway();
+  const desktopPid = g.desktopPid;
+  assert.ok(desktopPid);
+  const originalClose = Client.prototype.close;
+  Client.prototype.close = async () => new Promise<void>(() => {});
+  try {
+    const startedAt = Date.now();
+    await g.close();
+    assert.ok(Date.now() - startedAt < 4_000);
+  } finally {
+    Client.prototype.close = originalClose;
+    if (!dead(desktopPid)) {
+      process.kill(desktopPid, "SIGTERM");
+      await waitFor(() => dead(desktopPid), 2_000);
+    }
+  }
+});
 test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and real stdio tools", async () => {
   const g = await gateway();
   let client: Client | undefined;
   try {
     assert.equal(g.address.address, "127.0.0.1");
     const base = "http://127.0.0.1:" + g.address.port;
+    const health = (await (await fetch(base + "/health")).json()) as {
+      ready: boolean;
+      gatewayReady: boolean;
+      oauthReady: boolean;
+      backendAlive: boolean;
+      backendState: string;
+      lastBackendOkAt: string;
+    };
+    assert.deepEqual(
+      {
+        ready: health.ready,
+        gatewayReady: health.gatewayReady,
+        oauthReady: health.oauthReady,
+        backendAlive: health.backendAlive,
+        backendState: health.backendState,
+      },
+      {
+        ready: true,
+        gatewayReady: true,
+        oauthReady: true,
+        backendAlive: true,
+        backendState: "alive",
+      },
+    );
+    assert.ok(Number.isFinite(Date.parse(health.lastBackendOkAt)));
+    assert.doesNotMatch(JSON.stringify(health), /pid|commandLine|secret|path/i);
     for (const method of ["GET", "POST", "DELETE"]) {
       const res = await fetch(base + "/mcp", {
         method,
@@ -398,6 +642,7 @@ import {
   ready,
   waitFor,
   dead,
+  directDesktopCommanderChild,
 } from "./connector-process-fixture.js";
 test("fake ngrok launch, HTTPS discovery, isolated secrets, duplicate and foreground cleanup", async () => {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -506,8 +751,48 @@ test("missing auth/runtime, stale version, integrity and early ngrok failure red
       await readFile(join(f.root, ".devos/connector/state.json"), "utf8"),
     );
     assert.equal(failedState.lifecycle, "terminal_failed");
+    assert.equal(failedState.restartAttempt, 5);
     assert.equal(failedState.lastFailureComponent, "ngrok");
     assert.ok(!JSON.stringify(failedState).includes(fixtureSecret));
+    assert.match((await start(f.root, "status").done).output, /Connector terminal_failed/);
+
+    const failedScript = await readFile(f.binary, "utf8");
+    const recoveredScript = failedScript.replace(
+      `if("fail"==='fail'){process.exit(2);}`,
+      `if("normal"==='fail'){process.exit(2);}`,
+    );
+    assert.notEqual(recoveredScript, failedScript, "fixture failure mode can be cleared for manual recovery");
+    await writeFile(f.binary, recoveredScript);
+    const pinnedBinary = JSON.parse(await readFile(f.binary + ".json", "utf8")) as { version: string };
+    await writeFile(
+      f.binary + ".json",
+      JSON.stringify({
+        version: pinnedBinary.version,
+        sha256: createHash("sha256").update(recoveredScript).digest("hex"),
+      }),
+    );
+    const manualRestart = start(f.root, "start");
+    await waitFor(() => manualRestart.output().includes("DevOS background ready:"), 45_000);
+    assert.equal((await manualRestart.done).code, 0);
+    const runningState = JSON.parse(
+      await readFile(join(f.root, ".devos/connector/state.json"), "utf8"),
+    ) as { pid: number; lifecycle: string; restartAttempt: number };
+    assert.equal(runningState.lifecycle, "healthy");
+    assert.equal(runningState.restartAttempt, 0);
+    const background = JSON.parse(
+      await readFile(join(f.root, ".devos/connector/background.json"), "utf8"),
+    ) as { pid: number };
+    const desktopPid = directDesktopCommanderChild(runningState.pid);
+    assert.ok(desktopPid);
+    const ngrokPid = (JSON.parse(await readFile(join(f.root, "observed.json"), "utf8")) as { pid: number }).pid;
+    const ngrokChildPid = Number(await readFile(join(f.root, "child.pid"), "utf8"));
+    assert.equal((await start(f.root, "stop").done).code, 0);
+    await waitFor(() => dead(background.pid));
+    await waitFor(() => dead(runningState.pid));
+    await waitFor(() => dead(desktopPid!));
+    await waitFor(() => dead(ngrokPid));
+    await waitFor(() => dead(ngrokChildPid));
+
     await writeFile(
       join(f.root, ".devos/connector/config.json"),
       JSON.stringify({ password: secret }),
@@ -566,6 +851,7 @@ test("config accepts only non-secret ports and exact local Desktop Commander sta
 
 test("stdio proxy preserves streaming progress tokens, tool errors and cancellation with secret-free child env", async () => {
   const root = await mkdtemp(join(tmpdir(), "devos stdio "));
+  let backendFailures = 0;
   const entry = join(root, "node_modules/@wonderwhy-er/desktop-commander/dist");
   await mkdir(entry, { recursive: true });
   await writeFile(
@@ -581,9 +867,15 @@ import { StdioServerTransport } from ${JSON.stringify(import.meta.resolve("@mode
 import fs from 'node:fs';
 fs.writeFileSync(${JSON.stringify(join(root, "env.json"))},JSON.stringify(process.env));
 const server=new Server({name:'controlled-stdio',version:'1'},{capabilities:{tools:{}}});
-server.setRequestHandler(ListToolsRequestSchema,()=>({tools:[{name:'controlled',inputSchema:{type:'object'}}]}));
+server.setRequestHandler(ListToolsRequestSchema,async(_req,extra)=>{
+  if(fs.existsSync(${JSON.stringify(join(root, "hang-list"))})) await new Promise(ok=>extra.signal.addEventListener('abort',()=>{fs.writeFileSync(${JSON.stringify(join(root, "list-cancelled"))},'yes');ok();},{once:true}));
+  return {tools:[{name:'controlled',inputSchema:{type:'object'}}]};
+});
 server.setRequestHandler(CallToolRequestSchema,async(req,extra)=>{
   if(req.params.arguments?.cancel){await new Promise(ok=>{extra.signal.addEventListener('abort',()=>{fs.writeFileSync(${JSON.stringify(join(root, "cancelled"))},'yes');ok();},{once:true});});}
+  if(req.params.arguments?.hang){await new Promise(ok=>{extra.signal.addEventListener('abort',()=>{fs.writeFileSync(${JSON.stringify(join(root, "call-cancelled"))},'yes');ok();},{once:true});});}
+  if(req.params.arguments?.slowProgress){for(let i=0;i<2;i++){await new Promise(ok=>setTimeout(ok,30));await extra.sendNotification({method:'notifications/progress',params:{progressToken:req.params._meta?.progressToken,progress:i+1,total:2}});}}
+  if(req.params.arguments?.progressForever){while(!extra.signal.aborted){await new Promise(ok=>setTimeout(ok,20));if(!extra.signal.aborted)await extra.sendNotification({method:'notifications/progress',params:{progressToken:req.params._meta?.progressToken,progress:1}});}}
   if(req.params._meta?.progressToken!==undefined) await extra.sendNotification({method:'notifications/progress',params:{progressToken:req.params._meta.progressToken,progress:1,total:2}});
   return {isError:!!req.params.arguments?.error,content:[{type:'text',text:'controlled tool result'}]};
 });
@@ -606,6 +898,13 @@ await server.connect(new StdioServerTransport());
         port: 0,
         ownerSecret: secret,
         publicUrl: issuer,
+        timing: {
+          heartbeatIntervalMs: 10,
+          heartbeatTimeoutMs: 10,
+          heartbeatFailureThreshold: 3,
+        },
+        requestTimeouts: { serviceMs: 45, toolIdleMs: 45, toolTotalMs: 120 },
+        onFailure: () => backendFailures++,
       });
     } finally {
       for (const key of keys) {
@@ -665,6 +964,134 @@ await server.connect(new StdioServerTransport());
         return false;
       }
     });
+    const afterCancel = await client.callTool({ name: "controlled", arguments: {} });
+    assert.match(JSON.stringify(afterCancel), /controlled tool result/);
+
+    const concurrentAbort = new AbortController();
+    const pending = client.callTool(
+      { name: "controlled", arguments: { hang: true } },
+      undefined,
+      { signal: concurrentAbort.signal },
+    );
+    const quick = await client.callTool({ name: "controlled", arguments: {} });
+    assert.match(JSON.stringify(quick), /controlled tool result/);
+    concurrentAbort.abort();
+    await assert.rejects(pending);
+    await waitFor(async () => {
+      try {
+        await readFile(join(root, "call-cancelled"));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    await rm(join(root, "call-cancelled"), { force: true });
+
+    await writeFile(join(root, "hang-list"), "yes");
+    const listAbort = new AbortController();
+    const listResult = client.listTools(undefined, { signal: listAbort.signal });
+    const listSettled = await Promise.race([
+      listResult.then(() => true, () => true),
+      shortDelay(250).then(() => false),
+    ]);
+    if (!listSettled) listAbort.abort();
+    assert.equal(listSettled, true, "service request obeys its short test deadline");
+    await rm(join(root, "hang-list"), { force: true });
+    await waitFor(async () => {
+      try {
+        await readFile(join(root, "list-cancelled"));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const concurrentLists = await Promise.all([
+      client.listTools(),
+      client.listTools(),
+    ]);
+    assert.ok(concurrentLists.every((list) => list.tools.length === 1));
+
+    let progressCount = 0;
+    const slowProgress = await client.callTool(
+      { name: "controlled", arguments: { slowProgress: true } },
+      undefined,
+      { onprogress: () => progressCount++ },
+    );
+    assert.match(JSON.stringify(slowProgress), /controlled tool result/);
+    assert.ok(progressCount >= 2, "progress keeps the idle deadline alive");
+
+    const idleTimed = client.callTool({
+      name: "controlled",
+      arguments: { hang: true },
+    });
+    const quickDuringTimeout = await client.callTool({
+      name: "controlled",
+      arguments: {},
+    });
+    assert.match(JSON.stringify(quickDuringTimeout), /controlled tool result/);
+    await assert.rejects(idleTimed);
+    await waitFor(async () => {
+      try {
+        await readFile(join(root, "call-cancelled"));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+
+    const forever = new AbortController();
+    const foreverResult = client.callTool(
+      { name: "controlled", arguments: { progressForever: true } },
+      undefined,
+      { signal: forever.signal, onprogress: () => {} },
+    );
+    const totalDeadline = await Promise.race([
+      foreverResult.then(() => true, () => true),
+      shortDelay(250).then(() => false),
+    ]);
+    if (!totalDeadline) forever.abort();
+    assert.equal(totalDeadline, true, "continuous progress cannot exceed absolute deadline");
+    const afterTimeout = await client.callTool({ name: "controlled", arguments: {} });
+    assert.match(JSON.stringify(afterTimeout), /controlled tool result/);
+    assert.equal(backendFailures, 0, "request-local failures do not fail the backend");
+    const health = (await (await fetch(base + "/health")).json()) as {
+      backendAlive: boolean;
+    };
+    assert.equal(health.backendAlive, true);
+    const originalPing = Client.prototype.ping;
+    let releaseLateHeartbeat: (() => void) | undefined;
+    Client.prototype.ping = async () =>
+      new Promise((_, reject) => {
+        releaseLateHeartbeat = () => reject(new Error("late heartbeat completion"));
+      });
+    try {
+      const pendingCloseCall = client.callTool({
+        name: "controlled",
+        arguments: { hang: true },
+      });
+      const pendingCloseOutcome = pendingCloseCall.then(
+        () => "resolved",
+        () => "rejected",
+      );
+      await waitFor(() => releaseLateHeartbeat !== undefined);
+      const firstClose = g.close();
+      const secondClose = g.close();
+      const closed = await Promise.race([
+        Promise.all([firstClose, secondClose]).then(() => true),
+        shortDelay(1_000).then(() => false),
+      ]);
+      assert.equal(closed, true, "concurrent gateway close calls settle boundedly");
+      const requestOutcome = await Promise.race([
+        pendingCloseOutcome,
+        shortDelay(500).then(() => "timeout"),
+      ]);
+      assert.equal(requestOutcome, "rejected", "shutdown settles pending MCP calls promptly");
+      releaseLateHeartbeat?.();
+      await shortDelay(30);
+      assert.equal(backendFailures, 0, "late heartbeat cannot fail a closed gateway");
+    } finally {
+      Client.prototype.ping = originalPing;
+    }
   } finally {
     await client.close();
     await g.close();
