@@ -690,6 +690,7 @@ export async function startGateway(options: {
   return {
     address: http.address() as AddressInfo,
     desktopPid: desktop.snapshot().pid,
+    desktopSnapshot: () => desktop.snapshot(),
     setPublicUrl,
     close() {
       if (closingPromise) return closingPromise;
