@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createConnection } from "node:net";
@@ -178,6 +178,53 @@ test("post-submit ambiguity is cached for the same turn and never replays the pr
     assert.equal(calls, 1);
   } finally {
     await closeSharedBrowserRuntime(root, task);
+    await rm(paths.socket, { force: true });
+    await rm(paths.metadata, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("failed graceful runtime close preserves ownership metadata so cleanup can be retried", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-close-retry-"));
+  const task = { repo: "owner/repo", issue: 78 };
+  const paths = browserRuntimePaths(root, task.repo, task.issue);
+  let closes = 0;
+  let failClose = true;
+  const executor = {
+    async run() { return { text: "unused" }; },
+    async close() {
+      closes++;
+      if (failClose) throw new Error("simulated executor close failure");
+    },
+  } as unknown as ChatGptBrowserExecutor;
+  try {
+    await startSharedBrowserServer(paths.socket, paths.metadata, executor);
+    const socket = await new Promise<ReturnType<typeof createConnection>>((resolve, reject) => {
+      const client = createConnection(paths.socket);
+      client.once("connect", () => resolve(client));
+      client.once("error", reject);
+    });
+    const response = new Promise<string>((resolve, reject) => {
+      let buffer = "";
+      socket.on("data", chunk => {
+        buffer += chunk.toString("utf8");
+        const end = buffer.indexOf("\n");
+        if (end >= 0) resolve(buffer.slice(0, end));
+      });
+      socket.once("error", reject);
+    });
+    socket.write('{"type":"close"}\n');
+    const message = JSON.parse(await response) as { type: string; message?: string };
+    socket.destroy();
+
+    assert.equal(message.type, "error");
+    assert.match(message.message ?? "", /simulated executor close failure/);
+    assert.match(await readFile(paths.metadata, "utf8"), /"pid"/);
+
+    failClose = false;
+    await closeSharedBrowserRuntime(root, task);
+    assert.equal(closes, 2);
+  } finally {
     await rm(paths.socket, { force: true });
     await rm(paths.metadata, { force: true });
     await rm(root, { recursive: true, force: true });
