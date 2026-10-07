@@ -3,8 +3,6 @@ import { rateLimit } from "express-rate-limit";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
@@ -13,16 +11,12 @@ import {
 } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import {
-  ResultSchema,
   isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ConnectorAuth } from "./connector-auth.js";
-import { desktopCommand, safeEnvironment } from "./connector.js";
-import {
-  createConnectorWatchdog,
-  type ConnectorWatchdog,
-} from "./connector-watchdog.js";
+import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./desktop-commander-integration.js";
+import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
 
 export function publicIdentity(value: string): URL {
   try {
@@ -263,8 +257,15 @@ export async function startGateway(options: {
   oauthClientsPath?: string | null;
   oauthStatePath?: string | null;
   onFailure?: (component: "desktop_commander") => void;
+  onDiagnostic?: (record: {
+    reason: string;
+    runtimePid: number;
+    publicSessionCount: number;
+    activeForwardedRequestCount: number;
+    snapshot: DesktopCommanderSnapshot;
+  }) => void | Promise<void>;
   timing?: {
-    initialPingTimeoutMs?: number;
+    initialReadinessTimeoutMs?: number;
     heartbeatIntervalMs?: number;
     heartbeatTimeoutMs?: number;
     heartbeatFailureThreshold?: number;
@@ -294,74 +295,12 @@ export async function startGateway(options: {
     res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
     next();
   });
-  const command = desktopCommand(options.root);
-  const stdio = new StdioClientTransport({
-    command: command.file,
-    args: command.args,
-    env: {
-      ...safeEnvironment(process.env),
-      DESKTOP_COMMANDER_DISABLE_TELEMETRY: "1",
-    } as Record<string, string>,
-    stderr: "ignore",
-    cwd: options.root,
-  });
-  const local = new Client(
-    { name: "devos-gateway", version: "1" },
-    { capabilities: {} },
-  );
-  local.onerror = () => {};
   let closing = false;
   let failureReported = false;
-  let watchdog: ConnectorWatchdog | undefined;
   let closingPromise: Promise<void> | undefined;
   const activeRequests = new Set<AbortController>();
   const forwardedRequests = new Set<Promise<unknown>>();
-  const reportFailure = () => {
-    if (closing || failureReported) return;
-    failureReported = true;
-    options.onFailure?.("desktop_commander");
-  };
-  local.onclose = () => {
-    reportFailure();
-  };
-  try {
-    await local.connect(stdio, { timeout: 15_000 });
-  } catch {
-    closing = true;
-    await settleWithin(stdio.close(), 1_500);
-    throw Object.assign(
-      new Error("Local Desktop Commander initialization failed."),
-      { component: "desktop_commander" },
-    );
-  }
-  let initialSuccessAt: number;
-  try {
-    await local.ping({ timeout: options.timing?.initialPingTimeoutMs ?? 5_000 });
-    initialSuccessAt = Date.now();
-  } catch {
-    closing = true;
-    await settleWithin(stdio.close(), 1_500);
-    throw Object.assign(
-      new Error("Desktop Commander initial liveness ping failed."),
-      { component: "desktop_commander" },
-    );
-  }
-  watchdog = createConnectorWatchdog({
-    ping: async (timeoutMs) => {
-      await local.ping({ timeout: timeoutMs });
-    },
-    onFailure: reportFailure,
-    initialSuccessAt,
-    ...(options.timing?.heartbeatIntervalMs !== undefined
-      ? { intervalMs: options.timing.heartbeatIntervalMs }
-      : {}),
-    ...(options.timing?.heartbeatTimeoutMs !== undefined
-      ? { timeoutMs: options.timing.heartbeatTimeoutMs }
-      : {}),
-    ...(options.timing?.heartbeatFailureThreshold !== undefined
-      ? { failureThreshold: options.timing.heartbeatFailureThreshold }
-      : {}),
-  });
+  const diagnosticWrites = new Set<Promise<unknown>>();
   const sessions = new Map<
     string,
     {
@@ -370,11 +309,37 @@ export async function startGateway(options: {
       clientId: string;
     }
   >();
-  local.fallbackNotificationHandler = async (notification) => {
-    await Promise.allSettled(
-      [...sessions.values()].map((s) => s.server.notification(notification)),
-    );
+  const reportFailure = () => {
+    if (closing || failureReported) return;
+    failureReported = true;
+    options.onFailure?.("desktop_commander");
   };
+  let desktop: DesktopCommanderIntegration;
+  desktop = new DesktopCommanderIntegration({
+    root: options.root,
+    ...(options.timing ? { timing: options.timing } : {}),
+    onDisconnect: reportFailure,
+    onDiagnostic: (event) => {
+      if (event.method !== "disconnect") return;
+      const write = Promise.resolve(options.onDiagnostic?.({
+        reason: event.message,
+        runtimePid: process.pid,
+        publicSessionCount: sessions.size,
+        activeForwardedRequestCount: forwardedRequests.size,
+        snapshot: event.snapshot,
+      })).catch(() => {}).finally(() => diagnosticWrites.delete(write));
+      diagnosticWrites.add(write);
+    },
+  });
+  try {
+    await desktop.initialize();
+  } catch {
+    closing = true;
+    throw Object.assign(
+      new Error("Local Desktop Commander initialization or readiness proof failed."),
+      { component: "desktop_commander" },
+    );
+  }
   let authRouter: express.RequestHandler | undefined;
   let bearer: express.RequestHandler | undefined;
   let provider: ConnectorAuth | undefined;
@@ -408,8 +373,8 @@ export async function startGateway(options: {
   }
   if (identity) setPublicUrl(identity.href);
   app.get("/health", (_req, res) => {
-    const backend = watchdog?.snapshot();
-    const gatewayReady = !!backend;
+    const backend = desktop.snapshot();
+    const gatewayReady = desktop.ready;
     const backendAlive = backend?.state === "alive";
     const oauthReady = !!provider;
     res.json({
@@ -417,8 +382,8 @@ export async function startGateway(options: {
       gatewayReady,
       oauthReady,
       backendAlive,
-      backendState: backend?.state ?? "unknown",
-      lastBackendOkAt: backend?.lastBackendOkAt ?? null,
+      backendState: backend.state,
+      lastBackendOkAt: backend.lastBackendOkAt ?? null,
     });
   });
 
@@ -496,15 +461,16 @@ export async function startGateway(options: {
             res.status(503).json({ error: "session_capacity" });
             return;
           }
+          const localInfo = desktop.getServerInfo();
           const server = new Server(
-            local.getServerVersion() ?? {
+            localInfo.version ?? {
               name: "desktop-commander",
               version: "0.2.52",
             },
             {
-              capabilities: local.getServerCapabilities() ?? {},
-              ...(local.getInstructions()
-                ? { instructions: local.getInstructions()! }
+              capabilities: localInfo.capabilities ?? {},
+              ...(localInfo.instructions
+                ? { instructions: localInfo.instructions }
                 : {}),
             },
           );
@@ -536,42 +502,57 @@ export async function startGateway(options: {
                     options.requestTimeouts?.serviceMs ??
                     CONNECTOR_REQUEST_TIMEOUTS.serviceMs,
                 };
-            let result: Awaited<ReturnType<typeof local.request>>;
+            let result: any;
             const requestController = new AbortController();
             const abortFromClient = () =>
               requestController.abort(extra.signal.reason);
             if (extra.signal.aborted) abortFromClient();
             else extra.signal.addEventListener("abort", abortFromClient, { once: true });
             activeRequests.add(requestController);
-            let forwardedRequestPromise:
-              | Promise<Awaited<ReturnType<typeof local.request>>>
-              | undefined;
+            let forwardedRequestPromise: Promise<any> | undefined;
             try {
-              forwardedRequestPromise = local.request(
-                forwardedRequest,
-                ResultSchema,
-                {
-                  signal: requestController.signal,
-                  ...timeoutOptions,
-                  ...(token !== undefined || toolCall
-                    ? {
-                        onprogress: (progress: {
-                          progress: number;
-                          total?: number | undefined;
-                          message?: string | undefined;
-                        }) => {
-                          if (token === undefined) return;
-                          writes.push(
-                            extra.sendNotification({
-                              method: "notifications/progress",
-                              params: { ...progress, progressToken: token },
-                            }),
-                          );
-                        },
-                      }
-                    : {}),
-                },
-              );
+              const forwardOptions = {
+                signal: requestController.signal,
+                ...timeoutOptions,
+                ...(token !== undefined || toolCall
+                  ? {
+                      onprogress: (progress: {
+                        progress: number;
+                        total?: number | undefined;
+                        message?: string | undefined;
+                      }) => {
+                        if (token === undefined) return;
+                        writes.push(
+                          extra.sendNotification({
+                            method: "notifications/progress",
+                            params: { ...progress, progressToken: token },
+                          }),
+                        );
+                      },
+                    }
+                  : {}),
+              };
+              if (forwardedRequest.method === "tools/list") {
+                forwardedRequestPromise = desktop.listTools(forwardOptions);
+              } else if (forwardedRequest.method === "tools/call") {
+                if (!forwardedRequest.params || typeof forwardedRequest.params.name !== "string")
+                  throw new Error("Invalid tools/call request.");
+                forwardedRequestPromise = desktop.callTool(
+                  forwardedRequest.params as Parameters<DesktopCommanderIntegration["callTool"]>[0],
+                  forwardOptions,
+                );
+              } else if (forwardedRequest.method === "ping") {
+                forwardedRequestPromise = desktop.ping(
+                  options.requestTimeouts?.serviceMs ??
+                    CONNECTOR_REQUEST_TIMEOUTS.serviceMs,
+                  forwardOptions,
+                );
+              } else {
+                forwardedRequestPromise = desktop.request(
+                  forwardedRequest,
+                  forwardOptions,
+                );
+              }
               forwardedRequests.add(forwardedRequestPromise);
               result = await forwardedRequestPromise;
             } catch (error) {
@@ -675,7 +656,7 @@ export async function startGateway(options: {
             return result;
           };
           server.fallbackNotificationHandler = async (notification) => {
-            await local.notification(notification);
+            await desktop.notification(notification);
           };
           const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: randomUUID,
@@ -719,18 +700,23 @@ export async function startGateway(options: {
     });
   } catch {
     closing = true;
-    await settleWithin(local.close(), 1_500);
+    await desktop.close();
     throw new Error("Loopback gateway port unavailable.");
   }
   return {
     address: http.address() as AddressInfo,
-    desktopPid: stdio.pid,
+    desktopPid: desktop.snapshot().pid,
+    desktopSnapshot: () => ({
+      ...desktop.snapshot(),
+      runtimePid: process.pid,
+      publicSessionCount: sessions.size,
+      activeForwardedRequestCount: forwardedRequests.size,
+    }),
     setPublicUrl,
     close() {
       if (closingPromise) return closingPromise;
       closing = true;
       closingPromise = (async () => {
-        await watchdog?.stop();
         for (const request of activeRequests)
           request.abort(new Error("Connector gateway is shutting down."));
         await settleWithin(Promise.allSettled([...forwardedRequests]), 1_000);
@@ -746,7 +732,8 @@ export async function startGateway(options: {
           new Promise<void>((resolve) => http.close(() => resolve())),
           1_000,
         );
-        await settleWithin(local.close(), 1_500);
+        await desktop.close();
+        await settleWithin(Promise.allSettled([...diagnosticWrites]), 1_000);
       })();
       return closingPromise;
     },

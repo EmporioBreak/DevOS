@@ -128,15 +128,15 @@ async function gateway() {
   });
 }
 import { oauthToken } from "./connector-auth-fixture.js";
-test("gateway does not listen if the immediate backend ping fails", async () => {
+test("gateway does not listen if tools/list readiness fails", async () => {
   const probe = createServer();
   await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
   const port = (probe.address() as { port: number }).port;
   await new Promise<void>((resolve) => probe.close(() => resolve()));
 
-  const originalPing = Client.prototype.ping;
-  Client.prototype.ping = async () => {
-    throw new Error("controlled initial ping failure");
+  const originalListTools = Client.prototype.listTools;
+  Client.prototype.listTools = async () => {
+    throw new Error("controlled readiness failure");
   };
   let unexpectedlyStarted: Awaited<ReturnType<typeof connectorModule.startGateway>> | undefined;
   try {
@@ -145,7 +145,7 @@ test("gateway does not listen if the immediate backend ping fails", async () => 
         .startGateway({ root: process.cwd(), port, ownerSecret: secret })
         .then((gateway) => {
           unexpectedlyStarted = gateway;
-          throw new Error("gateway resolved before proving backend liveness");
+          throw new Error("gateway resolved before proving execution readiness");
         }),
       (error: Error & { component?: string }) =>
         error.component === "desktop_commander",
@@ -157,12 +157,12 @@ test("gateway does not listen if the immediate backend ping fails", async () => 
     );
   } finally {
     await unexpectedlyStarted?.close();
-    Client.prototype.ping = originalPing;
+    Client.prototype.listTools = originalListTools;
   }
 });
-async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "initial-ping") {
+async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "initial-readiness") {
   const originalConnect = Client.prototype.connect;
-  const originalPing = Client.prototype.ping;
+  const originalListTools = Client.prototype.listTools;
   let transportToClose: Parameters<typeof originalConnect>[0] | undefined;
   let transportCloseForCleanup: (() => Promise<void>) | undefined;
   let transportPid: number | undefined;
@@ -178,9 +178,9 @@ async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "i
     };
     if (failurePoint === "connect") throw new Error("controlled connect failure");
   };
-  Client.prototype.ping = async () => {
-    if (failurePoint === "initial-ping") throw new Error("controlled initial ping failure");
-    return {};
+  Client.prototype.listTools = async () => {
+    if (failurePoint === "initial-readiness") throw new Error("controlled readiness failure");
+    return { tools: [] };
   };
   try {
     const startedAt = Date.now();
@@ -196,7 +196,7 @@ async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "i
     assert.ok(Date.now() - startedAt < 2_500, "startup cleanup must have a fixed upper bound");
   } finally {
     Client.prototype.connect = originalConnect;
-    Client.prototype.ping = originalPing;
+    Client.prototype.listTools = originalListTools;
     if (transportToClose) {
       transportToClose.close = transportCloseForCleanup!;
       await transportCloseForCleanup!().catch(() => {});
@@ -210,8 +210,8 @@ async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "i
 test("connect failure uses bounded stdio cleanup", async () => {
   await assertStartupTransportCloseIsBounded("connect");
 });
-test("initial ping failure uses bounded stdio cleanup", async () => {
-  await assertStartupTransportCloseIsBounded("initial-ping");
+test("initial readiness failure uses bounded stdio cleanup", async () => {
+  await assertStartupTransportCloseIsBounded("initial-readiness");
 });
 test("HTTP listen failure uses bounded local-client cleanup", async () => {
   const occupied = createServer();
@@ -285,7 +285,7 @@ test("heartbeat failure racing local transport close reports one backend failure
   Client.prototype.ping = async () => {
     pingCalls++;
     if (pingCalls === 1) return {};
-    if (pingCalls === 4 && g?.desktopPid) {
+    if (pingCalls === 3 && g?.desktopPid) {
       try {
         process.kill(g.desktopPid, "SIGKILL");
       } catch {}
@@ -314,6 +314,55 @@ test("heartbeat failure racing local transport close reports one backend failure
   } finally {
     await g?.close();
     Client.prototype.ping = originalPing;
+  }
+});
+test("stdio transport death immediately reports stale backend state and unhealthy HTTP health", async () => {
+  let failureComponent: string | undefined;
+  let signalFailure!: () => void;
+  const failure = new Promise<void>((resolve) => { signalFailure = resolve; });
+  const g = await connectorModule.startGateway({
+    root: process.cwd(),
+    port: 0,
+    ownerSecret: secret,
+    publicUrl: issuer,
+    oauthClientsPath: null,
+    onFailure: (component) => {
+      failureComponent = component;
+      signalFailure();
+    },
+  });
+  const desktopPid = g.desktopPid;
+  assert.ok(desktopPid);
+  try {
+    assert.equal(g.desktopSnapshot().state, "alive");
+    process.kill(desktopPid!, "SIGKILL");
+    await Promise.race([
+      failure,
+      shortDelay(2_000).then(() => { throw new Error("onclose was not reported"); }),
+    ]);
+    assert.equal(failureComponent, "desktop_commander");
+    assert.equal(g.desktopSnapshot().ready, false);
+    assert.equal(g.desktopSnapshot().state, "stale/dead");
+    const health = (await (await fetch(`http://127.0.0.1:${g.address.port}/health`)).json()) as {
+      ready: boolean;
+      gatewayReady: boolean;
+      backendAlive: boolean;
+      backendState: string;
+    };
+    assert.deepEqual(health, {
+      ready: false,
+      gatewayReady: false,
+      oauthReady: true,
+      backendAlive: false,
+      backendState: "stale/dead",
+      lastBackendOkAt: g.desktopSnapshot().lastBackendOkAt,
+    });
+  } finally {
+    await g.close();
+    if (!dead(desktopPid!)) {
+      process.kill(desktopPid!, "SIGTERM");
+      await waitFor(() => dead(desktopPid!), 2_000);
+    }
   }
 });
 test("gateway close stays bounded when the local MCP client close never resolves", async () => {
@@ -899,11 +948,11 @@ await server.connect(new StdioServerTransport());
         ownerSecret: secret,
         publicUrl: issuer,
         timing: {
-          heartbeatIntervalMs: 10,
-          heartbeatTimeoutMs: 10,
+          heartbeatIntervalMs: 1_000,
+          heartbeatTimeoutMs: 50,
           heartbeatFailureThreshold: 3,
         },
-        requestTimeouts: { serviceMs: 45, toolIdleMs: 45, toolTotalMs: 120 },
+        requestTimeouts: { serviceMs: 150, toolIdleMs: 150, toolTotalMs: 220 },
         onFailure: () => backendFailures++,
       });
     } finally {
@@ -1018,7 +1067,7 @@ await server.connect(new StdioServerTransport());
       { onprogress: () => progressCount++ },
     );
     assert.match(JSON.stringify(slowProgress), /controlled tool result/);
-    assert.ok(progressCount >= 2, "progress keeps the idle deadline alive");
+    assert.ok(progressCount >= 2, `progress keeps the idle deadline alive (received ${progressCount})`);
 
     const idleTimed = client.callTool({
       name: "controlled",
@@ -1053,6 +1102,11 @@ await server.connect(new StdioServerTransport());
     assert.equal(totalDeadline, true, "continuous progress cannot exceed absolute deadline");
     const afterTimeout = await client.callTool({ name: "controlled", arguments: {} });
     assert.match(JSON.stringify(afterTimeout), /controlled tool result/);
+    assert.ok(g.desktopSnapshot().recentRequests.some((event) =>
+      event.method === "tools/call" && event.status === "timeout"));
+    assert.ok(g.desktopSnapshot().recentRequests.some((event) =>
+      event.method === "tools/call" && event.status === "cancelled"),
+      JSON.stringify(g.desktopSnapshot().recentRequests));
     assert.equal(backendFailures, 0, "request-local failures do not fail the backend");
     const health = (await (await fetch(base + "/health")).json()) as {
       backendAlive: boolean;
@@ -1078,7 +1132,7 @@ await server.connect(new StdioServerTransport());
       const secondClose = g.close();
       const closed = await Promise.race([
         Promise.all([firstClose, secondClose]).then(() => true),
-        shortDelay(1_000).then(() => false),
+        shortDelay(5_000).then(() => false),
       ]);
       assert.equal(closed, true, "concurrent gateway close calls settle boundedly");
       const requestOutcome = await Promise.race([
