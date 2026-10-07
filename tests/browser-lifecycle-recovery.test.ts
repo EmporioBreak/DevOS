@@ -1,8 +1,8 @@
 import { runInNewContext } from 'node:vm';
-import { chromium, type BrowserContext, type Page } from 'playwright';
+import type { BrowserContext, Page } from 'playwright-core';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ChatGptBrowserExecutor, sendAndRead } from '../src/chatgpt-browser-executor.js';
+import { ChatGptBrowserExecutor, chatGptBrowserDeps, sendAndRead } from '../src/chatgpt-browser-executor.js';
 import { loadChatGptBrowserConfig } from '../src/browser-config.js';
 const saved = 'https://chatgpt.com/g/one/c/saved';
 const terminal = 'Recovered\nDEVOS_RESULT {"status":"done"}';
@@ -121,7 +121,7 @@ function fixture(options: {
     }
   };
   const executor = new ChatGptBrowserExecutor({
-    projectUrl: 'https://chatgpt.com/g/one/project', profileDir: '/unused', browserChannel: 'chrome', headless: false
+    projectUrl: 'https://chatgpt.com/g/one/project', profileDir: '/unused', headless: false
   }, 30);
   Object.assign(executor, {
     context
@@ -130,7 +130,7 @@ function fixture(options: {
     executor, sends: () => sends, newPages: () => newPages, closed: () => closed, reads: () => reads
   };
 }
-test('headed Chrome is the reliability default', () => assert.equal(loadChatGptBrowserConfig({}).headless, false));
+test('headed Camoufox is the reliability default', () => assert.equal(loadChatGptBrowserConfig({}).headless, false));
 for (const mode of ['success', 'pre-submit', 'recovery'] as const)
   test(`initial persistent page reused and whole context closes on ${mode}`, async () => {
     const f = fixture({
@@ -347,10 +347,10 @@ test('closed worker page reopens the same profile and conversation without sendi
   let launches = 0;
   Object.assign(f.executor, {
     timeoutMs: 2000, config: {
-      projectUrl: 'https://chatgpt.com/g/one/project', profileDir: process.cwd() + '/.devos/test-profile', browserChannel: 'chrome', headless: false
+      projectUrl: 'https://chatgpt.com/g/one/project', profileDir: process.cwd() + '/.devos/test-profile', headless: false
     }
   });
-  t.mock.method(chromium, 'launchPersistentContext', async (profile: string, options?: {
+  t.mock.method(chatGptBrowserDeps, 'launchPersistentContext', async (profile: string, options: {
     headless?: boolean;
   }) => {
     launches++;
