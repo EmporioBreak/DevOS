@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadConnectorSecrets, type ConnectorSecrets } from "./connector-env.js";
+import { desktopCommand, safeEnvironment } from "./connector-process.js";
 import { captureProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "./process-identity.js";
 import { runBoundedConnectorSupervisor, type ConnectorSupervisorState } from "./connector-supervisor.js";
 import { appendConnectorDiagnostic } from "./connector-diagnostics.js";
@@ -52,21 +53,7 @@ const releases: Record<string, { url: string; sha256: string }> = {
     sha256: "c6b9b3d9184fc08c33fb8b181d9f241d8f5d61162a0be0521b6dfc1f11813a96",
   },
 };
-export function safeEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = {};
-  for (const key of ["PATH", "HOME", "TMPDIR", "SystemRoot", "LANG"])
-    if (env[key]) out[key] = env[key];
-  return out;
-}
-export function desktopCommand(root: string) {
-  return {
-    file: process.execPath,
-    args: [
-      join(root, "node_modules/@wonderwhy-er/desktop-commander/dist/index.js"),
-      "--no-onboarding",
-    ],
-  };
-}
+export { desktopCommand, safeEnvironment } from "./connector-process.js";
 export function connectorConfig(config: unknown): {
   gatewayPort: number;
   ngrokApiPort: number;

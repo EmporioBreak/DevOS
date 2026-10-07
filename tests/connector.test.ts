@@ -128,15 +128,15 @@ async function gateway() {
   });
 }
 import { oauthToken } from "./connector-auth-fixture.js";
-test("gateway does not listen if the immediate backend ping fails", async () => {
+test("gateway does not listen if tools/list readiness fails", async () => {
   const probe = createServer();
   await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
   const port = (probe.address() as { port: number }).port;
   await new Promise<void>((resolve) => probe.close(() => resolve()));
 
-  const originalPing = Client.prototype.ping;
-  Client.prototype.ping = async () => {
-    throw new Error("controlled initial ping failure");
+  const originalListTools = Client.prototype.listTools;
+  Client.prototype.listTools = async () => {
+    throw new Error("controlled readiness failure");
   };
   let unexpectedlyStarted: Awaited<ReturnType<typeof connectorModule.startGateway>> | undefined;
   try {
@@ -145,7 +145,7 @@ test("gateway does not listen if the immediate backend ping fails", async () => 
         .startGateway({ root: process.cwd(), port, ownerSecret: secret })
         .then((gateway) => {
           unexpectedlyStarted = gateway;
-          throw new Error("gateway resolved before proving backend liveness");
+          throw new Error("gateway resolved before proving execution readiness");
         }),
       (error: Error & { component?: string }) =>
         error.component === "desktop_commander",
@@ -157,12 +157,12 @@ test("gateway does not listen if the immediate backend ping fails", async () => 
     );
   } finally {
     await unexpectedlyStarted?.close();
-    Client.prototype.ping = originalPing;
+    Client.prototype.listTools = originalListTools;
   }
 });
-async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "initial-ping") {
+async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "initial-readiness") {
   const originalConnect = Client.prototype.connect;
-  const originalPing = Client.prototype.ping;
+  const originalListTools = Client.prototype.listTools;
   let transportToClose: Parameters<typeof originalConnect>[0] | undefined;
   let transportCloseForCleanup: (() => Promise<void>) | undefined;
   let transportPid: number | undefined;
@@ -178,9 +178,9 @@ async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "i
     };
     if (failurePoint === "connect") throw new Error("controlled connect failure");
   };
-  Client.prototype.ping = async () => {
-    if (failurePoint === "initial-ping") throw new Error("controlled initial ping failure");
-    return {};
+  Client.prototype.listTools = async () => {
+    if (failurePoint === "initial-readiness") throw new Error("controlled readiness failure");
+    return { tools: [] };
   };
   try {
     const startedAt = Date.now();
@@ -196,7 +196,7 @@ async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "i
     assert.ok(Date.now() - startedAt < 2_500, "startup cleanup must have a fixed upper bound");
   } finally {
     Client.prototype.connect = originalConnect;
-    Client.prototype.ping = originalPing;
+    Client.prototype.listTools = originalListTools;
     if (transportToClose) {
       transportToClose.close = transportCloseForCleanup!;
       await transportCloseForCleanup!().catch(() => {});
@@ -210,8 +210,8 @@ async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "i
 test("connect failure uses bounded stdio cleanup", async () => {
   await assertStartupTransportCloseIsBounded("connect");
 });
-test("initial ping failure uses bounded stdio cleanup", async () => {
-  await assertStartupTransportCloseIsBounded("initial-ping");
+test("initial readiness failure uses bounded stdio cleanup", async () => {
+  await assertStartupTransportCloseIsBounded("initial-readiness");
 });
 test("HTTP listen failure uses bounded local-client cleanup", async () => {
   const occupied = createServer();
@@ -285,7 +285,7 @@ test("heartbeat failure racing local transport close reports one backend failure
   Client.prototype.ping = async () => {
     pingCalls++;
     if (pingCalls === 1) return {};
-    if (pingCalls === 4 && g?.desktopPid) {
+    if (pingCalls === 3 && g?.desktopPid) {
       try {
         process.kill(g.desktopPid, "SIGKILL");
       } catch {}
