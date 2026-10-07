@@ -199,7 +199,7 @@ export class ChatGptBrowserExecutor implements Executor {
           // An observed identity change is definitive; never follow it or mask it.
           if (!isSameChatGptConversation(durableSession, page.url())) throw new Error("actual conversation identity changed");
           await rememberSession(durableSession);
-          const text = await this.recoverTurn(durableSession, conversationId, submitted);
+          const text = await this.recoverTurn(request, durableSession, conversationId, submitted);
           return { text, sessionId: durableSession };
         } catch (recoveryError) {
           const reason = recoveryError instanceof Error ? recoveryError.message.split("\n")[0]! : "read unavailable";
@@ -352,7 +352,12 @@ export class ChatGptBrowserExecutor implements Executor {
     throw new Error("Browser preparation exhausted");
   }
 
-  private async recoverTurn(session: string, conversationId: string, turn: SubmittedTurn): Promise<string> {
+  private async recoverTurn(
+    request: WorkerRequest,
+    session: string,
+    conversationId: string,
+    turn: SubmittedTurn,
+  ): Promise<string> {
     const deadline = Date.now() + Math.min(this.timeoutMs, 3 * 60_000);
     let attempt = 0;
     while (Date.now() < deadline) {
@@ -365,7 +370,7 @@ export class ChatGptBrowserExecutor implements Executor {
           if (this.context?.pages?.().every(candidate => candidate.isClosed())) await this.close();
           const context = await this.getContext(budget);
           if (expired) throw new Error("Timeout: read-only recovery deadline exhausted");
-          const page = context.pages?.().find(candidate => !candidate.isClosed?.()) ?? await context.newPage();
+          const page = await this.getWorkerPage(request, context);
           if (expired) throw new Error("Timeout: read-only recovery deadline exhausted");
           // Listen before navigating; the authenticated frontend performs the read.
           const read = page.waitForResponse(response => {

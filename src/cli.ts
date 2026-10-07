@@ -11,7 +11,6 @@ import {
   isTaskCompleted,
   recordTaskCompletion,
 } from "./completed-tasks.js";
-import { ChatGptBrowserExecutor } from "./chatgpt-browser-executor.js";
 import { CodexExecutor } from "./codex-executor.js";
 import { LocalCommandRunner } from "./command-runner.js";
 import { debugLog } from "./debug-log.js";
@@ -34,6 +33,16 @@ import { resolveTaskReference } from "./task-reference.js";
 import { acquireTaskLock } from "./task-lock.js";
 import type { Workflow } from "./workflow.js";
 import { loadWorkflow } from "./workflow-loader.js";
+import {
+  closeSharedBrowserRuntime,
+  ensureSharedBrowserRuntime,
+  runBrowserRuntime,
+} from "./shared-browser-runtime.js";
+
+export const cliBrowserRuntimeDeps = {
+  ensure: ensureSharedBrowserRuntime,
+  close: closeSharedBrowserRuntime,
+};
 
 import {
   connector,
@@ -110,12 +119,11 @@ export async function runWorkflow(
         : "self_host",
     });
   }
-  const commandRunner = new LocalCommandRunner();
-  const codex = new CodexExecutor(commandRunner);
-  const chatgpt = new ChatGptBrowserExecutor(
-    loadChatGptBrowserConfig(process.env, config?.chatgptProjectUrl),
-  );
   const stateStore = new JsonStateStore(cwd, workflow.task);
+  const hasBrowserWorker = workflow.workers.some(worker => worker.executor === "chatgpt_browser");
+  if (mode === "restart" && hasBrowserWorker) {
+    await cliBrowserRuntimeDeps.close(cwd, workflow.task);
+  }
   await prepareRunState(mode, stateStore);
   if (mode === "restart") {
     await clearTaskCompleted(cwd, workflow.task.issue);
@@ -127,25 +135,31 @@ export async function runWorkflow(
   const mainAgentDecision = workflow.owner?.mode === "main_agent"
     ? parseMainAgentDecision(process.env.DEVOS_OWNER_RESULT)
     : undefined;
+  const commandRunner = new LocalCommandRunner();
+  const codex = new CodexExecutor(commandRunner);
+  const chatgpt = hasBrowserWorker
+    ? await cliBrowserRuntimeDeps.ensure(
+        cwd,
+        workflow.task,
+        loadChatGptBrowserConfig(process.env, config?.chatgptProjectUrl),
+      )
+    : undefined;
 
-  try {
-    const state = await new Orchestrator({
-      projectRoot: cwd,
-      workflow,
-      executors: new Map<string, Executor>([
-        ["codex", codex],
-        ["chatgpt_browser", chatgpt],
-      ]),
-      stateStore,
-      ...(mainAgentDecision ? { mainAgentDecision } : {}),
-      finalizeTask: state => recordTaskCompletion(cwd, workflow.task.issue, state),
-      resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
-      onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
-    }).run();
-    return state;
-  } finally {
-    await chatgpt.close();
-  }
+  const state = await new Orchestrator({
+    projectRoot: cwd,
+    workflow,
+    executors: new Map<string, Executor>([
+      ["codex", codex],
+      ...(chatgpt ? [["chatgpt_browser", chatgpt] as const] : []),
+    ]),
+    stateStore,
+    ...(mainAgentDecision ? { mainAgentDecision } : {}),
+    finalizeTask: state => recordTaskCompletion(cwd, workflow.task.issue, state),
+    resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
+    onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
+  }).run();
+  if (chatgpt && !state.mainAgentReviewPending) await cliBrowserRuntimeDeps.close(cwd, workflow.task);
+  return state;
   } finally {
     await taskLock.release();
   }
@@ -179,6 +193,10 @@ export async function main(
   args: string[] = process.argv.slice(2),
   cwd: string = process.cwd(),
 ): Promise<void> {
+  if (args[0] === "--devos-browser-runtime") {
+    await runBrowserRuntime(args.slice(1));
+    return;
+  }
   const command = parseCliArgs(args);
 
   if (command.kind === "connector") {

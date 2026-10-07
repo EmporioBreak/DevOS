@@ -1,0 +1,185 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createConnection } from "node:net";
+import { browserRuntimePaths, closeSharedBrowserRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
+import { BrowserPreSubmitFailureError, type ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
+
+test("shared runtime carries session updates and keeps its executor across client disconnects", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-"));
+  const task = { repo: "owner/repo", issue: 74 };
+  const paths = browserRuntimePaths(root, task.repo, task.issue);
+  let calls = 0;
+  let closes = 0;
+  const executor = {
+    async run(request: { onSession?: (sessionId: string) => void | Promise<void> }) {
+      calls++;
+      await request.onSession?.(`https://chatgpt.com/g/project/c/session-${calls}`);
+      return { text: `turn-${calls}`, sessionId: `https://chatgpt.com/g/project/c/session-${calls}` };
+    },
+    async close() { closes++; },
+  } as unknown as ChatGptBrowserExecutor;
+  try {
+    await startSharedBrowserServer(paths.socket, paths.metadata, executor);
+    const client = new SharedBrowserExecutor(paths.socket);
+    const sessions: string[] = [];
+    const first = await client.run({ projectRoot: root, prompt: "one", onSession: id => { sessions.push(id); } });
+    const second = await client.run({ projectRoot: root, prompt: "two" });
+    assert.equal(first.text, "turn-1");
+    assert.equal(second.text, "turn-2");
+    assert.deepEqual(sessions, ["https://chatgpt.com/g/project/c/session-1"]);
+    assert.equal(calls, 2);
+    assert.equal(closes, 0);
+    await closeSharedBrowserRuntime(root, task);
+    assert.equal(closes, 1);
+  } finally {
+    await rm(paths.socket, { force: true });
+    await rm(paths.metadata, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a client reconnect during a worker turn attaches to the same in-flight submission", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-resume-"));
+  const paths = browserRuntimePaths(root, "owner/repo", 75);
+  let calls = 0;
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const executor = {
+    async run(request: { onSession?: (sessionId: string) => void | Promise<void> }) {
+      calls++;
+      await request.onSession?.("https://chatgpt.com/g/project/c/in-flight");
+      await pending;
+      return { text: "finished once", sessionId: "https://chatgpt.com/g/project/c/in-flight" };
+    },
+    async close() {},
+  } as unknown as ChatGptBrowserExecutor;
+  try {
+    await startSharedBrowserServer(paths.socket, paths.metadata, executor);
+    const abandoned = await new Promise<ReturnType<typeof createConnection>>((resolve, reject) => {
+      const socket = createConnection(paths.socket);
+      socket.once("connect", () => resolve(socket));
+      socket.once("error", reject);
+    });
+    abandoned.write(`${JSON.stringify({ type: "run", request: { projectRoot: root, prompt: "same turn", workerId: "developer" } })}\n`);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    abandoned.destroy();
+
+    const resumed = new SharedBrowserExecutor(paths.socket).run({ projectRoot: root, prompt: "same turn", workerId: "developer" });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    release();
+    assert.equal((await resumed).text, "finished once");
+    assert.equal(calls, 1, "reconnection must not send the worker prompt twice");
+  } finally {
+    release();
+    await closeSharedBrowserRuntime(root, { repo: "owner/repo", issue: 75 });
+    await rm(paths.socket, { force: true });
+    await rm(paths.metadata, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("distinct browser turn ids never reuse a completed result from an earlier review loop", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-turns-"));
+  const task = { repo: "owner/repo", issue: 76 };
+  const paths = browserRuntimePaths(root, task.repo, task.issue);
+  let calls = 0;
+  const executor = {
+    async run() {
+      calls++;
+      return { text: "turn-" + calls };
+    },
+    async close() {},
+  } as unknown as ChatGptBrowserExecutor;
+  try {
+    await startSharedBrowserServer(paths.socket, paths.metadata, executor);
+    const client = new SharedBrowserExecutor(paths.socket);
+    const first = await client.run({
+      projectRoot: root,
+      prompt: "same worker prompt",
+      workerId: "developer",
+      browserTurnId: "0:developer",
+    });
+    const second = await client.run({
+      projectRoot: root,
+      prompt: "same worker prompt",
+      workerId: "developer",
+      browserTurnId: "2:developer",
+    });
+    assert.equal(first.text, "turn-1");
+    assert.equal(second.text, "turn-2");
+    assert.equal(calls, 2);
+  } finally {
+    await closeSharedBrowserRuntime(root, task);
+    await rm(paths.socket, { force: true });
+    await rm(paths.metadata, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pre-submit error type survives IPC and same turn can retry without being cached", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-errors-"));
+  const task = { repo: "owner/repo", issue: 77 };
+  const paths = browserRuntimePaths(root, task.repo, task.issue);
+  let calls = 0;
+  const executor = {
+    async run() {
+      calls++;
+      if (calls === 1) throw new BrowserPreSubmitFailureError("safe before submit");
+      return { text: "retried" };
+    },
+    async close() {},
+  } as unknown as ChatGptBrowserExecutor;
+  try {
+    await startSharedBrowserServer(paths.socket, paths.metadata, executor);
+    const client = new SharedBrowserExecutor(paths.socket);
+    const request = {
+      projectRoot: root,
+      prompt: "same turn",
+      workerId: "developer",
+      browserTurnId: "0:developer",
+    };
+    await assert.rejects(client.run(request), BrowserPreSubmitFailureError);
+    assert.equal((await client.run(request)).text, "retried");
+    assert.equal(calls, 2);
+  } finally {
+    await closeSharedBrowserRuntime(root, task);
+    await rm(paths.socket, { force: true });
+    await rm(paths.metadata, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("post-submit ambiguity is cached for the same turn and never replays the prompt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-post-submit-"));
+  const task = { repo: "owner/repo", issue: 78 };
+  const paths = browserRuntimePaths(root, task.repo, task.issue);
+  let calls = 0;
+  const executor = {
+    async run() {
+      calls++;
+      throw new Error("Browser recovery attempt=1 phase=post-submit: prompt not replayed");
+    },
+    async close() {},
+  } as unknown as ChatGptBrowserExecutor;
+  try {
+    await startSharedBrowserServer(paths.socket, paths.metadata, executor);
+    const client = new SharedBrowserExecutor(paths.socket);
+    const request = {
+      projectRoot: root,
+      prompt: "same turn",
+      workerId: "developer",
+      browserTurnId: "0:developer",
+    };
+    await assert.rejects(client.run(request), /phase=post-submit/);
+    await assert.rejects(client.run(request), /phase=post-submit/);
+    assert.equal(calls, 1);
+  } finally {
+    await closeSharedBrowserRuntime(root, task);
+    await rm(paths.socket, { force: true });
+    await rm(paths.metadata, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
