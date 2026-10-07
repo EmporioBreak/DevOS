@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:net";
 import test from "node:test";
 import { parseCliArgs } from "../src/cli.js";
 import * as connectorModule from "../src/connector.js";
@@ -116,12 +117,109 @@ async function gateway() {
   });
 }
 import { oauthToken } from "./connector-auth-fixture.js";
+test("gateway does not listen if the immediate backend ping fails", async () => {
+  const probe = createServer();
+  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+
+  const originalPing = Client.prototype.ping;
+  Client.prototype.ping = async () => {
+    throw new Error("controlled initial ping failure");
+  };
+  let unexpectedlyStarted: Awaited<ReturnType<typeof connectorModule.startGateway>> | undefined;
+  try {
+    await assert.rejects(
+      connectorModule
+        .startGateway({ root: process.cwd(), port, ownerSecret: secret })
+        .then((gateway) => {
+          unexpectedlyStarted = gateway;
+          throw new Error("gateway resolved before proving backend liveness");
+        }),
+      (error: Error & { component?: string }) =>
+        error.component === "desktop_commander",
+    );
+    await assert.rejects(
+      fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(200),
+      }),
+    );
+  } finally {
+    await unexpectedlyStarted?.close();
+    Client.prototype.ping = originalPing;
+  }
+});
+test("heartbeat failure racing local transport close reports one backend failure", async () => {
+  const originalPing = Client.prototype.ping;
+  let g: Awaited<ReturnType<typeof connectorModule.startGateway>> | undefined;
+  let pingCalls = 0;
+  const failures: string[] = [];
+  Client.prototype.ping = async () => {
+    pingCalls++;
+    if (pingCalls === 1) return {};
+    if (pingCalls === 4 && g?.desktopPid) {
+      try {
+        process.kill(g.desktopPid, "SIGKILL");
+      } catch {}
+    }
+    throw new Error("controlled heartbeat miss");
+  };
+  try {
+    g = await connectorModule.startGateway({
+      root: process.cwd(),
+      port: 0,
+      ownerSecret: secret,
+      timing: {
+        heartbeatIntervalMs: 10,
+        heartbeatTimeoutMs: 10,
+        heartbeatFailureThreshold: 3,
+      },
+      onFailure: (component) => failures.push(component),
+    });
+    const desktopPid = g.desktopPid;
+    assert.ok(desktopPid);
+    await waitFor(() => failures.length > 0);
+    assert.deepEqual(failures, ["desktop_commander"]);
+    await waitFor(() => dead(desktopPid));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.deepEqual(failures, ["desktop_commander"]);
+  } finally {
+    await g?.close();
+    Client.prototype.ping = originalPing;
+  }
+});
 test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and real stdio tools", async () => {
   const g = await gateway();
   let client: Client | undefined;
   try {
     assert.equal(g.address.address, "127.0.0.1");
     const base = "http://127.0.0.1:" + g.address.port;
+    const health = (await (await fetch(base + "/health")).json()) as {
+      ready: boolean;
+      gatewayReady: boolean;
+      oauthReady: boolean;
+      backendAlive: boolean;
+      backendState: string;
+      lastBackendOkAt: string;
+    };
+    assert.deepEqual(
+      {
+        ready: health.ready,
+        gatewayReady: health.gatewayReady,
+        oauthReady: health.oauthReady,
+        backendAlive: health.backendAlive,
+        backendState: health.backendState,
+      },
+      {
+        ready: true,
+        gatewayReady: true,
+        oauthReady: true,
+        backendAlive: true,
+        backendState: "alive",
+      },
+    );
+    assert.ok(Number.isFinite(Date.parse(health.lastBackendOkAt)));
+    assert.doesNotMatch(JSON.stringify(health), /pid|commandLine|secret|path/i);
     for (const method of ["GET", "POST", "DELETE"]) {
       const res = await fetch(base + "/mcp", {
         method,

@@ -19,6 +19,10 @@ import {
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ConnectorAuth } from "./connector-auth.js";
 import { desktopCommand, safeEnvironment } from "./connector.js";
+import {
+  createConnectorWatchdog,
+  type ConnectorWatchdog,
+} from "./connector-watchdog.js";
 
 export function publicIdentity(value: string): URL {
   try {
@@ -241,6 +245,12 @@ export async function startGateway(options: {
   oauthClientsPath?: string | null;
   oauthStatePath?: string | null;
   onFailure?: (component: "desktop_commander") => void;
+  timing?: {
+    initialPingTimeoutMs?: number;
+    heartbeatIntervalMs?: number;
+    heartbeatTimeoutMs?: number;
+    heartbeatFailureThreshold?: number;
+  };
 }) {
   ownerAuth(options.ownerSecret);
   let identity = options.publicUrl
@@ -278,15 +288,54 @@ export async function startGateway(options: {
   );
   local.onerror = () => {};
   let closing = false;
+  let failureReported = false;
+  let watchdog: ConnectorWatchdog | undefined;
+  const reportFailure = () => {
+    if (closing || failureReported) return;
+    failureReported = true;
+    options.onFailure?.("desktop_commander");
+  };
   local.onclose = () => {
-    if (!closing) options.onFailure?.("desktop_commander");
+    reportFailure();
   };
   try {
     await local.connect(stdio, { timeout: 15_000 });
   } catch {
+    closing = true;
     await stdio.close();
-    throw new Error("Local Desktop Commander initialization failed.");
+    throw Object.assign(
+      new Error("Local Desktop Commander initialization failed."),
+      { component: "desktop_commander" },
+    );
   }
+  let initialSuccessAt: number;
+  try {
+    await local.ping({ timeout: options.timing?.initialPingTimeoutMs ?? 5_000 });
+    initialSuccessAt = Date.now();
+  } catch {
+    closing = true;
+    await stdio.close();
+    throw Object.assign(
+      new Error("Desktop Commander initial liveness ping failed."),
+      { component: "desktop_commander" },
+    );
+  }
+  watchdog = createConnectorWatchdog({
+    ping: async (timeoutMs) => {
+      await local.ping({ timeout: timeoutMs });
+    },
+    onFailure: reportFailure,
+    initialSuccessAt,
+    ...(options.timing?.heartbeatIntervalMs !== undefined
+      ? { intervalMs: options.timing.heartbeatIntervalMs }
+      : {}),
+    ...(options.timing?.heartbeatTimeoutMs !== undefined
+      ? { timeoutMs: options.timing.heartbeatTimeoutMs }
+      : {}),
+    ...(options.timing?.heartbeatFailureThreshold !== undefined
+      ? { failureThreshold: options.timing.heartbeatFailureThreshold }
+      : {}),
+  });
   const sessions = new Map<
     string,
     {
@@ -332,7 +381,20 @@ export async function startGateway(options: {
     });
   }
   if (identity) setPublicUrl(identity.href);
-  app.get("/health", (_req, res) => res.json({ ready: !!provider }));
+  app.get("/health", (_req, res) => {
+    const backend = watchdog?.snapshot();
+    const gatewayReady = !!backend;
+    const backendAlive = backend?.state === "alive";
+    const oauthReady = !!provider;
+    res.json({
+      ready: gatewayReady && oauthReady && backendAlive,
+      gatewayReady,
+      oauthReady,
+      backendAlive,
+      backendState: backend?.state ?? "unknown",
+      lastBackendOkAt: backend?.lastBackendOkAt ?? null,
+    });
+  });
 
   // ChatGPT performs a post-OAuth action-discovery probe against the public
   // origin itself (POST /), not only the configured /mcp resource path.
@@ -593,6 +655,7 @@ export async function startGateway(options: {
     setPublicUrl,
     async close() {
       closing = true;
+      await watchdog?.stop();
       await Promise.allSettled(
         [...sessions.values()].map((s) => s.server.close()),
       );

@@ -268,12 +268,16 @@ async function publicEndpoint(
 }
 async function health(port: number) {
   try {
-    return (
-      await fetch(`http://127.0.0.1:${port}/health`, {
-        signal: AbortSignal.timeout(1000),
-        redirect: "error",
-      })
-    ).ok;
+    const response = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(1000),
+      redirect: "error",
+    });
+    if (!response.ok) return false;
+    const state = (await response.json()) as {
+      gatewayReady?: unknown;
+      backendAlive?: unknown;
+    };
+    return state.gatewayReady === true && state.backendAlive === true;
   } catch {
     return false;
   }
