@@ -16,17 +16,19 @@ The pinned MCP SDK 1.32.1 exposes `Client.ping()` and request options for `signa
 
 ### Backend liveness
 
-- Start one watchdog after local MCP initialization; it runs independently of HTTP requests.
-- Send standard MCP `ping` on the existing local Client every 15 seconds, with a 5-second timeout.
-- Count consecutive failed or timed-out pings; reset the count on success. Three consecutive misses report `onFailure("desktop_commander")` once. A single missed ping does not restart the runtime.
+- Immediately after `local.connect()`, send a bounded initial MCP `ping` with a 5-second timeout. Do not listen for HTTP traffic or report the gateway ready until it succeeds. An initial ping failure aborts gateway startup as a `desktop_commander` failure.
+- After the initial ping, run one watchdog independently of HTTP requests. Schedule attempts on a 15-second cadence measured from the previous attempt's start time. Heartbeats are single-flight: never start a new ping while the previous attempt is unresolved; after it settles, resume the start-based cadence without overlapping requests.
+- Count consecutive failed or timed-out pings; reset the count on success. Three consecutive misses report `onFailure("desktop_commander")` once per gateway instance. A single missed ping does not restart the runtime. Failure reporting is single-shot even when `onclose`, heartbeat failure, or shutdown race to report it.
+- With a 15-second start-to-start cadence and 5-second timeout, the third miss is detected at approximately 35 seconds after the first failed attempt begins. The SIGSTOP integration test must assert detection within 40 seconds of the first failed attempt, including a 5-second scheduling margin.
 - Stop the watchdog before beginning gateway shutdown. Ignore late ping completions after close.
-- Store `lastBackendOkAt` and a backend-alive flag from watchdog results. `/health` reports gateway/provider readiness separately from backend liveness and the last successful backend check. The public response contains no PID, command line, secret, or internal path. A stale result makes backend liveness false.
+- Track backend state internally as `unknown | alive | stale/dead`; `local.connect()` alone does not prove liveness. After the initial ping, store `lastBackendOkAt` and mark alive. `/health` reports gateway/provider readiness separately from backend liveness and the last successful backend check. Before the initial successful ping or while no successful ping is known, it must not claim backend health. The public response contains no PID, command line, secret, or internal path; a stale result makes backend liveness false.
 
 ### Request lifecycle
 
 - Keep the inbound cancellation signal connected to the corresponding forwarded local request. Cancellation and request timeout are request-local and do not call `onFailure`.
 - Bound service requests such as `ping`, `tools/list`, and discovery/readiness operations to at most 60 seconds.
-- For `tools/call`, use a finite idle timeout with progress resetting that idle timeout and an absolute maximum of 5 minutes. This gives long calls time to report progress without allowing an endless RPC. Do not transform a timeout into a backend failure; independent pings decide backend health.
+- For `tools/call`, use a finite idle timeout with progress resetting that idle timeout and a default absolute maximum no greater than 180 seconds. Keep the proxy deadline below the lowest confirmed client-side ceiling. This gives calls time to report progress without letting the external client time out first or allowing an endless RPC. Do not transform a timeout into a backend failure; independent pings decide backend health.
+- For `start_process` and analogous Desktop Commander operations, preserve the upstream process/session handoff: return PID/session promptly and use `read_process_output` for later output. Do not use the proxy deadline as the intended long-process wait strategy.
 - Verify concurrent requests remain multiplexed over the MCP client: cancelling/timing out request A must not prevent request B or watchdog pings from completing.
 - Preserve Desktop Commander process/session tools. Do not implement terminal sessions in DevOS or rewrite tool results to imitate upstream long-process support. If the pinned release blocks a required call despite its process/session contract, record the evidence as a blocker and assess a narrowly scoped dependency upgrade separately.
 
@@ -53,7 +55,7 @@ The pinned MCP SDK 1.32.1 exposes `Client.ping()` and request options for `signa
 | Fault or behavior | Expected detection | Failure component | Restart | Postcondition |
 |---|---|---|---|---|
 | Ping success after one miss | Next ping interval | none | no | backend remains usable |
-| Owned Desktop Commander receives SIGSTOP | ≤ interval + 3 × timeout + scheduling margin | desktop_commander | yes | new MCP request succeeds; old owned PID is gone |
+| Owned Desktop Commander receives SIGSTOP | ≤ 40 seconds from first failed heartbeat start (15-second start-to-start cadence, 5-second timeout, 5-second scheduling margin) | desktop_commander | yes | new MCP request succeeds; old owned PID is gone |
 | Desktop Commander SIGKILL / stdio EOF | transport close | desktop_commander | yes | new request succeeds |
 | ngrok SIGTERM / hang on SIGTERM | existing bounded runner path | ngrok | yes | endpoint re-registers; no orphan |
 | Runtime SIGKILL | supervisor observes child exit | runtime | yes | new request succeeds |
