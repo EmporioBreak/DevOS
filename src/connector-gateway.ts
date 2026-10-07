@@ -15,7 +15,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ConnectorAuth } from "./connector-auth.js";
-import { DesktopCommanderIntegration } from "./desktop-commander-integration.js";
+import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./desktop-commander-integration.js";
+import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
 
 export function publicIdentity(value: string): URL {
   try {
@@ -256,6 +257,13 @@ export async function startGateway(options: {
   oauthClientsPath?: string | null;
   oauthStatePath?: string | null;
   onFailure?: (component: "desktop_commander") => void;
+  onDiagnostic?: (record: {
+    reason: string;
+    runtimePid: number;
+    publicSessionCount: number;
+    activeForwardedRequestCount: number;
+    snapshot: DesktopCommanderSnapshot;
+  }) => void | Promise<void>;
   timing?: {
     initialReadinessTimeoutMs?: number;
     heartbeatIntervalMs?: number;
@@ -292,19 +300,35 @@ export async function startGateway(options: {
   let closingPromise: Promise<void> | undefined;
   const activeRequests = new Set<AbortController>();
   const forwardedRequests = new Set<Promise<unknown>>();
+  const diagnosticWrites = new Set<Promise<unknown>>();
+  const sessions = new Map<
+    string,
+    {
+      transport: StreamableHTTPServerTransport;
+      server: Server;
+      clientId: string;
+    }
+  >();
   const reportFailure = () => {
     if (closing || failureReported) return;
     failureReported = true;
     options.onFailure?.("desktop_commander");
   };
-  const desktop = new DesktopCommanderIntegration({
+  let desktop: DesktopCommanderIntegration;
+  desktop = new DesktopCommanderIntegration({
     root: options.root,
     ...(options.timing ? { timing: options.timing } : {}),
     onDisconnect: reportFailure,
     onDiagnostic: (event) => {
-      // Keep protocol diagnostics payload-free and bounded.
-      if (event.method === "mcp-client-error")
-        process.stderr.write(`Desktop Commander MCP diagnostic: ${event.message}\n`);
+      if (event.method !== "disconnect") return;
+      const write = Promise.resolve(options.onDiagnostic?.({
+        reason: event.message,
+        runtimePid: process.pid,
+        publicSessionCount: sessions.size,
+        activeForwardedRequestCount: forwardedRequests.size,
+        snapshot: event.snapshot,
+      })).catch(() => {}).finally(() => diagnosticWrites.delete(write));
+      diagnosticWrites.add(write);
     },
   });
   try {
@@ -316,14 +340,6 @@ export async function startGateway(options: {
       { component: "desktop_commander" },
     );
   }
-  const sessions = new Map<
-    string,
-    {
-      transport: StreamableHTTPServerTransport;
-      server: Server;
-      clientId: string;
-    }
-  >();
   let authRouter: express.RequestHandler | undefined;
   let bearer: express.RequestHandler | undefined;
   let provider: ConnectorAuth | undefined;
@@ -690,7 +706,12 @@ export async function startGateway(options: {
   return {
     address: http.address() as AddressInfo,
     desktopPid: desktop.snapshot().pid,
-    desktopSnapshot: () => desktop.snapshot(),
+    desktopSnapshot: () => ({
+      ...desktop.snapshot(),
+      runtimePid: process.pid,
+      publicSessionCount: sessions.size,
+      activeForwardedRequestCount: forwardedRequests.size,
+    }),
     setPublicUrl,
     close() {
       if (closingPromise) return closingPromise;
@@ -712,6 +733,7 @@ export async function startGateway(options: {
           1_000,
         );
         await desktop.close();
+        await settleWithin(Promise.allSettled([...diagnosticWrites]), 1_000);
       })();
       return closingPromise;
     },

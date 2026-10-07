@@ -208,3 +208,41 @@ test("adapter close is idempotent, bounded and owns its child", async () => {
     await rm(f.root, { recursive: true, force: true });
   }
 });
+
+test("watchdog failure captures bounded payload-free child metrics for the owned PID", async () => {
+  const f = await fixture();
+  const reasons: string[] = [];
+  const desktop = new DesktopCommanderIntegration({
+    root: f.root,
+    timing: {
+      heartbeatIntervalMs: 10,
+      heartbeatTimeoutMs: 20,
+      heartbeatFailureThreshold: 3,
+    },
+    onDisconnect: (reason) => reasons.push(reason),
+  });
+  let pid: number | undefined;
+  try {
+    await desktop.initialize();
+    pid = desktop.snapshot().pid;
+    assert.ok(pid);
+    process.kill(pid!, "SIGSTOP");
+    await waitFor(() => reasons.length === 1, 2_000);
+    const snapshot = desktop.snapshot();
+    assert.equal(snapshot.state, "stale/dead");
+    assert.equal(snapshot.pid, pid);
+    assert.ok(snapshot.processStartedAt);
+    assert.ok((snapshot.rssBytes ?? 0) > 0);
+    assert.ok(typeof snapshot.cpuPercent === "number");
+    assert.equal(snapshot.protocolErrorCount, 0);
+    assert.equal(snapshot.activeRequestCount, 0);
+    assert.ok(snapshot.recentRequests.length <= 50);
+    assert.ok(!JSON.stringify(snapshot).includes(f.root));
+    assert.deepEqual(reasons, ["watchdog missed heartbeat threshold"]);
+  } finally {
+    if (pid) process.kill(pid, "SIGCONT");
+    await desktop.close();
+    if (pid) await waitFor(() => isDead(pid!));
+    await rm(f.root, { recursive: true, force: true });
+  }
+});

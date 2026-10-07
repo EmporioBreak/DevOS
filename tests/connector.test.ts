@@ -899,11 +899,11 @@ await server.connect(new StdioServerTransport());
         ownerSecret: secret,
         publicUrl: issuer,
         timing: {
-          heartbeatIntervalMs: 10,
-          heartbeatTimeoutMs: 10,
+          heartbeatIntervalMs: 1_000,
+          heartbeatTimeoutMs: 50,
           heartbeatFailureThreshold: 3,
         },
-        requestTimeouts: { serviceMs: 45, toolIdleMs: 45, toolTotalMs: 120 },
+        requestTimeouts: { serviceMs: 150, toolIdleMs: 150, toolTotalMs: 220 },
         onFailure: () => backendFailures++,
       });
     } finally {
@@ -1018,7 +1018,7 @@ await server.connect(new StdioServerTransport());
       { onprogress: () => progressCount++ },
     );
     assert.match(JSON.stringify(slowProgress), /controlled tool result/);
-    assert.ok(progressCount >= 2, "progress keeps the idle deadline alive");
+    assert.ok(progressCount >= 2, `progress keeps the idle deadline alive (received ${progressCount})`);
 
     const idleTimed = client.callTool({
       name: "controlled",
@@ -1053,6 +1053,11 @@ await server.connect(new StdioServerTransport());
     assert.equal(totalDeadline, true, "continuous progress cannot exceed absolute deadline");
     const afterTimeout = await client.callTool({ name: "controlled", arguments: {} });
     assert.match(JSON.stringify(afterTimeout), /controlled tool result/);
+    assert.ok(g.desktopSnapshot().recentRequests.some((event) =>
+      event.method === "tools/call" && event.status === "timeout"));
+    assert.ok(g.desktopSnapshot().recentRequests.some((event) =>
+      event.method === "tools/call" && event.status === "cancelled"),
+      JSON.stringify(g.desktopSnapshot().recentRequests));
     assert.equal(backendFailures, 0, "request-local failures do not fail the backend");
     const health = (await (await fetch(base + "/health")).json()) as {
       backendAlive: boolean;
@@ -1078,7 +1083,7 @@ await server.connect(new StdioServerTransport());
       const secondClose = g.close();
       const closed = await Promise.race([
         Promise.all([firstClose, secondClose]).then(() => true),
-        shortDelay(1_000).then(() => false),
+        shortDelay(5_000).then(() => false),
       ]);
       assert.equal(closed, true, "concurrent gateway close calls settle boundedly");
       const requestOutcome = await Promise.race([

@@ -34,6 +34,12 @@ import { StdioServerTransport } from ${JSON.stringify(sdkStdio)};
 const server = new Server({ name: "notification-fixture", version: "1" }, { capabilities: { tools: {}, logging: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "controlled", inputSchema: { type: "object" } }] }));
 server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+  if (request.params.arguments?.hang) {
+    await new Promise((resolve) => {
+      if (extra.signal.aborted) return resolve(undefined);
+      extra.signal.addEventListener("abort", () => resolve(undefined), { once: true });
+    });
+  }
   const count = Number(request.params.arguments?.notificationFlood ?? 0);
   for (let i = 0; i < count; i++) {
     await extra.sendNotification({ method: "notifications/message", params: { level: "info", logger: "fixture", data: "internal " + i } });
@@ -112,10 +118,24 @@ test("internal log flood stays private while progress and concurrent tool calls 
     assert.equal(secondLogNotifications, 0);
     assert.equal(backendFailures, 0);
 
+    const abort = new AbortController();
+    const cancelled = first.callTool(
+      { name: "controlled", arguments: { hang: true } },
+      undefined,
+      { signal: abort.signal },
+    );
+    setTimeout(() => abort.abort(), 20);
+    await assert.rejects(cancelled);
+    const afterCancel = await second.callTool({ name: "controlled", arguments: {} });
+    assert.match(JSON.stringify(afterCancel), /done/);
+    assert.equal(backendFailures, 0);
+
     const snapshot = (gateway as typeof gateway & { desktopSnapshot?: () => any }).desktopSnapshot?.();
     assert.ok(snapshot, "private adapter diagnostics are available to the supervisor and tests");
     assert.equal(snapshot.notificationCounts["notifications/message"], 1_000);
     assert.ok(snapshot.activeRequestCount <= 1, "only the single-flight heartbeat may remain active");
+    assert.ok(snapshot.recentRequests.some((event: { method: string; status: string }) =>
+      event.method === "tools/call" && event.status === "cancelled"));
     assert.ok(snapshot.recentRequests.length <= 50);
     assert.ok(!JSON.stringify(snapshot).includes("internal 999"));
   } finally {

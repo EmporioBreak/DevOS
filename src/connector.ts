@@ -20,7 +20,7 @@ import { loadConnectorSecrets, type ConnectorSecrets } from "./connector-env.js"
 import { desktopCommand, safeEnvironment } from "./connector-process.js";
 import { captureProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "./process-identity.js";
 import { runBoundedConnectorSupervisor, type ConnectorSupervisorState } from "./connector-supervisor.js";
-import { appendConnectorDiagnostic } from "./connector-diagnostics.js";
+import { appendConnectorDiagnostic, appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
 import {
   startGateway,
   ownerAuth,
@@ -911,6 +911,7 @@ export async function connectorRuntime(root: string) {
         failureComponent = component;
         stop();
       },
+      onDiagnostic: record => appendDesktopCommanderDiagnostic(root, record),
       });
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Gateway startup failed.");

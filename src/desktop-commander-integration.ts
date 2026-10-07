@@ -3,13 +3,19 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import {
   ResultSchema,
+  ErrorCode,
   type CallToolRequest,
   type ListToolsResult,
   type Request,
   type ServerCapabilities,
   type Implementation,
 } from "@modelcontextprotocol/sdk/types.js";
-import { desktopCommand, safeEnvironment } from "./connector-process.js";
+import {
+  captureProcessUsage,
+  desktopCommand,
+  safeEnvironment,
+  type ProcessUsage,
+} from "./connector-process.js";
 import {
   createConnectorWatchdog,
   type ConnectorBackendState,
@@ -35,12 +41,15 @@ export interface DesktopCommanderSnapshot {
   pid?: number;
   processStartedAt?: string;
   activeRequestCount: number;
+  protocolErrorCount: number;
+  rssBytes?: number;
+  cpuPercent?: number;
   notificationCounts: Record<string, number>;
   recentRequests: Array<{
     timestamp: string;
     method: string;
     durationMs: number;
-    status: "ok" | "error";
+    status: "ok" | "error" | "timeout" | "cancelled";
   }>;
 }
 
@@ -48,7 +57,11 @@ export interface DesktopCommanderIntegrationOptions {
   root: string;
   timing?: DesktopCommanderTiming;
   onDisconnect?: (reason: string) => void;
-  onDiagnostic?: (event: { method: string; message: string }) => void;
+  onDiagnostic?: (event: {
+    method: string;
+    message: string;
+    snapshot: DesktopCommanderSnapshot;
+  }) => void | Promise<void>;
 }
 
 export class DesktopCommanderIntegration {
@@ -63,6 +76,8 @@ export class DesktopCommanderIntegration {
   private processPid: number | undefined;
   private processStartedAt: string | undefined;
   private activeRequestCount = 0;
+  private protocolErrorCount = 0;
+  private processUsage: ProcessUsage | undefined;
   private readonly notificationCounts: Record<string, number> = {};
   private readonly recentRequests: DesktopCommanderSnapshot["recentRequests"] = [];
 
@@ -102,28 +117,23 @@ export class DesktopCommanderIntegration {
     );
     this.transport = transport;
     this.client = client;
-    this.processStartedAt = new Date().toISOString();
-
-    client.onerror = (error) => {
-      this.options.onDiagnostic?.({
-        method: "mcp-client-error",
-        message: error.name.slice(0, 80),
-      });
+    client.onerror = () => {
+      this.protocolErrorCount++;
     };
     client.fallbackNotificationHandler = async (notification) => {
-      const method = notification.method;
-      this.notificationCounts[method] = (this.notificationCounts[method] ?? 0) + 1;
+      this.recordNotification(notification.method);
     };
 
     try {
       await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
       this.processPid = transport.pid ?? undefined;
+      this.processStartedAt = new Date().toISOString();
       client.onclose = () => this.handleDisconnect("stdio transport closed");
 
       // Upstream defines readiness as a real execution request after connect.
       await this.runRequest("tools/list", () =>
         client.listTools(undefined, {
-          timeout:
+        timeout:
             this.options.timing?.initialReadinessTimeoutMs ??
             INITIAL_READINESS_TIMEOUT_MS,
         }),
@@ -169,15 +179,20 @@ export class DesktopCommanderIntegration {
   }
 
   listTools(options?: RequestOptions): Promise<ListToolsResult> {
-    return this.runRequest("tools/list", () => this.requireClient().listTools(undefined, options));
+    return this.runRequest(
+      "tools/list",
+      () => this.requireClient().listTools(undefined, options),
+      options,
+    );
   }
 
   callTool(
     params: CallToolRequest["params"],
     options?: RequestOptions,
   ): Promise<any> {
-    return this.runRequest("tools/call", () =>
-      this.requireClient().callTool(
+    return this.runRequest(
+      "tools/call",
+      () => this.requireClient().callTool(
         {
           ...params,
           _meta: safeRemoteMetadata(params._meta),
@@ -185,6 +200,7 @@ export class DesktopCommanderIntegration {
         undefined,
         options,
       ),
+      options,
     );
   }
 
@@ -192,8 +208,10 @@ export class DesktopCommanderIntegration {
     timeoutMs: number,
     options?: RequestOptions,
   ): Promise<Awaited<ReturnType<Client["ping"]>>> {
-    return this.runRequest("ping", () =>
-      this.requireClient().ping({ ...options, timeout: timeoutMs }),
+    return this.runRequest(
+      "ping",
+      () => this.requireClient().ping({ ...options, timeout: timeoutMs }),
+      options,
     );
   }
 
@@ -205,8 +223,10 @@ export class DesktopCommanderIntegration {
     request: Request,
     options?: RequestOptions,
   ): Promise<any> {
-    return this.runRequest(request.method, () =>
-      this.requireClient().request(request, ResultSchema, options),
+    return this.runRequest(
+      request.method,
+      () => this.requireClient().request(request, ResultSchema, options),
+      options,
     );
   }
 
@@ -221,7 +241,9 @@ export class DesktopCommanderIntegration {
       consecutiveMisses: heartbeat?.consecutiveMisses ?? 0,
       ...(this.processPid ? { pid: this.processPid } : {}),
       ...(this.processStartedAt ? { processStartedAt: this.processStartedAt } : {}),
+      ...(this.processUsage ? this.processUsage : {}),
       activeRequestCount: this.activeRequestCount,
+      protocolErrorCount: this.protocolErrorCount,
       notificationCounts: { ...this.notificationCounts },
       recentRequests: this.recentRequests.map((event) => ({ ...event })),
     };
@@ -259,29 +281,60 @@ export class DesktopCommanderIntegration {
     if (this.closing || this.disconnectReported) return;
     this.readyValue = false;
     this.disconnectReported = true;
+    this.processUsage = this.processPid ? captureProcessUsage(this.processPid) : undefined;
+    void Promise.resolve(
+      this.options.onDiagnostic?.({
+        method: "disconnect",
+        message: reason.slice(0, 100),
+        snapshot: this.snapshot(),
+      }),
+    ).catch(() => {});
     this.disconnectHandler?.(reason);
   }
 
-  private async runRequest<T>(method: string, operation: () => Promise<T>): Promise<T> {
+  private async runRequest<T>(
+    method: string,
+    operation: () => Promise<T>,
+    options?: RequestOptions,
+  ): Promise<T> {
     const startedAt = Date.now();
     this.activeRequestCount++;
-    let status: "ok" | "error" = "ok";
+    let status: "ok" | "error" | "timeout" | "cancelled" = "ok";
     try {
       return await operation();
     } catch (error) {
-      status = "error";
+      status = options?.signal?.aborted
+        ? "cancelled"
+        : isTimeoutError(error)
+          ? "timeout"
+          : "error";
       throw error;
     } finally {
       this.activeRequestCount--;
       this.recentRequests.push({
         timestamp: new Date(startedAt).toISOString(),
-        method,
+        method: method.slice(0, 80),
         durationMs: Date.now() - startedAt,
         status,
       });
       if (this.recentRequests.length > 50) this.recentRequests.shift();
     }
   }
+
+  private recordNotification(method: string): void {
+    const boundedMethod = method.slice(0, 80);
+    const key =
+      Object.hasOwn(this.notificationCounts, boundedMethod) ||
+      Object.keys(this.notificationCounts).length < 16
+        ? boundedMethod
+        : "other";
+    this.notificationCounts[key] = (this.notificationCounts[key] ?? 0) + 1;
+  }
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return !!error && typeof error === "object" &&
+    "code" in error && error.code === ErrorCode.RequestTimeout;
 }
 
 function safeRemoteMetadata(value: unknown): Record<string, unknown> {
