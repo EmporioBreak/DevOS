@@ -7,7 +7,7 @@
     "devos": "dist/src/cli.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.15"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -19,7 +19,8 @@
     "@wonderwhy-er/desktop-commander": "0.2.52",
     "express": "5.2.1",
     "express-rate-limit": "8.7.1",
-    "playwright": "1.63.0"
+    "@camoufox/camoufox": "0.5.7",
+    "playwright-core": "1.62.1"
   },
   "devDependencies": {
     "@types/express": "5.0.6",
