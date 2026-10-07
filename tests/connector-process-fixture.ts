@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { NGROK_VERSION } from "../src/connector.js";
 export const fixtureSecret =
@@ -103,5 +103,36 @@ export function dead(pid: number) {
     return false;
   } catch {
     return true;
+  }
+}
+
+export function directDesktopCommanderChild(runtimePid: number): number | undefined {
+  const processes = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,command="], {
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" },
+  });
+  for (const line of processes.split("\n")) {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
+    if (
+      match &&
+      Number(match[2]) === runtimePid &&
+      match[3]!.includes("/node_modules/@wonderwhy-er/desktop-commander/dist/index.js")
+    ) {
+      return Number(match[1]);
+    }
+  }
+  return undefined;
+}
+
+export function processIsStopped(pid: number): boolean {
+  try {
+    return execFileSync("/bin/ps", ["-p", String(pid), "-o", "stat="], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+    })
+      .trim()
+      .startsWith("T");
+  } catch {
+    return false;
   }
 }
