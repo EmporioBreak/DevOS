@@ -44,11 +44,11 @@
 - `initialize()` connects, runs bounded `listTools()` readiness, and starts the watchdog only after readiness succeeds.
 - Gateway receives the adapter through normal construction; it no longer creates or closes `Client` or `StdioClientTransport` directly.
 
-- [ ] Add failing tests for adapter readiness, disconnect callback, idempotent close and gateway startup failure cleanup.
-- [ ] Run `node --import tsx --test tests/desktop-commander-integration.test.ts` and confirm expected failures.
-- [ ] Move local process/client lifecycle out of gateway with no change to OAuth or HTTP session behavior.
-- [ ] Run adapter and gateway tests plus `npm run build`.
-- [ ] Commit `refactor: extract Desktop Commander integration adapter`.
+- [x] Add failing tests for adapter readiness, disconnect callback, idempotent close and gateway startup failure cleanup.
+- [x] Run `node --import tsx --test tests/desktop-commander-integration.test.ts` and confirm expected failures.
+- [x] Move local process/client lifecycle out of gateway with no change to OAuth or HTTP session behavior.
+- [x] Run adapter and gateway tests plus `npm run build`.
+- [x] Commit `refactor: extract Desktop Commander integration adapter`.
 
 ### Task 2: Match upstream launch, identity and request metadata
 
@@ -63,11 +63,11 @@
 - Local `Client` identity is `desktop-commander-client` / `1.0.0`; public server identity remains DevOS's public identity.
 - `callTool` receives `_meta.remote=true` and only safe, relevant inbound metadata.
 
-- [ ] Add tests for effective inherited/overridden env, no connector secrets, client identity and remote metadata.
-- [ ] Verify the new tests fail for the current behavior.
-- [ ] Implement upstream parity without changing the pinned package.
-- [ ] Run focused tests and build.
-- [ ] Commit `fix: match upstream Desktop Commander launch semantics`.
+- [x] Add tests for effective inherited/overridden env, no connector secrets, client identity and remote metadata.
+- [x] Verify the new tests fail for the current behavior.
+- [x] Implement upstream parity without changing the pinned package.
+- [x] Run focused tests and build.
+- [x] Commit `fix: enforce safe Desktop Commander metadata parity`.
 
 ### Task 3: Separate local notifications from public progress
 
@@ -82,11 +82,11 @@
 - Gateway forwards `notifications/progress` only through the originating request's callback and progress token.
 - `notifications/message` and unrelated notifications do not create public session writes.
 
-- [ ] Add failing tests for message flood isolation, concurrent session progress routing and request cancellation isolation.
-- [ ] Verify those tests fail because of the current fan-out or metadata behavior.
-- [ ] Remove session-wide notification fan-out; preserve request-scoped progress and cancellation.
-- [ ] Run focused tests and build.
-- [ ] Commit `fix: keep Desktop Commander notifications request scoped`.
+- [x] Add failing tests for message flood isolation, concurrent session progress routing and request cancellation isolation.
+- [x] Verify those tests fail because of the current fan-out or metadata behavior.
+- [x] Remove session-wide notification fan-out; preserve request-scoped progress and cancellation.
+- [x] Run focused tests and build.
+- [x] Commit `test: prove Desktop Commander notification isolation`.
 
 ### Task 4: Preserve request bounds and diagnostics across the adapter boundary
 
@@ -102,11 +102,11 @@
 - Per-request timeout/cancel is isolated from watchdog health.
 - Diagnostics are payload-free and bounded to 50 recent request lifecycle events plus notification counts, active request count, last successful ping and process identity/usage where available.
 
-- [ ] Add failing tests for concurrent calls, timeout with healthy heartbeat, `onerror` without restart, bounded request event history and no payload capture.
-- [ ] Verify expected failures.
-- [ ] Implement typed forwarding and bounded instrumentation without changing external timeout values.
-- [ ] Run focused tests and build.
-- [ ] Commit `feat: add bounded Desktop Commander lifecycle diagnostics`.
+- [x] Add failing tests for concurrent calls, timeout with healthy heartbeat, `onerror` without restart, bounded request event history and no payload capture.
+- [x] Verify expected failures.
+- [x] Implement typed forwarding and bounded instrumentation without changing external timeout values.
+- [x] Run focused tests and build.
+- [x] Commit `feat: add bounded Desktop Commander lifecycle diagnostics`.
 
 ### Task 5: Prove cleanup, watchdog recovery and notification flood behavior
 
@@ -120,22 +120,24 @@
 - Existing process ownership and supervisor APIs remain authoritative.
 - Test backends can emit many `notifications/message` events and can be stopped or killed by the exact owned PID.
 
-- [ ] Add fixture tests for initialization failure cleanup, close races, notification flood under concurrent requests and bounded memory/queued work.
-- [ ] Add same-load comparisons for stock upstream-style launch and the final public DevOS path: 100+ `get_config`, 100+ `tools/list`, short process start/poll cycles, concurrent reads, cancellation, bounded output and idle periods.
-- [ ] Run controlled `SIGSTOP` and `SIGKILL` recovery tests. Require old PID exit, fresh MCP request success, no watchdog restart during normal load and no orphan children.
-- [ ] Commit `test: cover Desktop Commander parity and fault recovery`.
+- [x] Add fixture tests for initialization failure cleanup, close races, notification flood under concurrent requests and bounded memory/queued work.
+- [x] Add same-load comparisons for stock upstream-style launch and the final public DevOS path: 100+ `get_config`, 100+ `tools/list`, short process start/poll cycles, concurrent reads, cancellation, bounded output and idle periods.
+- [x] Run controlled `SIGSTOP` and `SIGKILL` recovery tests. Require old PID exit, fresh MCP request success, no watchdog restart during normal load and no orphan children.
+- [x] Commit `test: cover Desktop Commander parity and fault recovery`.
 
 ### Task 6: Full verification and live-host evidence
 
 **Files:**
 - Modify the parity audit with final evidence and any justified deviations.
 
-- [ ] Run `npm ci`, `npm run build` and `npm test`; record exact results.
-- [ ] Run local real Desktop Commander smoke tests for `get_config`, `tools/list`, `read_file`, short `start_process` and subsequent `read_process_output`.
-- [ ] Run isolated public-path/OAuth tests where credentials are available without copying or logging secrets; verify stale sessions fail closed.
-- [ ] Capture process snapshots before and after controlled failure; confirm no orphan processes and `.env` remains ignored/untracked.
+- [x] Run `npm ci`, `npm run build` and `npm test`; record exact results.
+- [x] Run local real Desktop Commander smoke tests for `get_config`, `tools/list`, `read_file`, short `start_process` and subsequent `read_process_output`.
+- [x] Run isolated public-path/OAuth tests where credentials are available without copying or logging secrets; verify stale sessions fail closed.
+- [x] Capture process identities before and after controlled failure; confirm no orphan worktree children and `.env` remains ignored/untracked.
 - [ ] Run public ngrok recovery only against an isolated/controlled endpoint; do not fault the existing production connector during ordinary-load tests.
-- [ ] Update the audit's parity matrix and unresolved findings; commit `docs: record Desktop Commander parity verification`.
+- [x] Update the audit's parity matrix and unresolved findings; commit `docs: record Desktop Commander parity verification`.
+
+The public ngrok item remains open: the isolated public-path suite uses a controlled fixture endpoint, and the connected DevOS MCP `get_config` smoke returned `-32603 Internal error`. No production tunnel or connector was restarted for this task.
 
 ## Self-review coverage
 

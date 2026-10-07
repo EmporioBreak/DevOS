@@ -171,6 +171,28 @@ test("unexpected child close clears readiness and reports one disconnect", async
   }
 });
 
+test("protocol onerror is diagnostic-only and never fails a healthy backend", async () => {
+  let failures = 0;
+  const adapter = new DesktopCommanderIntegration({
+    root: process.cwd(),
+    timing: { heartbeatIntervalMs: 1_000 },
+    onDisconnect: () => failures++,
+  });
+  try {
+    await adapter.initialize();
+    const client = (adapter as any).client;
+    client.onerror(new Error("private protocol detail must not be retained"));
+    const snapshot = adapter.snapshot();
+    assert.equal(snapshot.protocolErrorCount, 1);
+    assert.equal(snapshot.state, "alive");
+    assert.equal(adapter.ready, true);
+    assert.equal(failures, 0);
+    assert.equal(JSON.stringify(snapshot).includes("private protocol detail"), false);
+  } finally {
+    await adapter.close();
+  }
+});
+
 test("failed listTools readiness closes the partial child", async () => {
   const f = await fixture("list-failure");
   const desktop = new DesktopCommanderIntegration({ root: f.root });

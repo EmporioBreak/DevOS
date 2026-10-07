@@ -50,6 +50,36 @@ The comparison uses upstream `src/remote-device/desktop-commander-integration.ts
 - The existing production connector remains in the primary checkout. Fault injection for this task must use exact process ownership and an isolated fixture; do not disturb that connector for ordinary-load tests.
 - Public production ngrok and host-level SIGSTOP proof are final acceptance checks and must be reported separately from fixture coverage.
 
+## Implementation results and final evidence
+
+The adapter extraction and verification are implemented on `codex/desktop-commander-upstream-parity`, based on the requested `main` SHA `d7626763c0ddd80ee5895c2f9d6a8581c982e0b4`.
+
+| Concern | Final DevOS behavior | Evidence / disposition |
+|---|---|---|
+| Child launch and client identity | Stock pinned package; SDK-safe environment plus DevOS allowlist/overrides; `DC_REMOTE_DEVICE=true`; local identity `desktop-commander-client` / `1.0.0`. | Adapter environment and identity tests pass. No package upgrade or upstream patch was needed. |
+| Readiness and liveness | Bounded `tools/list` proves readiness; only then does the single-flight 15s/5s/3-miss watchdog start. Health exposes `unknown`, `alive`, `suspect`, or `stale/dead`. | Adapter and watchdog unit tests pass. Normal-load stress and the process integration test do not trigger a restart. |
+| Request metadata | `tools/call` enforces `_meta.remote=true`, forwarding only a valid progress token and bounded client name/version. | Metadata allowlist test passes, including exclusion of arbitrary metadata and secrets. |
+| Notifications and cancellation | Internal notifications are counted locally and never broadcast. Progress is forwarded only to its originating public request; abort/timeout is request-local. | 1,000-message two-session isolation test passes; cancellation is followed by a successful call. |
+| Deadlines and process sessions | Service requests cap at 60s; tool calls use 60s idle reset by progress and 180s total. Long process work returns a PID/session for later polling. | Deadline/progress/cancel tests and start/poll integration cycles pass. |
+| Diagnostics and cleanup | Payload-free bounded history (50 lifecycle events), notification counters and exact owned-PID usage are recorded. Startup/shutdown closes are bounded; intentional close cannot report a late failure. | Diagnostics allowlist/file-bound tests; bounded startup/close tests; shutdown race assertion pass. |
+| Recovery and ownership | DevOS supervisor remains the only restart owner and replaces the runtime generation. | Fixture integration passes supervisor death, exact-child `SIGSTOP`, `SIGKILL` of child/ngrok/runtime, stale-session rejection, fresh MCP calls after recovery, and owned-child cleanup. The test also passes 100 public `tools/list` plus 100 `get_config` calls and 20 concurrent reads. |
+
+### Final commands and host checks
+
+- `npm ci`: passed; lockfile unchanged. npm reports 11 audit findings (6 moderate, 5 high); no dependency update was justified by a demonstrated upstream defect.
+- `npm run build`: passed after the final test changes.
+- `npm test`: 301 passed, 0 failed; includes the real local pinned Desktop Commander process integration, diagnostic-only `onerror` proof, and controlled fixture fault injection.
+- `tests/desktop-commander-stress.test.ts`: 100 `tools/list` + 100 `get_config`, 20 concurrent config reads, three short process start/poll cycles, healthy watchdog, bounded payload-free history, and exact child cleanup passed.
+- `SIGSTOP` integration: passed in 106.7 seconds. Three-miss detection remained within the test's 40-second bound; supervisor replaced runtime and Desktop Commander PIDs; old session failed closed; a newly initialized MCP session successfully called tools after recovery. Subsequent child, ngrok, runtime and supervisor death paths recovered and cleaned their owned processes.
+- Local real-package smoke: public-path integration covers OAuth, `tools/list`, `read_file`, `start_process`, `list_sessions`, and `read_process_output` after replacement.
+- Direct MCP plugin smoke: `get_config` returned `MCP -32603 Internal error`; this is not counted as successful evidence and was not retried with a restart.
+- A controlled kill/recovery of the already-running production public ngrok tunnel was not performed. The recovery suite uses an isolated ngrok fixture, and production fault injection would require deploying/running this branch against the live connector. Do not claim public-production ngrok recovery from fixture evidence.
+- `.env` remains ignored and untracked; no `.env` was copied into the worktree. No GitHub Actions, Keychain, global daemon, process-name cleanup, or dependency patch was added.
+
+### Remaining limitation
+
+Public production MCP/ngrok health still needs a dedicated controlled host run after this branch is deployed or started in an isolated public tunnel. The plugin MCP smoke itself failed with `-32603`, so it cannot close that gap. The local real Desktop Commander and complete fixture fault-recovery evidence are green, but this limitation must remain explicit in the final report.
+
 ## Upstream source references
 
 - [`desktop-commander-integration.ts` at v0.2.52](https://github.com/wonderwhy-er/DesktopCommanderMCP/blob/v0.2.52/src/remote-device/desktop-commander-integration.ts)
