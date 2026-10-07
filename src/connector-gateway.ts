@@ -237,6 +237,12 @@ export function adaptChatGptToolCall(request: unknown): unknown {
   };
 }
 
+export const CONNECTOR_REQUEST_TIMEOUTS = {
+  serviceMs: 60_000,
+  toolIdleMs: 60_000,
+  toolTotalMs: 180_000,
+} as const;
+
 export async function startGateway(options: {
   root: string;
   port: number;
@@ -251,6 +257,11 @@ export async function startGateway(options: {
     heartbeatTimeoutMs?: number;
     heartbeatFailureThreshold?: number;
   };
+  requestTimeouts?: Partial<{
+    serviceMs: number;
+    toolIdleMs: number;
+    toolTotalMs: number;
+  }>;
 }) {
   ownerAuth(options.ownerSecret);
   let identity = options.publicUrl
@@ -491,25 +502,52 @@ export async function startGateway(options: {
             )?.progressToken;
             const writes: Promise<void>[] = [];
             const forwardedRequest = adaptChatGptToolCall(request) as typeof request;
-            const result = await local.request(forwardedRequest, ResultSchema, {
-              signal: extra.signal,
-              ...(token !== undefined
-                ? {
-                    onprogress: (progress: {
-                      progress: number;
-                      total?: number | undefined;
-                      message?: string | undefined;
-                    }) => {
-                      writes.push(
-                        extra.sendNotification({
-                          method: "notifications/progress",
-                          params: { ...progress, progressToken: token },
-                        }),
-                      );
-                    },
-                  }
-                : {}),
-            });
+            const toolCall = request.method === "tools/call";
+            const timeoutOptions = toolCall
+              ? {
+                  timeout:
+                    options.requestTimeouts?.toolIdleMs ??
+                    CONNECTOR_REQUEST_TIMEOUTS.toolIdleMs,
+                  resetTimeoutOnProgress: true,
+                  maxTotalTimeout:
+                    options.requestTimeouts?.toolTotalMs ??
+                    CONNECTOR_REQUEST_TIMEOUTS.toolTotalMs,
+                }
+              : {
+                  timeout:
+                    options.requestTimeouts?.serviceMs ??
+                    CONNECTOR_REQUEST_TIMEOUTS.serviceMs,
+                  maxTotalTimeout:
+                    options.requestTimeouts?.serviceMs ??
+                    CONNECTOR_REQUEST_TIMEOUTS.serviceMs,
+                };
+            let result: Awaited<ReturnType<typeof local.request>>;
+            try {
+              result = await local.request(forwardedRequest, ResultSchema, {
+                signal: extra.signal,
+                ...timeoutOptions,
+                ...(token !== undefined || toolCall
+                  ? {
+                      onprogress: (progress: {
+                        progress: number;
+                        total?: number | undefined;
+                        message?: string | undefined;
+                      }) => {
+                        if (token === undefined) return;
+                        writes.push(
+                          extra.sendNotification({
+                            method: "notifications/progress",
+                            params: { ...progress, progressToken: token },
+                          }),
+                        );
+                      },
+                    }
+                  : {}),
+              });
+            } catch (error) {
+              void Promise.allSettled(writes);
+              throw error;
+            }
             await Promise.all(writes);
 
             // ChatGPT imports remote MCP actions from tools/list and expects each

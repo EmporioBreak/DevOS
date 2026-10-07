@@ -3,7 +3,10 @@ import { createServer } from "node:net";
 import test from "node:test";
 import { parseCliArgs } from "../src/cli.js";
 import * as connectorModule from "../src/connector.js";
-import { adaptChatGptToolCall } from "../src/connector-gateway.js";
+import {
+  adaptChatGptToolCall,
+  CONNECTOR_REQUEST_TIMEOUTS,
+} from "../src/connector-gateway.js";
 
 test("provider-neutral CLI rejects obsolete tunnel IDs and secret flags", () => {
   for (const action of ["setup", "doctor", "run", "start", "stop", "status"])
@@ -23,6 +26,13 @@ test("connector exports a loopback gateway instead of a provider runtime", () =>
     "function",
   );
   assert.equal("TUNNEL_VERSION" in connectorModule, false);
+});
+test("connector request deadline defaults stay below the client call ceiling", () => {
+  assert.deepEqual(CONNECTOR_REQUEST_TIMEOUTS, {
+    serviceMs: 60_000,
+    toolIdleMs: 60_000,
+    toolTotalMs: 180_000,
+  });
 });
 
 test("ChatGPT compatibility adapter restores rich Desktop Commander arguments", () => {
@@ -103,6 +113,7 @@ import { join } from "node:path";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+const shortDelay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const secret = "synthetic-owner-secret-" + randomBytes(32).toString("hex");
 const issuer = "https://connector.example";
 async function gateway() {
@@ -664,6 +675,7 @@ test("config accepts only non-secret ports and exact local Desktop Commander sta
 
 test("stdio proxy preserves streaming progress tokens, tool errors and cancellation with secret-free child env", async () => {
   const root = await mkdtemp(join(tmpdir(), "devos stdio "));
+  let backendFailures = 0;
   const entry = join(root, "node_modules/@wonderwhy-er/desktop-commander/dist");
   await mkdir(entry, { recursive: true });
   await writeFile(
@@ -679,9 +691,15 @@ import { StdioServerTransport } from ${JSON.stringify(import.meta.resolve("@mode
 import fs from 'node:fs';
 fs.writeFileSync(${JSON.stringify(join(root, "env.json"))},JSON.stringify(process.env));
 const server=new Server({name:'controlled-stdio',version:'1'},{capabilities:{tools:{}}});
-server.setRequestHandler(ListToolsRequestSchema,()=>({tools:[{name:'controlled',inputSchema:{type:'object'}}]}));
+server.setRequestHandler(ListToolsRequestSchema,async(_req,extra)=>{
+  if(fs.existsSync(${JSON.stringify(join(root, "hang-list"))})) await new Promise(ok=>extra.signal.addEventListener('abort',()=>{fs.writeFileSync(${JSON.stringify(join(root, "list-cancelled"))},'yes');ok();},{once:true}));
+  return {tools:[{name:'controlled',inputSchema:{type:'object'}}]};
+});
 server.setRequestHandler(CallToolRequestSchema,async(req,extra)=>{
   if(req.params.arguments?.cancel){await new Promise(ok=>{extra.signal.addEventListener('abort',()=>{fs.writeFileSync(${JSON.stringify(join(root, "cancelled"))},'yes');ok();},{once:true});});}
+  if(req.params.arguments?.hang){await new Promise(ok=>{extra.signal.addEventListener('abort',()=>{fs.writeFileSync(${JSON.stringify(join(root, "call-cancelled"))},'yes');ok();},{once:true});});}
+  if(req.params.arguments?.slowProgress){for(let i=0;i<2;i++){await new Promise(ok=>setTimeout(ok,30));await extra.sendNotification({method:'notifications/progress',params:{progressToken:req.params._meta?.progressToken,progress:i+1,total:2}});}}
+  if(req.params.arguments?.progressForever){while(!extra.signal.aborted){await new Promise(ok=>setTimeout(ok,20));if(!extra.signal.aborted)await extra.sendNotification({method:'notifications/progress',params:{progressToken:req.params._meta?.progressToken,progress:1}});}}
   if(req.params._meta?.progressToken!==undefined) await extra.sendNotification({method:'notifications/progress',params:{progressToken:req.params._meta.progressToken,progress:1,total:2}});
   return {isError:!!req.params.arguments?.error,content:[{type:'text',text:'controlled tool result'}]};
 });
@@ -704,6 +722,13 @@ await server.connect(new StdioServerTransport());
         port: 0,
         ownerSecret: secret,
         publicUrl: issuer,
+        timing: {
+          heartbeatIntervalMs: 10,
+          heartbeatTimeoutMs: 10,
+          heartbeatFailureThreshold: 3,
+        },
+        requestTimeouts: { serviceMs: 45, toolIdleMs: 45, toolTotalMs: 120 },
+        onFailure: () => backendFailures++,
       });
     } finally {
       for (const key of keys) {
@@ -763,6 +788,100 @@ await server.connect(new StdioServerTransport());
         return false;
       }
     });
+    const afterCancel = await client.callTool({ name: "controlled", arguments: {} });
+    assert.match(JSON.stringify(afterCancel), /controlled tool result/);
+
+    const concurrentAbort = new AbortController();
+    const pending = client.callTool(
+      { name: "controlled", arguments: { hang: true } },
+      undefined,
+      { signal: concurrentAbort.signal },
+    );
+    const quick = await client.callTool({ name: "controlled", arguments: {} });
+    assert.match(JSON.stringify(quick), /controlled tool result/);
+    concurrentAbort.abort();
+    await assert.rejects(pending);
+    await waitFor(async () => {
+      try {
+        await readFile(join(root, "call-cancelled"));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    await rm(join(root, "call-cancelled"), { force: true });
+
+    await writeFile(join(root, "hang-list"), "yes");
+    const listAbort = new AbortController();
+    const listResult = client.listTools(undefined, { signal: listAbort.signal });
+    const listSettled = await Promise.race([
+      listResult.then(() => true, () => true),
+      shortDelay(250).then(() => false),
+    ]);
+    if (!listSettled) listAbort.abort();
+    assert.equal(listSettled, true, "service request obeys its short test deadline");
+    await rm(join(root, "hang-list"), { force: true });
+    await waitFor(async () => {
+      try {
+        await readFile(join(root, "list-cancelled"));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const concurrentLists = await Promise.all([
+      client.listTools(),
+      client.listTools(),
+    ]);
+    assert.ok(concurrentLists.every((list) => list.tools.length === 1));
+
+    let progressCount = 0;
+    const slowProgress = await client.callTool(
+      { name: "controlled", arguments: { slowProgress: true } },
+      undefined,
+      { onprogress: () => progressCount++ },
+    );
+    assert.match(JSON.stringify(slowProgress), /controlled tool result/);
+    assert.ok(progressCount >= 2, "progress keeps the idle deadline alive");
+
+    const idleTimed = client.callTool({
+      name: "controlled",
+      arguments: { hang: true },
+    });
+    const quickDuringTimeout = await client.callTool({
+      name: "controlled",
+      arguments: {},
+    });
+    assert.match(JSON.stringify(quickDuringTimeout), /controlled tool result/);
+    await assert.rejects(idleTimed);
+    await waitFor(async () => {
+      try {
+        await readFile(join(root, "call-cancelled"));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+
+    const forever = new AbortController();
+    const foreverResult = client.callTool(
+      { name: "controlled", arguments: { progressForever: true } },
+      undefined,
+      { signal: forever.signal, onprogress: () => {} },
+    );
+    const totalDeadline = await Promise.race([
+      foreverResult.then(() => true, () => true),
+      shortDelay(250).then(() => false),
+    ]);
+    if (!totalDeadline) forever.abort();
+    assert.equal(totalDeadline, true, "continuous progress cannot exceed absolute deadline");
+    const afterTimeout = await client.callTool({ name: "controlled", arguments: {} });
+    assert.match(JSON.stringify(afterTimeout), /controlled tool result/);
+    assert.equal(backendFailures, 0, "request-local failures do not fail the backend");
+    const health = (await (await fetch(base + "/health")).json()) as {
+      backendAlive: boolean;
+    };
+    assert.equal(health.backendAlive, true);
   } finally {
     await client.close();
     await g.close();
