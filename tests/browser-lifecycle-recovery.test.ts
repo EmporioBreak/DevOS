@@ -132,7 +132,7 @@ function fixture(options: {
 }
 test('headed Camoufox is the reliability default', () => assert.equal(loadChatGptBrowserConfig({}).headless, false));
 for (const mode of ['success', 'pre-submit', 'recovery'] as const)
-  test(`initial persistent page reused and whole context closes on ${mode}`, async () => {
+  test(`initial persistent page reused and task context stays alive on ${mode}`, async () => {
     const f = fixture({
       failStream: mode === 'recovery', failPreparation: mode === 'pre-submit'
     });
@@ -145,7 +145,7 @@ for (const mode of ['success', 'pre-submit', 'recovery'] as const)
         projectRoot: '/project', prompt: 'Work', sessionId: saved
       })).text, terminal);
     assert.equal(f.newPages(), 0);
-    assert.equal(f.closed(), 1);
+    assert.equal(f.closed(), 0);
     assert.equal(f.sends(), mode === 'pre-submit' ? 0 : 1);
   });
 test('lost stream recovers exact submitted turn read-only, one send', async () => {
@@ -157,7 +157,7 @@ test('lost stream recovers exact submitted turn read-only, one send', async () =
   assert.equal(r.sessionId, saved);
   assert.equal(f.sends(), 1);
   assert.equal(f.reads(), 1);
-  assert.equal(f.closed(), 1);
+  assert.equal(f.closed(), 0);
 });
 for (const [name, options] of Object.entries({
   'no outgoing identity': {
@@ -221,13 +221,13 @@ for (const [name, options] of Object.entries({
     }
   },
 }))
-  test(`post-submit ${name} stops without replay and cleans context`, async () => {
+  test(`post-submit ${name} stops without replay and keeps task context`, async () => {
     const f = fixture(options);
     await assert.rejects(f.executor.run({
       projectRoot: '/project', prompt: 'Work', sessionId: saved
     }), /post-submit/);
     assert.equal(f.sends(), 1);
-    assert.equal(f.closed(), 1);
+    assert.equal(f.closed(), 0);
     if (options.missingId)
       assert.equal(f.reads(), 0);
   });
@@ -244,9 +244,7 @@ test('hanging context cleanup is bounded and reported as failure', async () => {
     }
   });
   const started = Date.now();
-  await assert.rejects(f.executor.run({
-    projectRoot: '/project', prompt: 'Work', sessionId: saved
-  }), /cleanup.*unconfirmed/i);
+  await assert.rejects(f.executor.close(), /cleanup.*unconfirmed/i);
   assert.ok(Date.now() - started < 250);
 });
 test('continued stream progress across old ten-minute boundary does not expire; idle does', async () => {
@@ -373,7 +371,7 @@ test('closed worker page reopens the same profile and conversation without sendi
   assert.equal(f.sends(), 1);
   assert.equal(reader.sends(), 0);
   assert.equal(f.closed(), 1);
-  assert.equal(reader.closed(), 1);
+  assert.equal(reader.closed(), 0);
 });
 test('malformed read body is not echoed in diagnostics', async () => {
   const f = fixture();
@@ -393,7 +391,7 @@ test('malformed read body is not echoed in diagnostics', async () => {
     projectRoot: '/project', prompt: 'Work', sessionId: saved
   }), error => error instanceof Error && error.message.includes('not structured JSON') && !error.message.includes('account-secret-body'));
   assert.equal(f.sends(), 1);
-  assert.equal(f.closed(), 1);
+  assert.equal(f.closed(), 0);
 });
 
 test('a later unrelated assistant final cannot replace the captured user answer', async () => {
@@ -422,5 +420,5 @@ test('a final whose nearest user ancestor differs cannot settle the captured tur
   } });
   await assert.rejects(f.executor.run({ projectRoot: '/project', prompt: 'Work', sessionId: saved }), /post-submit.*still-running/);
   assert.equal(f.sends(), 1);
-  assert.equal(f.closed(), 1);
+  assert.equal(f.closed(), 0);
 });

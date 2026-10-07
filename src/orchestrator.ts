@@ -237,6 +237,8 @@ export class Orchestrator {
         output = await executor.run({
           projectRoot: this.options.projectRoot,
           prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot),
+          workerId: worker.id,
+          ...(worker.executor === "chatgpt_browser" ? { knownBrowserSessions: state.sessions } : {}),
           ...(sessionId ? { sessionId } : {}),
           ...(worker.executor === "chatgpt_browser" ? { enforceProjectScope: true } : {}),
           onSession,
