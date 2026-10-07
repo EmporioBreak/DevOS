@@ -840,6 +840,10 @@ export async function connector(
 export async function connectorRuntime(root: string) {
   const config = await readConfig(root);
   const dir = join(root, ".devos/connector");
+  let resolveStop!: () => void;
+  const stopRequested = new Promise<void>(resolve => {
+    resolveStop = resolve;
+  });
   let stopping = false,
     failureComponent: "desktop_commander" | "ngrok" | "runtime" | undefined,
     child: ReturnType<typeof spawn> | undefined,
@@ -847,6 +851,7 @@ export async function connectorRuntime(root: string) {
   const stop = () => {
     if (stopping) return;
     stopping = true;
+    resolveStop();
     child?.kill("SIGTERM");
     void gateway?.close().catch(() => {});
   };
@@ -929,7 +934,7 @@ export async function connectorRuntime(root: string) {
     }
     gateway.setPublicUrl(url);
     process.send?.({ publicUrl: url });
-    await exit;
+    await Promise.race([exit, stopRequested]);
     if (!stopping) {
       throw Object.assign(new Error("ngrok exited unexpectedly."), {
         component: "ngrok",
@@ -943,6 +948,19 @@ export async function connectorRuntime(root: string) {
   } finally {
     stop();
     await gateway?.close();
+    if (child && child.exitCode === null && child.signalCode === null) {
+      await Promise.race([
+        new Promise<void>(resolve => child!.once("exit", () => resolve())),
+        delay(3000),
+      ]);
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await Promise.race([
+          new Promise<void>(resolve => child!.once("exit", () => resolve())),
+          delay(1000),
+        ]);
+      }
+    }
     process.off("SIGTERM", stop);
     process.off("SIGINT", stop);
     process.off("disconnect", stop);
