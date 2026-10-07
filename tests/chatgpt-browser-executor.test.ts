@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Page } from "playwright";
+import type { Page } from "playwright-core";
 import { isSameChatGptConversation, waitForConversationUrl } from "../src/chatgpt-browser-executor.js";
 
 test("recognizes only the saved Project conversation after browser resume", () => {
@@ -46,7 +46,7 @@ function browserFixture(projectUrl: string, navigation: string, moveDuringFill?:
   let sends = 0;
   const locator = { first() { return this; }, async waitFor() {}, async fill() { if (moveDuringFill) url = moveDuringFill; }, async isVisible() { return true; }, async click() { sends++; if (moveAfterSend) url = moveAfterSend; }, async press() { sends++; } };
   const page = { on() {}, url: () => url, async goto() { url = navigation; }, locator: () => locator, async evaluate() { return { text: 'DEVOS_RESULT {"status":"done"}', failed: false }; }, async waitForFunction() {}, async close() {} };
-  const executor = new ChatGptBrowserExecutor({ projectUrl, profileDir: "/unused", browserChannel: "chrome", headless: false }, 50);
+  const executor = new ChatGptBrowserExecutor({ projectUrl, profileDir: "/unused", headless: false }, 50);
   Object.assign(executor, { context: { async newPage() { return page; }, async close() {} } });
   return { executor, sends: () => sends };
 }
@@ -106,7 +106,7 @@ test("fresh response failure still persists a conversation created during submis
     on() {}, url: () => url, async goto() {}, locator: () => locator,
     async evaluate() { return 1; }, async waitForFunction() { throw new Error("response failed after submission"); }, async close() {},
   };
-  const executor = new ChatGptBrowserExecutor({ projectUrl: project, profileDir: "/unused", browserChannel: "chrome", headless: false }, 1000);
+  const executor = new ChatGptBrowserExecutor({ projectUrl: project, profileDir: "/unused", headless: false }, 1000);
   Object.assign(executor, { context: { async newPage() { return page; }, async close() {} } });
   await assert.rejects(executor.run({ projectRoot: "/project", prompt: "Work", enforceProjectScope: true, onSession: id => { saved = id; } }), /response failed after submission/);
   assert.equal(saved, created);
