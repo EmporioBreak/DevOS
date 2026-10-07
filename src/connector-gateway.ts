@@ -237,6 +237,17 @@ export const CONNECTOR_REQUEST_TIMEOUTS = {
   toolTotalMs: 180_000,
 } as const;
 
+const MAX_PUBLIC_MCP_SESSIONS = 32;
+const MCP_SESSION_EVICTION_CLOSE_TIMEOUT_MS = 1_000;
+
+interface PublicMcpSession {
+  transport: StreamableHTTPServerTransport;
+  server: Server;
+  clientId: string;
+  activeRequestCount: number;
+  lastActivityAt: number;
+}
+
 function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, timeoutMs);
@@ -247,6 +258,29 @@ function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<voi
         resolve();
       });
   });
+}
+
+async function evictLeastRecentlyUsedIdleSession(
+  sessions: Map<string, PublicMcpSession>,
+): Promise<boolean> {
+  let candidate: [string, PublicMcpSession] | undefined;
+  for (const entry of sessions) {
+    const [, session] = entry;
+    if (
+      session.activeRequestCount === 0 &&
+      (!candidate || session.lastActivityAt < candidate[1].lastActivityAt)
+    ) candidate = entry;
+  }
+  if (!candidate) return false;
+
+  // Forget the session before closing it so new requests fail closed while
+  // transport cleanup settles. The client can initialize a fresh session.
+  sessions.delete(candidate[0]);
+  await settleWithin(
+    candidate[1].server.close(),
+    MCP_SESSION_EVICTION_CLOSE_TIMEOUT_MS,
+  );
+  return true;
 }
 
 export async function startGateway(options: {
@@ -301,14 +335,8 @@ export async function startGateway(options: {
   const activeRequests = new Set<AbortController>();
   const forwardedRequests = new Set<Promise<unknown>>();
   const diagnosticWrites = new Set<Promise<unknown>>();
-  const sessions = new Map<
-    string,
-    {
-      transport: StreamableHTTPServerTransport;
-      server: Server;
-      clientId: string;
-    }
-  >();
+  const sessions = new Map<string, PublicMcpSession>();
+  let pendingSessionInitializations = 0;
   const reportFailure = () => {
     if (closing || failureReported) return;
     failureReported = true;
@@ -441,6 +469,7 @@ export async function startGateway(options: {
     (req, res, next) => bearer!(req, res, next),
     express.json({ limit: "1mb" }),
     async (req, res) => {
+      let releaseSessionReservation: (() => void) | undefined;
       try {
         const id = req.headers["mcp-session-id"];
         let session = typeof id === "string" ? sessions.get(id) : undefined;
@@ -457,10 +486,20 @@ export async function startGateway(options: {
             res.status(400).json({ error: "initialize_required" });
             return;
           }
-          if (sessions.size >= 32) {
-            res.status(503).json({ error: "session_capacity" });
-            return;
+          if (sessions.size + pendingSessionInitializations >= MAX_PUBLIC_MCP_SESSIONS) {
+            await evictLeastRecentlyUsedIdleSession(sessions);
+            if (sessions.size + pendingSessionInitializations >= MAX_PUBLIC_MCP_SESSIONS) {
+              res.status(503).json({ error: "session_capacity" });
+              return;
+            }
           }
+          pendingSessionInitializations++;
+          let reservationPending = true;
+          releaseSessionReservation = () => {
+            if (!reservationPending) return;
+            reservationPending = false;
+            pendingSessionInitializations--;
+          };
           const localInfo = desktop.getServerInfo();
           const server = new Server(
             localInfo.version ?? {
@@ -658,28 +697,47 @@ export async function startGateway(options: {
           server.fallbackNotificationHandler = async (notification) => {
             await desktop.notification(notification);
           };
+          let newSession: PublicMcpSession | undefined;
           const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: randomUUID,
             onsessioninitialized: (sessionId) => {
-              sessions.set(sessionId, {
-                transport,
-                server,
-                clientId: req.auth!.clientId,
-              });
+              if (!newSession) return;
+              newSession.lastActivityAt = Date.now();
+              sessions.set(sessionId, newSession);
+              releaseSessionReservation?.();
             },
           });
+          newSession = {
+            transport,
+            server,
+            clientId: req.auth!.clientId,
+            activeRequestCount: 0,
+            lastActivityAt: Date.now(),
+          };
           await server.connect(transport as Transport);
           const onclose = transport.onclose;
           transport.onclose = () => {
             onclose?.();
             if (transport.sessionId) sessions.delete(transport.sessionId);
           };
-          session = { transport, server, clientId: req.auth!.clientId };
+          session = newSession;
         }
-        await session.transport.handleRequest(req, res, req.body);
+        session.lastActivityAt = Date.now();
+        const trackedSession = session;
+        const isActiveSessionRequest = req.method === "POST";
+        if (isActiveSessionRequest) trackedSession.activeRequestCount++;
+        try {
+          await trackedSession.transport.handleRequest(req, res, req.body);
+        } finally {
+          if (isActiveSessionRequest) trackedSession.activeRequestCount--;
+          trackedSession.lastActivityAt = Date.now();
+          releaseSessionReservation?.();
+        }
       } catch {
         if (!res.headersSent)
           res.status(500).json({ error: "mcp_gateway_error" });
+      } finally {
+        releaseSessionReservation?.();
       }
     },
   );
