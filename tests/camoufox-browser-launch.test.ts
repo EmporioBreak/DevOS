@@ -23,15 +23,26 @@ for (const headless of [false, true]) {
       async close() { closes++; },
     } as unknown as BrowserContext;
 
+    const identity = {
+      schema: 1 as const,
+      os: "macos" as const,
+      preset: { userAgent: "stable-preset" },
+    };
+    t.mock.method(chatGptBrowserDeps, "loadIdentity", async profile => {
+      assert.equal(profile, profileDir);
+      return identity;
+    });
+
     let launches = 0;
     t.mock.method(
       chatGptBrowserDeps,
       "launchPersistentContext",
-      async (profile: string, options: { headless: boolean; timeout: number }) => {
+      async (profile: string, options) => {
         launches++;
         assert.equal(profile, profileDir);
         assert.equal(options.headless, headless);
         assert.equal(options.timeout, 1_000);
+        assert.equal(options.identity, identity);
         return context;
       },
     );
