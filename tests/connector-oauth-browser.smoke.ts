@@ -1,10 +1,10 @@
-// Browser consent smoke: system Chrome, fully intercepted HTTPS origin, loopback
+// Browser consent smoke: Camoufox, fully intercepted HTTPS origin, loopback
 // gateway and synthetic credentials only. Never touches saved worker sessions.
 import assert from "node:assert/strict";
 import { randomBytes, createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { chromium } from "playwright";
+import { Camoufox } from "@camoufox/camoufox";
 import { startGateway } from "../src/connector.js";
 const secret = randomBytes(32).toString("hex"),
   issuer = "https://browser-smoke.example";
@@ -20,7 +20,7 @@ const callbackServer = createServer((_req, res) =>
 );
 await new Promise<void>((ok) => callbackServer.listen(0, "127.0.0.1", ok));
 const callbackUrl = `http://127.0.0.1:${(callbackServer.address() as AddressInfo).port}/callback`;
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+const browser = await Camoufox({ headless: true });
 try {
   const registration = await fetch(base + "/register", {
     method: "POST",
