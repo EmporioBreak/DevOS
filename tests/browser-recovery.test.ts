@@ -142,16 +142,12 @@ test("closed persistent context is discarded and relaunched headless with the sa
   const existing = (f.executor as unknown as { context: unknown }).context;
   Object.assign(f.executor, { context: undefined });
   t.mock.method(chatGptBrowserDeps, "loadIdentity", async () => ({
-
     schema: 1 as const,
-
     os: "macos" as const,
-
     preset: { userAgent: "stable-test-preset" },
-
   }));
 
-  t.mock.method(chatGptBrowserDeps, "launchPersistentContext", async (profile: string, options: { headless?: boolean }) => {
+  t.mock.method(chatGptBrowserDeps, "launchPersistentContext", async (profile: string, options: Parameters<typeof chatGptBrowserDeps.launchPersistentContext>[1]) => {
     launches.push({ profile, headless: options.headless });
     return { ...(existing as object), async addInitScript() {}, on(_event: string, handler: () => void) { closeHandlers.push(handler); } } as unknown as BrowserContext;
   });
@@ -179,16 +175,12 @@ for (const phase of ["newPage", "goto"] as const) {
     let launches = 0;
     Object.assign(f.executor, { config: { projectUrl: project, profileDir: process.cwd() + "/.devos/test-profile", headless: true } });
     t.mock.method(chatGptBrowserDeps, "loadIdentity", async () => ({
-
       schema: 1 as const,
-
       os: "macos" as const,
-
       preset: { userAgent: "stable-test-preset" },
-
     }));
 
-    t.mock.method(chatGptBrowserDeps, "launchPersistentContext", async (_profile: string, options: { headless?: boolean }) => {
+    t.mock.method(chatGptBrowserDeps, "launchPersistentContext", async (_profile: string, options: Parameters<typeof chatGptBrowserDeps.launchPersistentContext>[1]) => {
       launches++;
       assert.equal(options.headless, true);
       return { ...context, async addInitScript() {}, on() {} } as unknown as BrowserContext;
