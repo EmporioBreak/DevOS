@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -48,6 +48,26 @@ test("invalid persisted identity fails closed instead of silently rotating finge
   await assert.rejects(
     loadOrCreateCamoufoxIdentity(profile),
     /refusing to rotate browser identity/,
+  );
+  assert.equal(draws, 0);
+});
+
+test("missing identity for a non-empty profile fails closed", async t => {
+  const root = await mkdtemp(join(tmpdir(), "devos-camoufox-identity-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const profile = join(root, "profile");
+  await mkdir(profile);
+  await writeFile(join(profile, "cookies.sqlite"), "existing authenticated profile", "utf8");
+
+  let draws = 0;
+  t.mock.method(camoufoxIdentityDeps, "getRandomPreset", () => {
+    draws++;
+    return { userAgent: "replacement" } as never;
+  });
+
+  await assert.rejects(
+    loadOrCreateCamoufoxIdentity(profile),
+    /missing for non-empty profile.*refusing to rotate browser identity/,
   );
   assert.equal(draws, 0);
 });
