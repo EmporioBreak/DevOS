@@ -112,7 +112,7 @@ build_self_host() {
 
   if [ "$SELF_HOST_UPDATED" = "1" ] || [ ! -d "$ROOT/node_modules" ]; then
     echo "Installing DevOS dependencies for self-hosting..."
-    (cd "$ROOT" && npm install --no-package-lock >/dev/null)
+    (cd "$ROOT" && npm ci >/dev/null)
   fi
 
   if ! BUILD_OUTPUT=$(cd "$ROOT" && npm run build 2>&1); then
@@ -149,7 +149,7 @@ install_runtime() {
         exit 1
       }
     else
-      npm install --no-package-lock >/dev/null
+      npm ci >/dev/null
       npm run build >/dev/null
     fi
   )

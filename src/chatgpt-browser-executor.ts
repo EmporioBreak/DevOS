@@ -6,6 +6,7 @@ import type { Executor, WorkerRequest } from "./executor.js";
 import { debugLog } from "./debug-log.js";
 import type { WorkerOutput } from "./workflow.js";
 import {
+  CHATGPT_PERSISTENT_PROFILE_IGNORED_DEFAULT_ARGS,
   assertChatGptProjectScope,
   getChatGptProjectScope,
   isProvisionalChatGptConversationId,
@@ -421,6 +422,7 @@ export class ChatGptBrowserExecutor implements Executor {
       channel: this.config.browserChannel,
       headless: this.config.headless,
       viewport: null,
+      ignoreDefaultArgs: [...CHATGPT_PERSISTENT_PROFILE_IGNORED_DEFAULT_ARGS],
     });
 
     this.context = context;

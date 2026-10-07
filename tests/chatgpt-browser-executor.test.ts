@@ -111,3 +111,10 @@ test("fresh response failure still persists a conversation created during submis
   await assert.rejects(executor.run({ projectRoot: "/project", prompt: "Work", enforceProjectScope: true, onSession: id => { saved = id; } }), /response failed after submission/);
   assert.equal(saved, created);
 });
+
+
+test("executor exposes persistent-profile launch args through browser config contract", async () => {
+  const { CHATGPT_PERSISTENT_PROFILE_IGNORED_DEFAULT_ARGS } = await import("../src/browser-config.js");
+  assert.ok(CHATGPT_PERSISTENT_PROFILE_IGNORED_DEFAULT_ARGS.includes("--disable-extensions"));
+  assert.ok(CHATGPT_PERSISTENT_PROFILE_IGNORED_DEFAULT_ARGS.includes("--use-mock-keychain"));
+});

@@ -771,3 +771,82 @@ test("gateway stays closed before public HTTPS identity is ready", async () => {
     await g.close();
   }
 });
+
+
+test("background ownership rejects PID reuse and project mismatch", () => {
+  const identity = { pid: 123, startTime: "start", executable: "/usr/bin/node" };
+  assert.equal(connectorModule.backgroundOwnershipMatches(
+    { pid: 123, projectRoot: "/project", identity },
+    identity,
+    "/project",
+  ), true);
+  assert.equal(connectorModule.backgroundOwnershipMatches(
+    { pid: 123, projectRoot: "/project", identity },
+    { ...identity, startTime: "later" },
+    "/project",
+  ), false);
+  assert.equal(connectorModule.backgroundOwnershipMatches(
+    { pid: 123, projectRoot: "/other", identity },
+    identity,
+    "/project",
+  ), false);
+});
+
+
+test("connector status distinguishes recovery and terminal failure", () => {
+  assert.equal(
+    connectorModule.formatConnectorStatus({
+      lifecycle: "recovering",
+      supervisor: "owned",
+      runtimeAlive: false,
+      localHealthy: false,
+      ngrokRegistered: false,
+      restartAttempt: 3,
+      maxRestartAttempts: 5,
+      lastFailureComponent: "ngrok",
+      lastExitCode: 1,
+      lastFailureAt: "2026-10-07T00:00:00.000Z",
+    }),
+    "Connector recovering; supervisor owned; runtime stopped; local gateway unavailable; ngrok unavailable; restart 3/5; last failure ngrok exit=1 at 2026-10-07T00:00:00.000Z; public reachability not tested.\n",
+  );
+  assert.equal(
+    connectorModule.formatConnectorStatus({
+      lifecycle: "terminal_failed",
+      supervisor: "foreground-or-absent",
+      runtimeAlive: false,
+      localHealthy: false,
+      ngrokRegistered: false,
+      restartAttempt: 5,
+      maxRestartAttempts: 5,
+      lastFailureComponent: "desktop_commander",
+    }),
+    "Connector terminal_failed; supervisor foreground-or-absent; runtime stopped; local gateway unavailable; ngrok unavailable; restart 5/5; last failure desktop_commander; public reachability not tested.\n",
+  );
+});
+
+
+test("live connector ownership without identity is ambiguous, not stale", () => {
+  assert.equal(
+    connectorModule.backgroundOwnershipIsProvable(
+      { pid: 123, projectRoot: "/project" },
+      "/project",
+    ),
+    false,
+  );
+  assert.equal(
+    connectorModule.backgroundOwnershipIsProvable(
+      {
+        pid: 123,
+        projectRoot: "/project",
+        identity: {
+          pid: 123,
+          startTime: "start",
+          executable: "/usr/bin/node",
+          commandLine: "node connector-runner.js /project --background",
+        },
+      },
+      "/project",
+    ),
+    true,
+  );
+});

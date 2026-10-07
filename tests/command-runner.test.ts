@@ -129,3 +129,48 @@ test("signal listeners are restored after a command", async () => {
   await new LocalCommandRunner().run(process.execPath, ["-e", ""], process.cwd());
   assert.deepEqual([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")], before);
 });
+
+
+test("bounds retained stdout and stderr while preserving head and tail", async () => {
+  const headOut = "OUT-HEAD";
+  const tailOut = "OUT-TAIL";
+  const headErr = "ERR-HEAD";
+  const tailErr = "ERR-TAIL";
+  const result = await new LocalCommandRunner().run(
+    process.execPath,
+    ["-e", `
+      process.stdout.write("OUT-HEAD" + "x".repeat(2 * 1024 * 1024) + "OUT-TAIL");
+      process.stderr.write("ERR-HEAD" + "y".repeat(2 * 1024 * 1024) + "ERR-TAIL");
+    `],
+    process.cwd(),
+  );
+  assert.equal(result.stdoutTruncated, true);
+  assert.equal(result.stderrTruncated, true);
+  assert.ok(result.stdout.startsWith(headOut));
+  assert.ok(result.stdout.endsWith(tailOut));
+  assert.ok(result.stderr.startsWith(headErr));
+  assert.ok(result.stderr.endsWith(tailErr));
+  assert.ok(result.stdout.length < 1_200_000);
+  assert.ok(result.stderr.length < 1_200_000);
+});
+
+test("stream callbacks still observe completion markers across retained-output truncation", async () => {
+  let observed = false;
+  const result = await new LocalCommandRunner().run(
+    process.execPath,
+    ["-e", `
+      process.stdout.write("x".repeat(1200000));
+      process.stdout.write("\\nDEVOS_STREAM_MARKER\\n");
+      setInterval(() => {}, 1000);
+    `],
+    process.cwd(),
+    undefined,
+    {
+      onOutput: stdout => { if (stdout.includes("DEVOS_STREAM_MARKER")) observed = true; },
+      completeWhenOutput: stdout => stdout.includes("DEVOS_STREAM_MARKER"),
+    },
+  );
+  assert.equal(observed, true);
+  assert.equal(result.completedEarly, true);
+  assert.equal(result.stdoutTruncated, true);
+});

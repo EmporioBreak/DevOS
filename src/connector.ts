@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
   access,
@@ -16,6 +16,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
+import { loadConnectorSecrets, type ConnectorSecrets } from "./connector-env.js";
+import { captureProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "./process-identity.js";
+import { runBoundedConnectorSupervisor, type ConnectorSupervisorState } from "./connector-supervisor.js";
+import { appendConnectorDiagnostic } from "./connector-diagnostics.js";
 import {
   startGateway,
   ownerAuth,
@@ -77,7 +81,7 @@ export function connectorConfig(config: unknown): {
     ("version" in config && config.version !== 1)
   )
     throw new Error(
-      "Invalid connector config; allowed fields: version: 1, gatewayPort, ngrokApiPort. Secrets stay environment-only.",
+      "Invalid connector config; allowed fields: version: 1, gatewayPort, ngrokApiPort. Secrets belong in process environment or project .env.",
     );
   const c = config as { gatewayPort?: number; ngrokApiPort?: number };
   const gatewayPort = c.gatewayPort ?? 8787,
@@ -274,16 +278,83 @@ async function health(port: number) {
     return false;
   }
 }
+export interface ConnectorStatusSnapshot {
+  lifecycle: string;
+  supervisor: string;
+  runtimeAlive: boolean;
+  localHealthy: boolean;
+  ngrokRegistered: boolean;
+  restartAttempt?: number;
+  maxRestartAttempts?: number;
+  lastFailureComponent?: string;
+  lastFailureAt?: string;
+  lastExitCode?: number | null;
+}
+
+export function formatConnectorStatus(snapshot: ConnectorStatusSnapshot): string {
+  const restart =
+    snapshot.restartAttempt !== undefined &&
+    snapshot.maxRestartAttempts !== undefined
+      ? `; restart ${snapshot.restartAttempt}/${snapshot.maxRestartAttempts}`
+      : "";
+  const failure = snapshot.lastFailureComponent
+    ? `; last failure ${snapshot.lastFailureComponent}${snapshot.lastExitCode !== undefined ? ` exit=${snapshot.lastExitCode}` : ""}${snapshot.lastFailureAt ? ` at ${snapshot.lastFailureAt}` : ""}`
+    : "";
+  return (
+    `Connector ${snapshot.lifecycle}; supervisor ${snapshot.supervisor}; runtime ${snapshot.runtimeAlive ? "running" : "stopped"}; ` +
+    `local gateway ${snapshot.localHealthy ? "healthy" : "unavailable"}; ngrok ${snapshot.ngrokRegistered ? "HTTPS endpoint registered" : "unavailable"}` +
+    `${restart}${failure}; public reachability not tested.\n`
+  );
+}
+
 const backgroundStateName = "background.json";
 
-async function backgroundState(root: string): Promise<{ pid?: number }> {
+export interface ConnectorBackgroundState {
+  pid?: number;
+  startedAt?: string;
+  projectRoot?: string;
+  ownershipToken?: string;
+  identity?: ProcessIdentity;
+}
+
+async function backgroundState(root: string): Promise<ConnectorBackgroundState> {
   try {
     return JSON.parse(
       await readFile(join(root, ".devos/connector", backgroundStateName), "utf8"),
-    ) as { pid?: number };
+    ) as ConnectorBackgroundState;
   } catch {
     return {};
   }
+}
+
+export function backgroundOwnershipIsProvable(
+  state: ConnectorBackgroundState,
+  root: string,
+): state is ConnectorBackgroundState & {
+  pid: number;
+  projectRoot: string;
+  identity: ProcessIdentity;
+} {
+  return (
+    Number.isSafeInteger(state.pid) &&
+    !!state.pid &&
+    state.pid > 0 &&
+    state.projectRoot === root &&
+    !!state.identity &&
+    state.identity.pid === state.pid
+  );
+}
+
+export function backgroundOwnershipMatches(
+  state: ConnectorBackgroundState,
+  actual: ProcessIdentity,
+  root: string,
+): boolean {
+  return (
+    backgroundOwnershipIsProvable(state, root) &&
+    state.pid === actual.pid &&
+    sameProcessIdentity(state.identity, actual)
+  );
 }
 
 function processAlive(pid: number | undefined): boolean {
@@ -299,21 +370,36 @@ function processAlive(pid: number | undefined): boolean {
 export async function connectorBackgroundRunning(root: string): Promise<boolean> {
   root = await realpath(root);
   const state = await backgroundState(root);
-  return processAlive(state.pid);
+  if (!processAlive(state.pid) || !state.pid) return false;
+  const actual = await captureProcessIdentity(state.pid);
+  return !!actual && backgroundOwnershipMatches(state, actual, root);
 }
 
 async function startBackground(root: string, config: {
   gatewayPort: number;
   ngrokApiPort: number;
-}) {
+}, secrets: ConnectorSecrets) {
   const dir = join(root, ".devos/connector");
   const serviceFile = join(dir, backgroundStateName);
   const existing = await backgroundState(root);
-  if (processAlive(existing.pid)) {
-    process.stdout.write("DevOS is already running in background.\n");
-    return;
+  if (processAlive(existing.pid) && existing.pid) {
+    if (!backgroundOwnershipIsProvable(existing, root)) {
+      throw new Error(
+        "Cannot prove ownership of the existing DevOS background PID; refusing to replace its state.",
+      );
+    }
+    const actual = await captureProcessIdentity(existing.pid);
+    if (!actual) {
+      throw new Error("Cannot inspect the existing DevOS background PID; refusing to replace its state.");
+    }
+    if (backgroundOwnershipMatches(existing, actual, root)) {
+      process.stdout.write("DevOS is already running in background.\n");
+      return;
+    }
+    await rm(serviceFile, { force: true });
+  } else {
+    await rm(serviceFile, { force: true });
   }
-  await rm(serviceFile, { force: true });
   await mkdir(dir, { recursive: true, mode: 0o700 });
 
   const runner = join(softwareRoot, "dist/src/connector-runner.js");
@@ -323,13 +409,24 @@ async function startBackground(root: string, config: {
     stdio: "ignore",
     env: {
       ...safeEnvironment(process.env),
-      NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN,
-      DEVOS_CONNECTOR_OWNER_SECRET: process.env.DEVOS_CONNECTOR_OWNER_SECRET,
+      NGROK_AUTHTOKEN: secrets.ngrokAuthtoken,
+      DEVOS_CONNECTOR_OWNER_SECRET: secrets.ownerSecret,
     },
   });
+  const childIdentity = child.pid ? await captureProcessIdentity(child.pid) : null;
+  if (!child.pid || !childIdentity) {
+    child.kill("SIGTERM");
+    throw new Error("DevOS could not prove ownership of the background connector process.");
+  }
   await writeFile(
     serviceFile,
-    JSON.stringify({ pid: child.pid, startedAt: new Date().toISOString() }) + "\n",
+    JSON.stringify({
+      pid: child.pid,
+      startedAt: new Date().toISOString(),
+      projectRoot: root,
+      ownershipToken: randomUUID(),
+      identity: childIdentity,
+    }) + "\n",
     { mode: 0o600 },
   );
   child.unref();
@@ -360,9 +457,12 @@ async function startBackground(root: string, config: {
   }
 
   if (processAlive(child.pid)) {
-    try {
-      process.kill(child.pid!, "SIGTERM");
-    } catch {}
+    const actual = child.pid ? await captureProcessIdentity(child.pid) : null;
+    if (actual && sameProcessIdentity(childIdentity, actual)) {
+      try {
+        process.kill(child.pid!, "SIGTERM");
+      } catch {}
+    }
   }
   await rm(serviceFile, { force: true });
   throw new Error("DevOS background startup failed.");
@@ -372,22 +472,42 @@ async function stopBackground(root: string) {
   const dir = join(root, ".devos/connector");
   const serviceFile = join(dir, backgroundStateName);
   const state = await backgroundState(root);
-  if (!processAlive(state.pid)) {
+  if (!processAlive(state.pid) || !state.pid) {
     await rm(serviceFile, { force: true });
     process.stdout.write("DevOS background is already stopped.\n");
     return;
   }
+  if (!backgroundOwnershipIsProvable(state, root)) {
+    throw new Error(
+      "Cannot prove DevOS background process ownership from stored state; refusing to signal or remove it.",
+    );
+  }
+  const actual = await captureProcessIdentity(state.pid);
+  if (!actual) {
+    throw new Error("Cannot inspect DevOS background process ownership; refusing to signal the stored PID.");
+  }
+  if (!backgroundOwnershipMatches(state, actual, root)) {
+    await rm(serviceFile, { force: true });
+    process.stdout.write("DevOS background ownership state was stale; no process was signaled.\n");
+    return;
+  }
 
   try {
-    process.kill(state.pid!, "SIGTERM");
+    process.kill(state.pid, "SIGTERM");
   } catch {}
   const gracefulDeadline = Date.now() + 5000;
   while (processAlive(state.pid) && Date.now() < gracefulDeadline) {
     await delay(50);
   }
   if (processAlive(state.pid)) {
+    const afterGrace = await captureProcessIdentity(state.pid);
+    if (!afterGrace || !backgroundOwnershipMatches(state, afterGrace, root)) {
+      throw new Error(
+        "DevOS background PID changed identity during shutdown; refusing SIGKILL escalation.",
+      );
+    }
     try {
-      process.kill(state.pid!, "SIGKILL");
+      process.kill(state.pid, "SIGKILL");
     } catch {}
   }
 
@@ -406,7 +526,7 @@ async function stopBackground(root: string) {
   process.stdout.write("DevOS background stopped; owned connector processes cleaned up.\n");
 }
 
-async function superviseRun(root: string) {
+async function superviseRun(root: string, secrets: ConnectorSecrets) {
   const runner = join(softwareRoot, "dist/src/connector-runner.js");
   await access(runner);
   const child = spawn(process.execPath, [runner, root], {
@@ -414,8 +534,8 @@ async function superviseRun(root: string) {
     stdio: ["pipe", "inherit", "inherit"],
     env: {
       ...safeEnvironment(process.env),
-      NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN,
-      DEVOS_CONNECTOR_OWNER_SECRET: process.env.DEVOS_CONNECTOR_OWNER_SECRET,
+      NGROK_AUTHTOKEN: secrets.ngrokAuthtoken,
+      DEVOS_CONNECTOR_OWNER_SECRET: secrets.ownerSecret,
     },
   });
   const stop = () => {
@@ -479,7 +599,7 @@ export async function connector(
     return;
   }
   if (action === "status") {
-    let state: { pid?: number; publicUrl?: string } = {};
+    let state: { pid?: number; publicUrl?: string; lifecycle?: string; restartAttempt?: number; maxRestartAttempts?: number; lastFailureComponent?: string; lastFailureAt?: string; lastExitCode?: number | null } = {};
     try {
       state = JSON.parse(await readFile(stateFile, "utf8"));
     } catch {}
@@ -494,10 +614,29 @@ export async function connector(
     const url = alive
       ? await publicEndpoint(config.ngrokApiPort, config.gatewayPort)
       : undefined;
+    const background = await backgroundState(root);
+    let supervisor = "foreground-or-absent";
+    if (background.pid && processAlive(background.pid)) {
+      const actual = await captureProcessIdentity(background.pid);
+      supervisor = actual && backgroundOwnershipMatches(background, actual, root)
+        ? "owned"
+        : "invalid";
+    } else if (background.pid) {
+      supervisor = "stale";
+    }
     // Do not probe public tool endpoints or claim external reachability from local agent state.
-    process.stdout.write(
-      `Connector ${alive ? "running" : "stopped"}; local gateway ${local ? "healthy" : "unavailable"}; ngrok ${url && url === state.publicUrl ? "HTTPS endpoint registered" : "unavailable"}; public reachability not tested.\n`,
-    );
+    process.stdout.write(formatConnectorStatus({
+      lifecycle: state.lifecycle ?? (alive ? "degraded" : "stopped"),
+      supervisor,
+      runtimeAlive: alive,
+      localHealthy: local,
+      ngrokRegistered: !!url && url === state.publicUrl,
+      ...(state.restartAttempt !== undefined ? { restartAttempt: state.restartAttempt } : {}),
+      ...(state.maxRestartAttempts !== undefined ? { maxRestartAttempts: state.maxRestartAttempts } : {}),
+      ...(state.lastFailureComponent ? { lastFailureComponent: state.lastFailureComponent } : {}),
+      ...(state.lastFailureAt ? { lastFailureAt: state.lastFailureAt } : {}),
+      ...(state.lastExitCode !== undefined ? { lastExitCode: state.lastExitCode } : {}),
+    }));
     return;
   }
   if (action === "start") {
@@ -510,13 +649,10 @@ export async function connector(
   }
   await checkDesktop();
   await checkedVersion(binary);
-  ownerAuth(process.env.DEVOS_CONNECTOR_OWNER_SECRET);
-  if (!process.env.NGROK_AUTHTOKEN?.trim())
-    throw new Error(
-      "Missing ngrok auth: set NGROK_AUTHTOKEN before connector run/doctor.",
-    );
+  const secrets = await loadConnectorSecrets(root);
+  ownerAuth(secrets.ownerSecret);
   if (action === "start") {
-    await startBackground(root, config);
+    await startBackground(root, config, secrets);
     return;
   }
   if (action === "doctor") {
@@ -528,122 +664,161 @@ export async function connector(
     return;
   }
   if (!ownerLifetime) {
-    await superviseRun(root);
+    await superviseRun(root, secrets);
     return;
   }
   const lock = await acquire(root);
-  // A separate foreground runtime owns one group: gateway + stdio + ngrok.
-  // Runtime output is suppressed; only fixed IPC diagnostics/non-secret URL escape.
-  let runtime: ReturnType<typeof spawn> | undefined;
-  let exit: Promise<number | null> | undefined;
-  let stopping = false,
-    deadline = 0,
-    timer: NodeJS.Timeout | undefined;
-  const signalGroup = (signal: NodeJS.Signals) => {
-    if (runtime?.pid) {
-      try {
-        process.kill(-runtime.pid, signal);
-      } catch {}
-    }
-  };
-  const alive = () => {
-    if (!runtime?.pid) return false;
-    try {
-      process.kill(-runtime.pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  const stop = () => {
-    if (stopping) return;
-    stopping = true;
-    deadline = Date.now() + 3000;
-    signalGroup("SIGTERM");
-    timer = setTimeout(() => signalGroup("SIGKILL"), 3000);
-  };
+  const abort = new AbortController();
+  let terminalFailed = false;
+  let currentPid: number | undefined;
+  let currentRuntime: ReturnType<typeof spawn> | undefined;
+  let currentPublicUrl: string | undefined;
+  let announcedReady = false;
+  const stop = () => abort.abort();
   ownerLifetime.once("end", stop);
   ownerLifetime.once("error", stop);
   ownerLifetime.resume();
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-  try {
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    if (stopping) return;
-    runtime = spawn(
-      process.execPath,
-      [join(softwareRoot, "dist/src/connector-runtime.js"), root],
-      {
-        detached: true,
-        stdio: ["ignore", "ignore", "ignore", "ipc"],
-        env: {
-          ...safeEnvironment(process.env),
-          NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN,
-          DEVOS_CONNECTOR_OWNER_SECRET:
-            process.env.DEVOS_CONNECTOR_OWNER_SECRET,
-        },
-      },
-    );
-    exit = new Promise<number | null>((ok) => {
-      runtime!.once("error", () => ok(-1));
-      runtime!.once("exit", ok);
-    });
-    const ready = new Promise<string>((ok, fail) => {
-      const timeout = setTimeout(
-        () => fail(new Error("Connector startup timed out.")),
-        30_000,
-      );
-      runtime!.on("message", (message) => {
-        if (
-          typeof message === "object" &&
-          message &&
-          "publicUrl" in message &&
-          typeof message.publicUrl === "string"
-        ) {
-          try {
-            const url = publicIdentity(message.publicUrl);
-            clearTimeout(timeout);
-            ok(url.href);
-          } catch {}
-        }
-      });
-      void exit!.then(() => {
-        clearTimeout(timeout);
-        fail(
-          new Error(
-            "Connector startup/runtime failed; check local ports, ngrok credentials and Desktop Commander.",
-          ),
-        );
-      });
-    });
-    const [url] = await Promise.all([
-      ready,
-      writeFile(stateFile, JSON.stringify({ pid: runtime.pid }) + "\n", {
-        mode: 0o600,
-      }),
-    ]);
+
+  const signalRuntimeGroup = (
+    runtime: ReturnType<typeof spawn> | undefined,
+    signal: NodeJS.Signals,
+  ) => {
+    if (!runtime?.pid || runtime.exitCode !== null || runtime.signalCode !== null) return;
+    try { process.kill(-runtime.pid, signal); } catch {}
+  };
+
+  const persistSupervisorState = async (
+    state: ConnectorSupervisorState,
+    ready?: { pid: number; publicUrl: string },
+  ) => {
+    if (ready) {
+      currentPid = ready.pid;
+      currentPublicUrl = ready.publicUrl;
+    }
+    terminalFailed = state.status === "terminal_failed";
+    await appendConnectorDiagnostic(root, state);
     await writeFile(
       stateFile,
-      JSON.stringify({ pid: runtime.pid, publicUrl: url }) + "\n",
+      JSON.stringify({
+        pid: currentPid,
+        publicUrl: currentPublicUrl,
+        lifecycle: state.status,
+        restartAttempt: state.restartAttempt,
+        maxRestartAttempts: state.maxRestartAttempts,
+        ...(state.lastFailureAt ? { lastFailureAt: state.lastFailureAt } : {}),
+        ...(state.lastFailureComponent ? { lastFailureComponent: state.lastFailureComponent } : {}),
+        ...(state.lastExitCode !== undefined ? { lastExitCode: state.lastExitCode } : {}),
+        ...(state.lastExitSignal !== undefined ? { lastExitSignal: state.lastExitSignal } : {}),
+        ...(state.lastFailureMessage ? { lastFailureMessage: state.lastFailureMessage } : {}),
+      }) + "\n",
       { mode: 0o600 },
     );
-    if (!stopping)
-      process.stdout.write(
-        `Connector ready: ${new URL("/mcp", url).href}. OAuth required. Foreground; Ctrl+C stops gateway, ngrok and Desktop Commander.\n`,
-      );
-    await exit;
-    if (!stopping) throw new Error("Connector runtime exited unexpectedly.");
-  } catch (error) {
-    if (!stopping) throw error;
+  };
+
+  try {
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await runBoundedConnectorSupervisor({
+      signal: abort.signal,
+      onState: persistSupervisorState,
+      onHealthy: async ({ publicUrl }) => {
+        if (!announcedReady) {
+          announcedReady = true;
+          process.stdout.write(
+            `Connector ready: ${new URL("/mcp", publicUrl).href}. OAuth required. Foreground; Ctrl+C stops gateway, ngrok and Desktop Commander.\n`,
+          );
+        }
+      },
+      launch: async () => {
+        const runtime = spawn(
+          process.execPath,
+          [join(softwareRoot, "dist/src/connector-runtime.js"), root],
+          {
+            detached: true,
+            stdio: ["ignore", "ignore", "ignore", "ipc"],
+            env: {
+              ...safeEnvironment(process.env),
+              NGROK_AUTHTOKEN: secrets.ngrokAuthtoken,
+              DEVOS_CONNECTOR_OWNER_SECRET: secrets.ownerSecret,
+            },
+          },
+        );
+        currentRuntime = runtime;
+        currentPid = runtime.pid;
+        currentPublicUrl = undefined;
+        let failure: { component?: string; message?: string } | undefined;
+        runtime.on("message", message => {
+          if (
+            typeof message === "object" &&
+            message &&
+            "failure" in message &&
+            typeof message.failure === "object" &&
+            message.failure
+          ) {
+            const record = message.failure as { component?: unknown; message?: unknown };
+            failure = {
+              ...(typeof record.component === "string" ? { component: record.component } : {}),
+              ...(typeof record.message === "string" ? { message: record.message } : {}),
+            };
+          }
+        });
+        const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null; component?: string; message?: string }>((ok) => {
+          runtime.once("error", () => ok({ code: -1, signal: null, ...(failure ?? {}) }));
+          runtime.once("exit", (code, signal) => ok({ code, signal, ...(failure ?? {}) }));
+        });
+        const ready = new Promise<{ pid: number; publicUrl: string }>((ok, fail) => {
+          const timeout = setTimeout(
+            () => fail(new Error("Connector startup timed out.")),
+            30_000,
+          );
+          runtime.on("message", message => {
+            if (
+              typeof message === "object" &&
+              message &&
+              "publicUrl" in message &&
+              typeof message.publicUrl === "string"
+            ) {
+              try {
+                const publicUrl = publicIdentity(message.publicUrl).href;
+                clearTimeout(timeout);
+                ok({ pid: runtime.pid!, publicUrl });
+              } catch {}
+            }
+          });
+          void exit.then(result => {
+            clearTimeout(timeout);
+            fail(Object.assign(
+              new Error(result.message ?? "Connector startup/runtime failed; check local ports, ngrok credentials and Desktop Commander."),
+              {
+                exitCode: result.code,
+                exitSignal: result.signal,
+                component: result.component,
+              },
+            ));
+          });
+        });
+        return {
+          ready,
+          exit,
+          stop: (signal: NodeJS.Signals = "SIGTERM") => signalRuntimeGroup(runtime, signal),
+        };
+      },
+    });
   } finally {
-    stop();
-    while (alive() && Date.now() < deadline) await delay(25);
-    signalGroup("SIGKILL");
-    if (exit) await exit;
-    if (timer) clearTimeout(timer);
-    await rm(stateFile, { force: true });
+    abort.abort();
+    signalRuntimeGroup(currentRuntime, "SIGTERM");
+    const shutdownDeadline = Date.now() + 3000;
+    while (
+      currentRuntime &&
+      currentRuntime.exitCode === null &&
+      currentRuntime.signalCode === null &&
+      Date.now() < shutdownDeadline
+    ) await delay(25);
+    signalRuntimeGroup(currentRuntime, "SIGKILL");
+    if (!terminalFailed) await rm(stateFile, { force: true });
     await rm(join(dir, "ngrok.yml"), { force: true });
-    await new Promise<void>((ok) => lock.close(() => ok()));
+    await new Promise<void>(ok => lock.close(() => ok()));
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
     ownerLifetime.off("end", stop);
@@ -655,6 +830,7 @@ export async function connectorRuntime(root: string) {
   const config = await readConfig(root);
   const dir = join(root, ".devos/connector");
   let stopping = false,
+    failureComponent: "desktop_commander" | "ngrok" | "runtime" | undefined,
     child: ReturnType<typeof spawn> | undefined,
     gateway: Awaited<ReturnType<typeof startGateway>> | undefined;
   const stop = () => {
@@ -667,14 +843,31 @@ export async function connectorRuntime(root: string) {
   process.on("SIGINT", stop);
   process.on("disconnect", stop);
   try {
-    gateway = await startGateway({
+    try {
+      gateway = await startGateway({
       root: softwareRoot,
       port: config.gatewayPort,
       ownerSecret: ownerAuth(process.env.DEVOS_CONNECTOR_OWNER_SECRET),
       oauthClientsPath: join(root, ".devos/connector/oauth-clients.json"),
       oauthStatePath: join(root, ".devos/connector/oauth-state.enc"),
-      onFailure: stop,
-    });
+      onFailure: component => {
+        failureComponent = component;
+        stop();
+      },
+      });
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error("Gateway startup failed.");
+      throw Object.assign(failure, {
+        component: /Desktop Commander/i.test(failure.message)
+          ? "desktop_commander"
+          : "gateway",
+      });
+    }
+    if (stopping && failureComponent) {
+      throw Object.assign(new Error("Desktop Commander transport closed unexpectedly."), {
+        component: failureComponent,
+      });
+    }
     if (stopping) return;
     await writeFile(
       join(dir, "ngrok.yml"),
@@ -712,12 +905,30 @@ export async function connectorRuntime(root: string) {
       if (url) break;
       await delay(100);
     }
-    if (!url || stopping || exited)
-      throw new Error("Connector runtime startup failed.");
+    if (!url || stopping || exited) {
+      const component = failureComponent ?? "ngrok";
+      throw Object.assign(
+        new Error(
+          component === "desktop_commander"
+            ? "Desktop Commander transport closed unexpectedly."
+            : "ngrok startup/registration failed.",
+        ),
+        { component },
+      );
+    }
     gateway.setPublicUrl(url);
     process.send?.({ publicUrl: url });
     await exit;
-    if (!stopping) throw new Error("ngrok exited unexpectedly.");
+    if (!stopping) {
+      throw Object.assign(new Error("ngrok exited unexpectedly."), {
+        component: "ngrok",
+      });
+    }
+    if (failureComponent) {
+      throw Object.assign(new Error("Connector child transport exited unexpectedly."), {
+        component: failureComponent,
+      });
+    }
   } finally {
     stop();
     await gateway?.close();
