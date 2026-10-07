@@ -642,6 +642,7 @@ import {
   ready,
   waitFor,
   dead,
+  directDesktopCommanderChild,
 } from "./connector-process-fixture.js";
 test("fake ngrok launch, HTTPS discovery, isolated secrets, duplicate and foreground cleanup", async () => {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -750,8 +751,48 @@ test("missing auth/runtime, stale version, integrity and early ngrok failure red
       await readFile(join(f.root, ".devos/connector/state.json"), "utf8"),
     );
     assert.equal(failedState.lifecycle, "terminal_failed");
+    assert.equal(failedState.restartAttempt, 5);
     assert.equal(failedState.lastFailureComponent, "ngrok");
     assert.ok(!JSON.stringify(failedState).includes(fixtureSecret));
+    assert.match((await start(f.root, "status").done).output, /Connector terminal_failed/);
+
+    const failedScript = await readFile(f.binary, "utf8");
+    const recoveredScript = failedScript.replace(
+      `if("fail"==='fail'){process.exit(2);}`,
+      `if("normal"==='fail'){process.exit(2);}`,
+    );
+    assert.notEqual(recoveredScript, failedScript, "fixture failure mode can be cleared for manual recovery");
+    await writeFile(f.binary, recoveredScript);
+    const pinnedBinary = JSON.parse(await readFile(f.binary + ".json", "utf8")) as { version: string };
+    await writeFile(
+      f.binary + ".json",
+      JSON.stringify({
+        version: pinnedBinary.version,
+        sha256: createHash("sha256").update(recoveredScript).digest("hex"),
+      }),
+    );
+    const manualRestart = start(f.root, "start");
+    await waitFor(() => manualRestart.output().includes("DevOS background ready:"), 45_000);
+    assert.equal((await manualRestart.done).code, 0);
+    const runningState = JSON.parse(
+      await readFile(join(f.root, ".devos/connector/state.json"), "utf8"),
+    ) as { pid: number; lifecycle: string; restartAttempt: number };
+    assert.equal(runningState.lifecycle, "healthy");
+    assert.equal(runningState.restartAttempt, 0);
+    const background = JSON.parse(
+      await readFile(join(f.root, ".devos/connector/background.json"), "utf8"),
+    ) as { pid: number };
+    const desktopPid = directDesktopCommanderChild(runningState.pid);
+    assert.ok(desktopPid);
+    const ngrokPid = (JSON.parse(await readFile(join(f.root, "observed.json"), "utf8")) as { pid: number }).pid;
+    const ngrokChildPid = Number(await readFile(join(f.root, "child.pid"), "utf8"));
+    assert.equal((await start(f.root, "stop").done).code, 0);
+    await waitFor(() => dead(background.pid));
+    await waitFor(() => dead(runningState.pid));
+    await waitFor(() => dead(desktopPid!));
+    await waitFor(() => dead(ngrokPid));
+    await waitFor(() => dead(ngrokChildPid));
+
     await writeFile(
       join(f.root, ".devos/connector/config.json"),
       JSON.stringify({ password: secret }),
