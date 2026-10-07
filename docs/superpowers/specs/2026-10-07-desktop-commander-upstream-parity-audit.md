@@ -72,13 +72,13 @@ The adapter extraction and verification are implemented on `codex/desktop-comman
 - `tests/desktop-commander-stress.test.ts`: 100 `tools/list` + 100 `get_config`, 20 concurrent config reads, three short process start/poll cycles, healthy watchdog, bounded payload-free history, and exact child cleanup passed.
 - `SIGSTOP` integration: passed in 106.7 seconds. Three-miss detection remained within the test's 40-second bound; supervisor replaced runtime and Desktop Commander PIDs; old session failed closed; a newly initialized MCP session successfully called tools after recovery. Subsequent child, ngrok, runtime and supervisor death paths recovered and cleaned their owned processes.
 - Local real-package smoke: public-path integration covers OAuth, `tools/list`, `read_file`, `start_process`, `list_sessions`, and `read_process_output` after replacement.
-- Direct MCP plugin smoke: `get_config` returned `MCP -32603 Internal error`; this is not counted as successful evidence and was not retried with a restart.
+- The first direct MCP plugin smoke returned `MCP -32603 Internal error`. After the user explicitly asked to restart MCP, the primary checkout connector was stopped and started through `./devos connector stop` / `./devos connector start`; status reported `healthy`, restart budget `0/5`, and a fresh MCP `get_config` call succeeded. This confirms the existing primary-checkout connector, not deployment of this feature branch.
 - A controlled kill/recovery of the already-running production public ngrok tunnel was not performed. The recovery suite uses an isolated ngrok fixture, and production fault injection would require deploying/running this branch against the live connector. Do not claim public-production ngrok recovery from fixture evidence.
 - `.env` remains ignored and untracked; no `.env` was copied into the worktree. No GitHub Actions, Keychain, global daemon, process-name cleanup, or dependency patch was added.
 
 ### Remaining limitation
 
-Public production MCP/ngrok health still needs a dedicated controlled host run after this branch is deployed or started in an isolated public tunnel. The plugin MCP smoke itself failed with `-32603`, so it cannot close that gap. The local real Desktop Commander and complete fixture fault-recovery evidence are green, but this limitation must remain explicit in the final report.
+Public recovery for a real ngrok tunnel on this feature branch remains unproven. Its isolated live tunnel attempt failed before HTTPS registration and consumed the isolated supervisor's 5/5 restart budget. The existing primary connector was left healthy and its new MCP request succeeded after restart, but it runs the primary checkout rather than this feature branch. The local real Desktop Commander and complete fixture fault-recovery evidence are green; keep this branch-specific limitation explicit.
 
 ## Upstream source references
 
