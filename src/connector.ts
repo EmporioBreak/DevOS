@@ -564,6 +564,51 @@ async function superviseRun(root: string, secrets: ConnectorSecrets) {
     process.off("SIGTERM", stop);
   }
 }
+
+function runtimeGroupChildren(): number[] | undefined {
+  const result = spawnSync("/bin/ps", ["-axo", "pid=,pgid="], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", LC_ALL: "C" },
+  });
+  if (result.status !== 0 || result.error) return undefined;
+  return result.stdout
+    .split("\n")
+    .flatMap((line) => {
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s*$/);
+      return match && Number(match[2]) === process.pid && Number(match[1]) !== process.pid
+        ? [Number(match[1])]
+        : [];
+    });
+}
+
+async function cleanupRuntimeGroupChildren() {
+  let children = runtimeGroupChildren();
+  if (!children) return;
+  for (const pid of children) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {}
+  }
+  const gracefulDeadline = Date.now() + 3_000;
+  while (Date.now() < gracefulDeadline) {
+    children = runtimeGroupChildren();
+    if (!children?.length) return;
+    await delay(25);
+  }
+  children = runtimeGroupChildren();
+  for (const pid of children ?? []) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }
+  const forcedDeadline = Date.now() + 1_000;
+  while (Date.now() < forcedDeadline) {
+    children = runtimeGroupChildren();
+    if (!children?.length) return;
+    await delay(25);
+  }
+}
+
 export async function connector(
   action: ConnectorAction,
   root: string,
@@ -849,6 +894,7 @@ export async function connectorRuntime(root: string) {
     resolveStop = resolve;
   });
   let stopping = false,
+    parentDisconnected = false,
     failureComponent: "desktop_commander" | "ngrok" | "runtime" | undefined,
     child: ReturnType<typeof spawn> | undefined,
     gateway: Awaited<ReturnType<typeof startGateway>> | undefined;
@@ -859,9 +905,13 @@ export async function connectorRuntime(root: string) {
     child?.kill("SIGTERM");
     void gateway?.close().catch(() => {});
   };
+  const parentDisconnect = () => {
+    parentDisconnected = true;
+    stop();
+  };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
-  process.on("disconnect", stop);
+  process.on("disconnect", parentDisconnect);
   try {
     try {
       gateway = await startGateway({
@@ -965,8 +1015,9 @@ export async function connectorRuntime(root: string) {
         ]);
       }
     }
+    if (parentDisconnected) await cleanupRuntimeGroupChildren();
     process.off("SIGTERM", stop);
     process.off("SIGINT", stop);
-    process.off("disconnect", stop);
+    process.off("disconnect", parentDisconnect);
   }
 }

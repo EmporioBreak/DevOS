@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -85,6 +85,82 @@ async function cleanStoppedOwnedProcess(
 }
 
 test(
+  "background supervisor death disconnects and cleans its owned runtime tree",
+  { timeout: 90_000 },
+  async () => {
+    const f = await fixture();
+    let runtimeToClean: number | undefined;
+    let runnerToClean: number | undefined;
+    try {
+      const firstStart = start(f.root, "start");
+      await waitFor(() => firstStart.output().includes("DevOS background ready:"), 45_000);
+      assert.equal((await firstStart.done).code, 0);
+      const firstBackground = JSON.parse(
+        await readFile(join(f.root, ".devos/connector/background.json"), "utf8"),
+      ) as { pid: number; identity: ProcessIdentity; projectRoot: string };
+      const firstState = await connectorState(f.root);
+      runnerToClean = firstBackground.pid;
+      runtimeToClean = firstState.pid;
+      assert.equal(firstBackground.projectRoot, await realpath(f.root));
+      assert.ok(runtimeToClean);
+      const runnerIdentity = await captureProcessIdentity(runnerToClean);
+      assert.ok(runnerIdentity && sameProcessIdentity(firstBackground.identity, runnerIdentity));
+      assert.match(runnerIdentity.commandLine ?? "", /connector-runner\.js/);
+      const runtimeIdentity = await captureProcessIdentity(runtimeToClean!);
+      assert.ok(runtimeIdentity);
+      assert.match(runtimeIdentity.commandLine ?? "", /connector-runtime\.js/);
+      const desktopPid = directDesktopCommanderChild(runtimeToClean!);
+      assert.ok(desktopPid);
+      const ngrokPid = (
+        JSON.parse(await readFile(join(f.root, "observed.json"), "utf8")) as { pid: number }
+      ).pid;
+      const ngrokChildPid = Number(await readFile(join(f.root, "child.pid"), "utf8"));
+      const ngrokIdentity = await captureProcessIdentity(ngrokPid);
+      assert.ok(ngrokIdentity);
+      assert.match(ngrokIdentity.commandLine ?? "", /\.devos\/tools\/ngrok/);
+
+      process.kill(runnerToClean, "SIGKILL");
+      await waitFor(() => dead(runnerToClean!), 10_000);
+      await waitFor(() => dead(runtimeToClean!), 10_000);
+      await waitFor(() => dead(desktopPid!), 10_000);
+      await waitFor(() => dead(ngrokPid), 10_000);
+      await waitFor(() => dead(ngrokChildPid), 10_000);
+
+      const secondStart = start(f.root, "start");
+      await waitFor(() => secondStart.output().includes("DevOS background ready:"), 45_000);
+      assert.equal((await secondStart.done).code, 0);
+      const secondBackground = JSON.parse(
+        await readFile(join(f.root, ".devos/connector/background.json"), "utf8"),
+      ) as { pid: number; identity: ProcessIdentity };
+      let secondState = await connectorState(f.root);
+      await waitFor(async () => {
+        secondState = await connectorState(f.root);
+        return secondState.lifecycle === "healthy" && !!secondState.pid && secondState.pid !== runtimeToClean;
+      }, 10_000);
+      assert.notEqual(secondBackground.pid, runnerToClean);
+      const secondRuntimePid = secondState.pid!;
+      const secondDesktopPid = directDesktopCommanderChild(secondRuntimePid);
+      assert.ok(secondDesktopPid);
+      const secondNgrokPid = (
+        JSON.parse(await readFile(join(f.root, "observed.json"), "utf8")) as { pid: number }
+      ).pid;
+      const secondNgrokChildPid = Number(await readFile(join(f.root, "child.pid"), "utf8"));
+      assert.equal((await start(f.root, "stop").done).code, 0);
+      await waitFor(() => dead(secondBackground.pid), 10_000);
+      await waitFor(() => dead(secondRuntimePid), 10_000);
+      await waitFor(() => dead(secondDesktopPid!), 10_000);
+      await waitFor(() => dead(secondNgrokPid), 10_000);
+      await waitFor(() => dead(secondNgrokChildPid), 10_000);
+    } finally {
+      await start(f.root, "stop").done;
+      if (runnerToClean) await waitFor(() => dead(runnerToClean!), 10_000).catch(() => {});
+      if (runtimeToClean) await waitFor(() => dead(runtimeToClean!), 10_000).catch(() => {});
+      await rm(f.root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "SIGSTOP of the owned Desktop Commander triggers bounded supervisor recovery and a fresh MCP session",
   { timeout: 150_000 },
   async () => {
@@ -155,13 +231,20 @@ test(
       assert.equal(stoppedState.lifecycle, "healthy");
 
       let failedState: Awaited<ReturnType<typeof connectorState>> = {};
-      await waitFor(async () => {
-        failedState = await connectorState(f.root);
-        return (
-          failedState.lifecycle === "recovering" &&
-          failedState.lastFailureComponent === "desktop_commander"
-        );
-      }, 40_000);
+      try {
+        await waitFor(async () => {
+          failedState = await connectorState(f.root);
+          return (
+            failedState.lifecycle === "recovering" &&
+            failedState.lastFailureComponent === "desktop_commander"
+          );
+        }, 40_000);
+      } catch {
+        const health = await fetch(base + "/health")
+          .then((response) => response.json())
+          .catch((error) => String(error));
+        assert.fail(`SIGSTOP was not detected; state=${JSON.stringify(await connectorState(f.root))}; health=${JSON.stringify(health)}`);
+      }
       assert.ok(failedState.lastFailureAt);
       assert.ok(
         Date.parse(failedState.lastFailureAt) - stoppedAt <= 40_000,
