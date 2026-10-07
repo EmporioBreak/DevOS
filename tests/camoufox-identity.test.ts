@@ -13,6 +13,7 @@ test("Camoufox identity is created once and reused for the same profile", async 
   const root = await mkdtemp(join(tmpdir(), "devos-camoufox-identity-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const profile = join(root, "profile");
+  await mkdir(profile);
   const preset = { userAgent: "stable-preset", screen: { width: 1440, height: 900 } };
   let draws = 0;
   t.mock.method(camoufoxIdentityDeps, "getRandomPreset", () => {
