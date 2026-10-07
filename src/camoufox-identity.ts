@@ -1,5 +1,5 @@
 import { getRandomPreset } from "@camoufox/camoufox";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 export interface CamoufoxIdentity {
@@ -65,6 +65,13 @@ export async function loadOrCreateCamoufoxIdentity(
   const path = camoufoxIdentityPath(profileDir);
   const existing = await readIdentity(path);
   if (existing) return existing;
+
+  const profileEntries = await readdir(profileDir);
+  if (profileEntries.length > 0) {
+    throw new Error(
+      `Camoufox identity file missing for non-empty profile at ${profileDir}; refusing to rotate browser identity`,
+    );
+  }
 
   const os = hostCamoufoxOs();
   const preset = camoufoxIdentityDeps.getRandomPreset(os);
