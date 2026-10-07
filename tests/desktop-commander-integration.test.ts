@@ -24,13 +24,28 @@ async function fixture(mode: "ready" | "list-failure" = "ready") {
 import { appendFileSync } from "node:fs";
 import { Server } from ${JSON.stringify(sdkServer)};
 import { ListToolsRequestSchema } from ${JSON.stringify(sdkTypes)};
+import { CallToolRequestSchema } from ${JSON.stringify(sdkTypes)};
 import { StdioServerTransport } from ${JSON.stringify(sdkStdio)};
-appendFileSync(${JSON.stringify(observed)}, JSON.stringify({ pid: process.pid, remote: process.env.DC_REMOTE_DEVICE }) + "\\n");
+appendFileSync(${JSON.stringify(observed)}, JSON.stringify({
+  pid: process.pid,
+  remote: process.env.DC_REMOTE_DEVICE,
+  ownerSecret: process.env.DEVOS_CONNECTOR_OWNER_SECRET,
+  ngrokToken: process.env.NGROK_AUTHTOKEN,
+  shell: process.env.SHELL,
+  term: process.env.TERM,
+  user: process.env.USER,
+  logname: process.env.LOGNAME,
+}) + "\\n");
 const server = new Server({ name: "fixture", version: "1" }, { capabilities: { tools: {} } });
+server.oninitialized = () => appendFileSync(${JSON.stringify(observed)}, JSON.stringify({ client: server.getClientVersion() }) + "\\n");
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  appendFileSync(${JSON.stringify(observed)}, "tools/list\\n");
+  appendFileSync(${JSON.stringify(observed)}, JSON.stringify({ method: "tools/list" }) + "\\n");
   if (${JSON.stringify(mode)} === "list-failure") throw new Error("readiness failed");
   return { tools: [{ name: "get_config", inputSchema: { type: "object" } }] };
+});
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  appendFileSync(${JSON.stringify(observed)}, JSON.stringify({ call: request.params }) + "\\n");
+  return { content: [{ type: "text", text: "ok" }] };
 });
 await server.connect(new StdioServerTransport());
 `,
@@ -64,6 +79,75 @@ test("adapter readiness proves execution with tools/list", async () => {
     assert.match(await readFile(f.observed, "utf8"), /tools\/list/);
   } finally {
     await desktop.close();
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("launch matches upstream environment and client identity and forwards safe remote metadata", async () => {
+  const f = await fixture();
+  const envKeys = [
+    "DEVOS_CONNECTOR_OWNER_SECRET",
+    "NGROK_AUTHTOKEN",
+    "SHELL",
+    "TERM",
+    "USER",
+    "LOGNAME",
+  ];
+  const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  const sentinels = {
+    DEVOS_CONNECTOR_OWNER_SECRET: "owner-secret-sentinel",
+    NGROK_AUTHTOKEN: "ngrok-token-sentinel",
+    SHELL: "/bin/fixture-shell",
+    TERM: "fixture-term",
+    USER: "fixture-user",
+    LOGNAME: "fixture-logname",
+  };
+  Object.assign(process.env, sentinels);
+  const desktop = new DesktopCommanderIntegration({ root: f.root });
+  try {
+    await desktop.initialize();
+    await desktop.callTool({
+      name: "get_config",
+      arguments: {},
+      _meta: {
+        progressToken: "request-7",
+        clientInfo: { name: "remote-client", version: "4.2" },
+        secret: "must-not-cross-the-adapter",
+      },
+    });
+    const events = (await readFile(f.observed, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(events[0].remote, "true");
+    assert.equal(events[0].ownerSecret, undefined);
+    assert.equal(events[0].ngrokToken, undefined);
+    assert.equal(events[0].shell, sentinels.SHELL);
+    assert.equal(events[0].term, sentinels.TERM);
+    assert.equal(events[0].user, sentinels.USER);
+    assert.equal(events[0].logname, sentinels.LOGNAME);
+    assert.deepEqual(events[1].client, {
+      name: "desktop-commander-client",
+      version: "1.0.0",
+    });
+    assert.deepEqual(events[3].call._meta, {
+      progressToken: "request-7",
+      clientInfo: { name: "remote-client", version: "4.2" },
+      remote: true,
+    });
+    assert.ok(!JSON.stringify(events).includes("owner-secret-sentinel"));
+    assert.ok(!JSON.stringify(events).includes("ngrok-token-sentinel"));
+    assert.ok(!JSON.stringify(events).includes("must-not-cross-the-adapter"));
+    assert.deepEqual(
+      Object.fromEntries(envKeys.slice(2).map((key) => [key, events[0][key.toLowerCase()]])),
+      Object.fromEntries(envKeys.slice(2).map((key) => [key, sentinels[key as keyof typeof sentinels]])),
+    );
+  } finally {
+    await desktop.close();
+    for (const key of envKeys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
     await rm(f.root, { recursive: true, force: true });
   }
 });

@@ -176,12 +176,11 @@ export class DesktopCommanderIntegration {
     params: CallToolRequest["params"],
     options?: RequestOptions,
   ): Promise<any> {
-    const metadata = params._meta && typeof params._meta === "object" ? params._meta : {};
     return this.runRequest("tools/call", () =>
       this.requireClient().callTool(
         {
           ...params,
-          _meta: { ...metadata, remote: true },
+          _meta: safeRemoteMetadata(params._meta),
         },
         undefined,
         options,
@@ -283,6 +282,31 @@ export class DesktopCommanderIntegration {
       if (this.recentRequests.length > 50) this.recentRequests.shift();
     }
   }
+}
+
+function safeRemoteMetadata(value: unknown): Record<string, unknown> {
+  const input = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+  const metadata: Record<string, unknown> = { remote: true };
+  const token = input.progressToken;
+  if (
+    (typeof token === "string" && token.length <= 256) ||
+    (typeof token === "number" && Number.isFinite(token))
+  ) metadata.progressToken = token;
+
+  const clientInfo = input.clientInfo;
+  if (clientInfo && typeof clientInfo === "object" && !Array.isArray(clientInfo)) {
+    const info = clientInfo as Record<string, unknown>;
+    const safeInfo: Record<string, string> = {};
+    for (const field of ["name", "version"] as const) {
+      const fieldValue = info[field];
+      if (typeof fieldValue === "string" && fieldValue.length <= 100)
+        safeInfo[field] = fieldValue;
+    }
+    if (Object.keys(safeInfo).length) metadata.clientInfo = safeInfo;
+  }
+  return metadata;
 }
 
 function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
