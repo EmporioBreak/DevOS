@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  CHATGPT_PERSISTENT_PROFILE_IGNORED_DEFAULT_ARGS,
   assertChatGptProjectScope,
   getChatGptProjectScope,
   loadChatGptBrowserConfig,
   validateChatGptUrl,
 } from "../src/browser-config.js";
 
-test("loads deterministic browser defaults", () => {
+test("loads deterministic Camoufox browser defaults", () => {
   const config = loadChatGptBrowserConfig({
     HOME: "/tmp/home",
     DEVOS_CHATGPT_PROJECT_URL: "https://chatgpt.com/",
@@ -16,7 +15,6 @@ test("loads deterministic browser defaults", () => {
   });
 
   assert.equal(config.projectUrl, "https://chatgpt.com/");
-  assert.equal(config.browserChannel, "chrome");
   assert.equal(config.profileDir, "/tmp/devos-profile");
   assert.equal(config.headless, false);
 });
@@ -149,13 +147,3 @@ test("rejects provisional local ChatGPT conversation IDs as resumable sessions",
   assert.throws(() => loadChatGptBrowserConfig({ DEVOS_BROWSER_HEADLESS: "yes" }), /must be 0 or 1/);
  });
 
-
-test("persistent profile launch ignores identity-breaking Playwright defaults", () => {
-  assert.deepEqual(CHATGPT_PERSISTENT_PROFILE_IGNORED_DEFAULT_ARGS, [
-    "--disable-extensions",
-    "--disable-component-extensions-with-background-pages",
-    "--use-mock-keychain",
-    "--password-store=basic",
-    "--disable-sync",
-  ]);
-});
