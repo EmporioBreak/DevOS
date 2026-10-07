@@ -2,6 +2,7 @@ import { profileProcesses, terminateOwnedBrowser, type OwnedBrowserProcess } fro
 import { readCompletedTurn, type SubmittedTurn } from "./chatgpt-turn-recovery.js";
 import { mkdir } from "node:fs/promises";
 import { Camoufox } from "@camoufox/camoufox";
+import { loadOrCreateCamoufoxIdentity, type CamoufoxIdentity } from "./camoufox-identity.js";
 import type { BrowserContext, Page } from "playwright-core";
 import type { Executor, WorkerRequest } from "./executor.js";
 import { debugLog } from "./debug-log.js";
@@ -59,13 +60,19 @@ const SEND = [
 ].join(",");
 
 export const chatGptBrowserDeps = {
+  loadIdentity: loadOrCreateCamoufoxIdentity,
   launchPersistentContext: (
     profileDir: string,
-    options: { headless: boolean; timeout: number },
+    options: {
+      headless: boolean;
+      timeout: number;
+      identity: CamoufoxIdentity;
+    },
   ): Promise<BrowserContext> =>
     Camoufox({
       user_data_dir: profileDir,
       persistent_context: true,
+      fingerprint_preset: options.identity.preset,
       headless: options.headless,
       timeout: options.timeout,
     }),
@@ -433,10 +440,11 @@ export class ChatGptBrowserExecutor implements Executor {
       headless: this.config.headless,
       browserMode: this.config.headless ? "headless" : "headed",
     });
+    const identity = await chatGptBrowserDeps.loadIdentity(this.config.profileDir);
     const baseline = await profileProcesses(this.config.profileDir).catch(() => undefined);
     const context = await chatGptBrowserDeps.launchPersistentContext(
       this.config.profileDir,
-      { timeout, headless: this.config.headless },
+      { timeout, headless: this.config.headless, identity },
     );
 
     this.context = context;
