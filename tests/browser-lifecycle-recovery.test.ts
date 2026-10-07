@@ -351,16 +351,12 @@ test('closed worker page reopens the same profile and conversation without sendi
     }
   });
   t.mock.method(chatGptBrowserDeps, "loadIdentity", async () => ({
-
     schema: 1 as const,
-
     os: "macos" as const,
-
     preset: { userAgent: "stable-test-preset" },
-
   }));
 
-  t.mock.method(chatGptBrowserDeps, "launchPersistentContext", async (profile: string, options: { headless?: boolean; identity?: unknown }) => {
+  t.mock.method(chatGptBrowserDeps, "launchPersistentContext", async (profile: string, options: Parameters<typeof chatGptBrowserDeps.launchPersistentContext>[1]) => {
     launches++;
     assert.equal(profile, process.cwd() + '/.devos/test-profile');
     assert.equal(options?.headless, false);
