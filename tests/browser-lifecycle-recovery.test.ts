@@ -350,9 +350,17 @@ test('closed worker page reopens the same profile and conversation without sendi
       projectUrl: 'https://chatgpt.com/g/one/project', profileDir: process.cwd() + '/.devos/test-profile', headless: false
     }
   });
-  t.mock.method(chatGptBrowserDeps, 'launchPersistentContext', async (profile: string, options: {
-    headless?: boolean;
-  }) => {
+  t.mock.method(chatGptBrowserDeps, "loadIdentity", async () => ({
+
+    schema: 1 as const,
+
+    os: "macos" as const,
+
+    preset: { userAgent: "stable-test-preset" },
+
+  }));
+
+  t.mock.method(chatGptBrowserDeps, "launchPersistentContext", async (profile: string, options: { headless?: boolean; identity?: unknown }) => {
     launches++;
     assert.equal(profile, process.cwd() + '/.devos/test-profile');
     assert.equal(options?.headless, false);
