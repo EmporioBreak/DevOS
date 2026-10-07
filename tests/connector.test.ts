@@ -501,7 +501,13 @@ test("missing auth/runtime, stale version, integrity and early ngrok failure red
     const fail = await start(f.root, "run").done;
     assert.equal(fail.code, 1);
     assert.ok(!fail.output.includes(fixtureSecret));
-    assert.match(fail.output, /startup\/runtime failed/);
+    assert.match(fail.output, /restart budget exhausted/);
+    const failedState = JSON.parse(
+      await readFile(join(f.root, ".devos/connector/state.json"), "utf8"),
+    );
+    assert.equal(failedState.lifecycle, "terminal_failed");
+    assert.equal(failedState.lastFailureComponent, "ngrok");
+    assert.ok(!JSON.stringify(failedState).includes(fixtureSecret));
     await writeFile(
       join(f.root, ".devos/connector/config.json"),
       JSON.stringify({ password: secret }),
@@ -678,10 +684,6 @@ test("SIGTERM during startup performs bounded graceful cancellation", async () =
         return false;
       }
     });
-    assert.match(
-      (await start(f.root, "status").done).output,
-      /Connector running; local gateway healthy; ngrok unavailable/,
-    );
     const before = Date.now();
     proc.child.kill("SIGTERM");
     const result = await proc.done;

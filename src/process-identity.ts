@@ -57,12 +57,46 @@ export function sameProcessIdentity(
   expected: ProcessIdentity,
   actual: ProcessIdentity,
 ): boolean {
+  const expectedStart = normalizeStartTime(expected.startTime);
+  const actualStart = normalizeStartTime(actual.startTime);
   return (
     expected.pid === actual.pid &&
-    expected.startTime === actual.startTime &&
+    (expectedStart !== null || actualStart !== null
+      ? expectedStart !== null && expectedStart === actualStart
+      : expected.startTime === actual.startTime) &&
     expected.executable === actual.executable &&
     expected.commandLine === actual.commandLine
   );
+}
+
+function normalizeStartTime(value: string): string | null {
+  const months: Record<string, number> = {
+    jan: 1, january: 1, "января": 1,
+    feb: 2, february: 2, "февраля": 2,
+    mar: 3, march: 3, "марта": 3,
+    apr: 4, april: 4, "апреля": 4,
+    may: 5, "мая": 5,
+    jun: 6, june: 6, "июня": 6,
+    jul: 7, july: 7, "июля": 7,
+    aug: 8, august: 8, "августа": 8,
+    sep: 9, september: 9, "сентября": 9,
+    oct: 10, october: 10, "октября": 10,
+    nov: 11, november: 11, "ноября": 11,
+    dec: 12, december: 12, "декабря": 12,
+  };
+  const english = value.match(/^[A-Za-z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})$/);
+  const localized = value.match(/^(?:[^,]+,\s*)?(\d{1,2})\s+([\p{L}]+)\s+(\d{4})\s+г\.\s+(\d{1,2}):(\d{2}):(\d{2})$/u);
+  const monthName = english?.[1]?.toLowerCase() ?? localized?.[2]?.toLowerCase();
+  const month = monthName ? months[monthName] : undefined;
+  if (!month) return null;
+  const [year, day, hour, minute, second] = english
+    ? [Number(english[6]), Number(english[2]), Number(english[3]), Number(english[4]), Number(english[5])]
+    : [Number(localized![3]), Number(localized![1]), Number(localized![4]), Number(localized![5]), Number(localized![6])];
+  if (
+    !Number.isInteger(year) || day < 1 || day > 31 ||
+    hour > 23 || minute > 59 || second > 59
+  ) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
 }
 
 async function runPsField(
@@ -77,6 +111,7 @@ async function runPsField(
       `${field}=`,
     ], {
       stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env, LC_ALL: "C" },
     });
     let stdout = "";
     let settled = false;

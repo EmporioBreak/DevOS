@@ -38,7 +38,7 @@ async function fixture(options: { selfHost?: boolean; runtimeHead?: string; spac
   await executable(path.join(bin, "node"), 'echo "node:$*" >> "$DEVOS_TEST_LOG"; echo "node-cwd:$PWD" >> "$DEVOS_TEST_LOG"');
   await executable(
     path.join(bin, "npm"),
-    `echo "npm:$PWD:$*" >> '${log}'; if [ "$1 $2" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi`,
+    `echo "npm:$PWD:$*" >> '${log}'; if [ "$1 \${2-}" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi`,
   );
   await executable(
     path.join(bin, "git"),
@@ -227,7 +227,7 @@ if [ -n "\${NGROK_AUTHTOKEN-}\${OPENAI_API_KEY-}\${DEVOS_CONNECTOR_OWNER_SECRET-
   echo "unsafe-env" >> '${f.log}'
 fi
 printf '%s' "\${NGROK_AUTHTOKEN-}" >&2
-if [ "$1 $2" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi`);
+if [ "$1 \${2-}" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi`);
       const synthetic='launcher-fake-only';
       const result=spawnSync(path.join(f.project,'devos'),['connector','status'],{cwd:f.project,env:{...f.env,NGROK_AUTHTOKEN:synthetic,OPENAI_API_KEY:synthetic,DEVOS_CONNECTOR_OWNER_SECRET:synthetic,DEVOS_DEBUG:'1',NODE_OPTIONS:'--no-warnings'},encoding:'utf8'});
       const log=await readFile(f.log,'utf8');
@@ -249,7 +249,7 @@ if [ -n "\${NGROK_AUTHTOKEN-}\${OPENAI_API_KEY-}\${DEVOS_CONNECTOR_OWNER_SECRET-
 if [ "$1" = "api" ]; then echo current-sha; else mkdir -p "$4/dist/src"; fi`);
     await executable(path.join(f.root,'bin/npm'),`echo "npm:$*" >> '${f.log}'
 if [ -n "\${NGROK_AUTHTOKEN-}\${OPENAI_API_KEY-}\${DEVOS_CONNECTOR_OWNER_SECRET-}\${DEVOS_DEBUG-}\${NODE_OPTIONS-}" ]; then echo unsafe-env >> '${f.log}'; fi
-if [ "$1 $2" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi`);
+if [ "$1 \${2-}" = "run build" ]; then mkdir -p dist/src; : > dist/src/cli.js; fi`);
     const env={...f.env,NGROK_AUTHTOKEN:synthetic,DEVOS_CONNECTOR_OWNER_SECRET:synthetic,DEVOS_DEBUG:'1'};
     const success=spawnSync(path.join(f.project,'devos'),['connector','status'],{cwd:f.project,env,encoding:'utf8'});
     assert.equal(success.status,0,success.stderr);
