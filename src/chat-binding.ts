@@ -8,21 +8,35 @@ export const BIND_MARKER = /^DEVOS_BIND_[A-Za-z0-9_-]{12,128}$/;
 export const BIND_LIMIT = 30;
 export const BIND_PASSES = 3;
 export const BIND_DELAY_MS = 1500;
+export const BIND_MARKER_WAIT_MS = 750;
 
 export interface BindingPage {
   goto(url: string): Promise<unknown>;
   url(): string;
   locator(selector: string): { all(): Promise<Array<{ getAttribute(name: string): Promise<string | null> }>> };
-  getByText(text: string, options: { exact: boolean }): { count(): Promise<number> };
+  getByText(text: string, options: { exact: boolean }): {
+    count(): Promise<number>;
+    waitFor(options: { state: 'visible'; timeout: number }): Promise<void>;
+  };
 }
 
 export async function searchBindingPass(page: BindingPage, projectUrl: string, marker: string): Promise<string | null> {
   const scope = getChatGptProjectScope(projectUrl);
   if (!scope) throw new Error('bind_requires_project');
   await page.goto(projectUrl);
+  // The project sidebar presents conversation links in newest-first order.
+  // Preserve that order; optional update timestamps make the ordering explicit
+  // when the host exposes them on the link.
   const links = await page.locator(`a[href*="/g/${scope.projectId}/c/"]`).all();
+  const rows = await Promise.all(links.map(async (link, index) => ({
+    link,
+    index,
+    updatedAt: await link.getAttribute('data-updated-at'),
+  })));
+  const hasTimestamps = rows.length > 0 && rows.every(row => row.updatedAt && Number.isFinite(Date.parse(row.updatedAt)));
+  if (hasTimestamps) rows.sort((a, b) => Date.parse(b.updatedAt!) - Date.parse(a.updatedAt!) || a.index - b.index);
   const seen = new Set<string>();
-  for (const link of links) {
+  for (const { link } of rows) {
     const href = await link.getAttribute('href');
     if (!href) continue;
     const url = new URL(href, scope.origin);
@@ -31,7 +45,13 @@ export async function searchBindingPass(page: BindingPage, projectUrl: string, m
     seen.add(url.pathname);
     if (seen.size > BIND_LIMIT) break;
     await page.goto(url.href);
-    if (await page.getByText(marker, { exact: true }).count() > 0) return url.href;
+    const markerText = page.getByText(marker, { exact: true });
+    try {
+      await markerText.waitFor({ state: 'visible', timeout: BIND_MARKER_WAIT_MS });
+      if (await markerText.count() > 0) return url.href;
+    } catch (error) {
+      if (!(error instanceof Error) || !/timeout|timed out/i.test(error.message)) throw error;
+    }
   }
   return null;
 }
@@ -47,17 +67,20 @@ export async function resolveBinding(page: BindingPage, projectUrl: string, mark
 }
 
 export async function bindChat(markerFile: string, projectUrlOverride?: string): Promise<string> {
-  const config = loadChatGptBrowserConfig(process.env, projectUrlOverride);
-  const marker = (await readFile(markerFile, 'utf8')).trim();
-  if (!BIND_MARKER.test(marker)) throw new Error('bind_invalid_marker');
-  const identity = await loadOrCreateCamoufoxIdentity(config.profileDir);
-  let context: BrowserContext | undefined;
   try {
-    context = await Camoufox({ user_data_dir: config.profileDir, persistent_context: true, fingerprint_preset: identity.preset, headless: config.headless, timeout: 30000 });
-    const page: Page = await context.newPage();
-    return await resolveBinding(page, config.projectUrl, marker);
+    const marker = (await readFile(markerFile, 'utf8')).trim();
+    if (!BIND_MARKER.test(marker)) throw new Error('bind_invalid_marker');
+    const config = loadChatGptBrowserConfig(process.env, projectUrlOverride);
+    const identity = await loadOrCreateCamoufoxIdentity(config.profileDir);
+    let context: BrowserContext | undefined;
+    try {
+      context = await Camoufox({ user_data_dir: config.profileDir, persistent_context: true, fingerprint_preset: identity.preset, headless: config.headless, timeout: 30000 });
+      const page: Page = await context.newPage();
+      return await resolveBinding(page, config.projectUrl, marker);
+    } finally {
+      await context?.close();
+    }
   } finally {
-    await context?.close();
     await rm(markerFile, { force: true });
   }
 }

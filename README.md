@@ -579,4 +579,4 @@ Main agent/пользователь после независимого review �
 
 ### Bind the current ChatGPT Project chat
 
-Write a unique `DEVOS_BIND_<random>` marker into a temporary file using Desktop Commander and send the same marker as a standalone chat message. Run `./devos bind-chat /absolute/path/to/marker-file`. The helper uses the configured Camoufox profile, checks up to 30 project chats per pass (three bounded passes), prints the matching conversation URL or fails with `bind_not_found`, and deletes the marker file after the browser attempt. Close any other process using the persistent profile before binding.
+Write a unique `DEVOS_BIND_<random>` marker into a temporary file using Desktop Commander and send the same marker as a standalone chat message. Run `./devos bind-chat /absolute/path/to/marker-file`. The helper uses the configured Camoufox profile, checks up to 30 project chats newest-first per pass (three bounded passes), waits briefly for each exact marker to render, prints the matching conversation URL or fails with `bind_not_found`, and deletes the marker file on every exit. Close any other process using the persistent profile before binding.
