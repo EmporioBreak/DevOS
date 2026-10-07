@@ -4,8 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { JsonStateStore } from "../src/json-state-store.js";
 import { runInNewContext } from "node:vm";
-import { chromium, type BrowserContext } from "playwright";
-import { ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
+import type { BrowserContext } from "playwright-core";
+import { ChatGptBrowserExecutor, chatGptBrowserDeps } from "../src/chatgpt-browser-executor.js";
 import type { Executor } from "../src/executor.js";
 import { Orchestrator, type RunState, type StateStore } from "../src/orchestrator.js";
 import type { Workflow } from "../src/workflow.js";
@@ -68,7 +68,7 @@ function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failur
     async newPage() { attempts++; if (options.phase === "newPage") fail(); return page; },
     async close() {},
   };
-  const executor = new ChatGptBrowserExecutor({ projectUrl: project, profileDir: "/unused", browserChannel: "chrome", headless: true }, options.slow ? 30 : 500);
+  const executor = new ChatGptBrowserExecutor({ projectUrl: project, profileDir: "/unused", headless: true }, options.slow ? 30 : 500);
   Object.assign(executor, { context });
   return { executor, urls, reopen: () => Object.assign(executor, { context }), changeConversation: () => { url = "https://chatgpt.com/g/one/c/unrelated"; }, attempts: () => attempts, sends: () => sends, fills: () => fills, closes: () => closes };
 }
@@ -141,12 +141,18 @@ test("closed persistent context is discarded and relaunched headless with the sa
   const f = fixture();
   const existing = (f.executor as unknown as { context: unknown }).context;
   Object.assign(f.executor, { context: undefined });
-  t.mock.method(chromium, "launchPersistentContext", async (profile: string, options: { headless?: boolean }) => {
+  t.mock.method(chatGptBrowserDeps, "loadIdentity", async () => ({
+    schema: 1 as const,
+    os: "macos" as const,
+    preset: { userAgent: "stable-test-preset" },
+  }));
+
+  t.mock.method(chatGptBrowserDeps, "launchPersistentContext", async (profile: string, options: Parameters<typeof chatGptBrowserDeps.launchPersistentContext>[1]) => {
     launches.push({ profile, headless: options.headless });
     return { ...(existing as object), async addInitScript() {}, on(_event: string, handler: () => void) { closeHandlers.push(handler); } } as unknown as BrowserContext;
   });
   // Use a real writable project directory, no browser or ChatGPT network.
-  Object.assign(f.executor, { config: { projectUrl: project, profileDir: process.cwd() + "/.devos/test-profile", browserChannel: "chrome", headless: true } });
+  Object.assign(f.executor, { config: { projectUrl: project, profileDir: process.cwd() + "/.devos/test-profile", headless: true } });
   await f.executor.run({ projectRoot: "/project", prompt: "Work", enforceProjectScope: true });
   closeHandlers[0]?.();
   await f.executor.run({ projectRoot: "/project", prompt: "Work", enforceProjectScope: true });
@@ -167,8 +173,14 @@ for (const phase of ["newPage", "goto"] as const) {
     const f = fixture({ phase, error: phase === "newPage" ? "Target page, context or browser has been closed" : "Target page crashed" });
     const context = (f.executor as unknown as { context: object }).context;
     let launches = 0;
-    Object.assign(f.executor, { config: { projectUrl: project, profileDir: process.cwd() + "/.devos/test-profile", browserChannel: "chrome", headless: true } });
-    t.mock.method(chromium, "launchPersistentContext", async (_profile: string, options: { headless?: boolean }) => {
+    Object.assign(f.executor, { config: { projectUrl: project, profileDir: process.cwd() + "/.devos/test-profile", headless: true } });
+    t.mock.method(chatGptBrowserDeps, "loadIdentity", async () => ({
+      schema: 1 as const,
+      os: "macos" as const,
+      preset: { userAgent: "stable-test-preset" },
+    }));
+
+    t.mock.method(chatGptBrowserDeps, "launchPersistentContext", async (_profile: string, options: Parameters<typeof chatGptBrowserDeps.launchPersistentContext>[1]) => {
       launches++;
       assert.equal(options.headless, true);
       return { ...context, async addInitScript() {}, on() {} } as unknown as BrowserContext;

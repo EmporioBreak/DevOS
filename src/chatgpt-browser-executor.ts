@@ -1,12 +1,13 @@
 import { profileProcesses, terminateOwnedBrowser, type OwnedBrowserProcess } from "./owned-browser-process.js";
 import { readCompletedTurn, type SubmittedTurn } from "./chatgpt-turn-recovery.js";
 import { mkdir } from "node:fs/promises";
-import { chromium, type BrowserContext, type CDPSession, type Page } from "playwright";
+import { Camoufox } from "@camoufox/camoufox";
+import { loadOrCreateCamoufoxIdentity, type CamoufoxIdentity } from "./camoufox-identity.js";
+import type { BrowserContext, Page } from "playwright-core";
 import type { Executor, WorkerRequest } from "./executor.js";
 import { debugLog } from "./debug-log.js";
 import type { WorkerOutput } from "./workflow.js";
 import {
-  CHATGPT_PERSISTENT_PROFILE_IGNORED_DEFAULT_ARGS,
   assertChatGptProjectScope,
   getChatGptProjectScope,
   isProvisionalChatGptConversationId,
@@ -57,6 +58,25 @@ const SEND = [
   'button[aria-label*="Send"]:visible',
   'button[type="submit"][aria-label="Отправить"]:visible',
 ].join(",");
+
+export const chatGptBrowserDeps = {
+  loadIdentity: loadOrCreateCamoufoxIdentity,
+  launchPersistentContext: (
+    profileDir: string,
+    options: {
+      headless: boolean;
+      timeout: number;
+      identity: CamoufoxIdentity;
+    },
+  ): Promise<BrowserContext> =>
+    Camoufox({
+      user_data_dir: profileDir,
+      persistent_context: true,
+      fingerprint_preset: options.identity.preset,
+      headless: options.headless,
+      timeout: options.timeout,
+    }),
+};
 
 export class ChatGptBrowserExecutor implements Executor {
   readonly kind = "chatgpt_browser" as const;
@@ -218,7 +238,7 @@ export class ChatGptBrowserExecutor implements Executor {
     }
     if (!confirmed) {
       debugLog("browser.cleanup", { phase: "context", decision: "unconfirmed" });
-      throw new Error("Browser cleanup unconfirmed: bounded close failed; no unproven/user Chrome process was killed");
+      throw new Error("Browser cleanup unconfirmed: bounded close failed; no unproven/user browser process was killed");
     }
     if (this.context === context) this.context = undefined;
     if (this.ownedProcess === owned) this.ownedProcess = undefined;
@@ -413,74 +433,36 @@ export class ChatGptBrowserExecutor implements Executor {
   }
 
   private async launchContext(timeout: number): Promise<BrowserContext> {
-
     await mkdir(this.config.profileDir, { recursive: true });
-    debugLog("browser.context", { phase: "launch", headless: this.config.headless, browserMode: this.config.headless ? "headless" : "headed" });
-    const baseline = await profileProcesses(this.config.profileDir).catch(() => undefined);
-    const context = await chromium.launchPersistentContext(this.config.profileDir, {
-      timeout,
-      channel: this.config.browserChannel,
+    debugLog("browser.context", {
+      phase: "launch",
+      engine: "camoufox",
       headless: this.config.headless,
-      viewport: null,
-      ignoreDefaultArgs: [...CHATGPT_PERSISTENT_PROFILE_IGNORED_DEFAULT_ARGS],
+      browserMode: this.config.headless ? "headless" : "headed",
     });
+    const identity = await chatGptBrowserDeps.loadIdentity(this.config.profileDir);
+    const baseline = await profileProcesses(this.config.profileDir).catch(() => undefined);
+    const context = await chatGptBrowserDeps.launchPersistentContext(
+      this.config.profileDir,
+      { timeout, headless: this.config.headless, identity },
+    );
 
     this.context = context;
-    const launched = baseline ? (await profileProcesses(this.config.profileDir).catch(() => [])).filter(candidate => !baseline.some(existing => existing.pid === candidate.pid)) : [];
+    const launched = baseline
+      ? (await profileProcesses(this.config.profileDir).catch(() => []))
+          .filter(candidate => !baseline.some(existing => existing.pid === candidate.pid))
+      : [];
     this.ownedProcess = launched.length === 1 ? launched[0] : undefined;
-    context.on("close", () => { if (this.context === context) this.context = undefined; });
+    context.on("close", () => {
+      if (this.context === context) this.context = undefined;
+    });
     try {
-      if (!this.config.headless) await this.minimizeOwnedWindow(context, Math.min(timeout, 2_000));
       await context.addInitScript({ content: CHATGPT_RESPONSE_LOADER_SOURCE });
     } catch (error) {
       await this.close();
       throw error;
     }
     return context;
-  }
-
-  private async minimizeOwnedWindow(context: BrowserContext, timeout: number): Promise<void> {
-    let expired = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let phase = "owned-page";
-    const minimize = async () => {
-      let session: CDPSession | undefined;
-      try {
-        const page = context.pages().find(candidate => !candidate.isClosed());
-        if (!page) throw new Error("No owned page");
-        phase = "cdp-session";
-        session = await context.newCDPSession(page);
-        if (expired) return false;
-        phase = "window-identity";
-        // Omitting targetId uses this page-scoped session's target, never a
-        // browser-wide search or a window belonging to another Chrome process.
-        const { windowId } = await session.send("Browser.getWindowForTarget");
-        if (expired) return false;
-        if (!Number.isSafeInteger(windowId) || windowId <= 0) throw new Error("Invalid owned window id");
-        phase = "set-bounds";
-        await session.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "minimized" } });
-        if (expired) return false;
-        phase = "verify-bounds";
-        const { bounds } = await session.send("Browser.getWindowBounds", { windowId });
-        return bounds.windowState === "minimized";
-      } finally {
-        // Context close still owns transport cleanup if detach hangs or fails.
-        if (session) void session.detach().catch(() => undefined);
-      }
-    };
-    try {
-      const minimized = await Promise.race([
-        minimize(),
-        new Promise<boolean>(resolve => { timer = setTimeout(() => { expired = true; resolve(false); }, timeout); }),
-      ]);
-      debugLog("browser.window.minimize", { decision: minimized ? "minimized" : "continue-visible", phase, ...(expired ? { reason: "deadline" } : {}) });
-    } catch {
-      // Do not log raw CDP errors: they may contain URLs or account data.
-      debugLog("browser.window.minimize", { decision: "continue-visible", phase, reason: "unavailable" });
-    } finally {
-      expired = true;
-      if (timer) clearTimeout(timer);
-    }
   }
 
 }
