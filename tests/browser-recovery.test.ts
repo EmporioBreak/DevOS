@@ -441,6 +441,8 @@ test("saved conversation remains identical across a pre-submit failure and ordin
 
   assert.equal(result.sessions.browser, saved);
   assert.equal(result.sessions.other, "https://chatgpt.com/g/one/c/other");
+  // Unknown/non-browser sessions are preserved in task state but are never
+  // treated as browser tabs during reconstruction.
   assert.deepEqual(f.urls, [saved, saved]);
   assert.equal(f.sends(), 1);
 });

@@ -234,9 +234,23 @@ export class Orchestrator {
       };
       let output: WorkerOutput;
       try {
+        const knownBrowserSessions = worker.executor === "chatgpt_browser"
+          ? Object.fromEntries(
+              Object.entries(state.sessions).filter(
+                ([workerId]) => workers.get(workerId)?.executor === "chatgpt_browser",
+              ),
+            )
+          : undefined;
         output = await executor.run({
           projectRoot: this.options.projectRoot,
           prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot),
+          workerId: worker.id,
+          ...(worker.executor === "chatgpt_browser"
+            ? {
+                knownBrowserSessions: knownBrowserSessions!,
+                browserTurnId: `${state.completedRuns}:${worker.id}`,
+              }
+            : {}),
           ...(sessionId ? { sessionId } : {}),
           ...(worker.executor === "chatgpt_browser" ? { enforceProjectScope: true } : {}),
           onSession,

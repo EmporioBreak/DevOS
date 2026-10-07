@@ -83,6 +83,7 @@ export class ChatGptBrowserExecutor implements Executor {
   private context: BrowserContext | undefined;
   private ownedProcess: OwnedBrowserProcess | undefined;
   private launching: Promise<BrowserContext> | undefined;
+  private readonly workerPages = new Map<string, Page>();
 
   constructor(
     private readonly config: ChatGptBrowserConfig = loadChatGptBrowserConfig(),
@@ -90,20 +91,7 @@ export class ChatGptBrowserExecutor implements Executor {
   ) {}
 
   async run(request: WorkerRequest): Promise<WorkerOutput> {
-    try { return await this.runTurn(request); }
-    finally {
-      // A launch that raced the preparation deadline still belongs to this turn.
-      const launching = this.launching;
-      if (launching) {
-        let settled = false;
-        await closeBeforeDeadline(async () => { await launching; settled = true; }, Date.now() + Math.min(this.timeoutMs, 5_000));
-        if (!settled && this.launching === launching) {
-          void launching.then(() => this.close()).catch(() => debugLog("browser.cleanup", { decision: "late-launch-cleanup-unconfirmed" }));
-          throw new Error("Browser cleanup unconfirmed: browser launch still pending after cleanup deadline");
-        }
-      }
-      await this.close();
-    }
+    return await this.runTurn(request);
   }
 
   private async runTurn(request: WorkerRequest): Promise<WorkerOutput> {
@@ -211,7 +199,7 @@ export class ChatGptBrowserExecutor implements Executor {
           // An observed identity change is definitive; never follow it or mask it.
           if (!isSameChatGptConversation(durableSession, page.url())) throw new Error("actual conversation identity changed");
           await rememberSession(durableSession);
-          const text = await this.recoverTurn(durableSession, conversationId, submitted);
+          const text = await this.recoverTurn(request, durableSession, conversationId, submitted);
           return { text, sessionId: durableSession };
         } catch (recoveryError) {
           const reason = recoveryError instanceof Error ? recoveryError.message.split("\n")[0]! : "read unavailable";
@@ -221,7 +209,7 @@ export class ChatGptBrowserExecutor implements Executor {
       }
       throw error;
     } finally {
-      await closeBeforeDeadline(() => page.close(), Date.now() + Math.min(this.timeoutMs, 5_000));
+      // Stable worker pages stay alive for the whole task. Cleanup is task-scoped.
     }
   }
 
@@ -240,7 +228,7 @@ export class ChatGptBrowserExecutor implements Executor {
       debugLog("browser.cleanup", { phase: "context", decision: "unconfirmed" });
       throw new Error("Browser cleanup unconfirmed: bounded close failed; no unproven/user browser process was killed");
     }
-    if (this.context === context) this.context = undefined;
+    if (this.context === context) { this.context = undefined; this.workerPages.clear(); }
     if (this.ownedProcess === owned) this.ownedProcess = undefined;
     debugLog("browser.cleanup", { phase: "context", decision: "closed" });
   }
@@ -268,7 +256,7 @@ export class ChatGptBrowserExecutor implements Executor {
           const context = await this.getContext(budget);
           if (expired) { await this.close(); throw new Error("Timeout: preparation deadline exhausted"); }
           phase = "new-page";
-          page = context.pages?.().find(candidate => !candidate.isClosed?.()) ?? await context.newPage();
+          page = await this.getWorkerPage(request, context);
           if (expired) { await page.close(); throw new Error("Timeout: preparation deadline exhausted"); }
           const currentPage = page;
           currentPage.on("response", response => {
@@ -345,6 +333,8 @@ export class ChatGptBrowserExecutor implements Executor {
         const cause = effectiveError instanceof Error ? effectiveError.message.split("\n")[0]! : "Browser operation failed";
         const transient = isTransientBrowserFailure(effectiveError);
         await closeBeforeDeadline(() => page?.close() ?? Promise.resolve(), deadline);
+        if (page && request.workerId && this.workerPages.get(request.workerId) === page) this.workerPages.delete(request.workerId);
+        if (page && !request.workerId && this.workerPages.get("__default__") === page) this.workerPages.delete("__default__");
         if (/closed|crashed|disconnected/i.test(cause)) {
           await closeBeforeDeadline(() => this.close(), deadline);
         }
@@ -362,7 +352,12 @@ export class ChatGptBrowserExecutor implements Executor {
     throw new Error("Browser preparation exhausted");
   }
 
-  private async recoverTurn(session: string, conversationId: string, turn: SubmittedTurn): Promise<string> {
+  private async recoverTurn(
+    request: WorkerRequest,
+    session: string,
+    conversationId: string,
+    turn: SubmittedTurn,
+  ): Promise<string> {
     const deadline = Date.now() + Math.min(this.timeoutMs, 3 * 60_000);
     let attempt = 0;
     while (Date.now() < deadline) {
@@ -375,7 +370,7 @@ export class ChatGptBrowserExecutor implements Executor {
           if (this.context?.pages?.().every(candidate => candidate.isClosed())) await this.close();
           const context = await this.getContext(budget);
           if (expired) throw new Error("Timeout: read-only recovery deadline exhausted");
-          const page = context.pages?.().find(candidate => !candidate.isClosed?.()) ?? await context.newPage();
+          const page = await this.getWorkerPage(request, context);
           if (expired) throw new Error("Timeout: read-only recovery deadline exhausted");
           // Listen before navigating; the authenticated frontend performs the read.
           const read = page.waitForResponse(response => {
@@ -454,7 +449,7 @@ export class ChatGptBrowserExecutor implements Executor {
       : [];
     this.ownedProcess = launched.length === 1 ? launched[0] : undefined;
     context.on("close", () => {
-      if (this.context === context) this.context = undefined;
+      if (this.context === context) { this.context = undefined; this.workerPages.clear(); }
     });
     try {
       await context.addInitScript({ content: CHATGPT_RESPONSE_LOADER_SOURCE });
@@ -463,6 +458,35 @@ export class ChatGptBrowserExecutor implements Executor {
       throw error;
     }
     return context;
+  }
+
+  private async getWorkerPage(request: WorkerRequest, context: BrowserContext): Promise<Page> {
+    const workerId = request.workerId ?? "__default__";
+    const existing = this.workerPages.get(workerId);
+    if (existing && !existing.isClosed?.()) return existing;
+
+    // After a browser crash, rebuild all durable worker tabs before resuming work.
+    const known = request.knownBrowserSessions ?? {};
+    for (const [id, session] of Object.entries(known)) {
+      const knownPage = this.workerPages.get(id);
+      if (knownPage && !knownPage.isClosed?.()) continue;
+      const candidate = this.workerPages.size === 0
+        ? context.pages?.().find(page => !page.isClosed?.()) ?? await context.newPage()
+        : await context.newPage();
+      this.workerPages.set(id, candidate);
+      if (id !== workerId) {
+        await candidate.goto(session, { waitUntil: "domcontentloaded", timeout: Math.min(this.timeoutMs, 15_000) });
+        if (!isSameChatGptConversation(session, candidate.url())) throw new Error(`Failed to reconstruct saved browser tab for worker ${id}`);
+      }
+    }
+
+    const reconstructed = this.workerPages.get(workerId);
+    if (reconstructed && !reconstructed.isClosed?.()) return reconstructed;
+    const page = this.workerPages.size === 0
+      ? context.pages?.().find(candidate => !candidate.isClosed?.()) ?? await context.newPage()
+      : await context.newPage();
+    this.workerPages.set(workerId, page);
+    return page;
   }
 
 }

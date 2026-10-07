@@ -9,14 +9,17 @@ import {
   assertMainAgentDecisionPending,
   assertWorkflowMatchesProject,
   chooseReadyTask,
+  cliBrowserRuntimeDeps,
   formatRunResult,
   isCliEntrypoint,
   parseCliArgs,
   parseIssueNumber,
   parseMainAgentDecision,
   prepareRunState,
+  runWorkflow,
 } from "../src/cli.js";
 import type { ReadyTask } from "../src/ready-tasks.js";
+import type { Workflow } from "../src/workflow.js";
 
 class TrackingStore implements StateStore {
   cleared = 0;
@@ -200,4 +203,62 @@ test("rejects workflow repository mismatch before execution", () => {
     { version: 1, task: { repo: "other/repo", issue: 1 }, start: "worker", workers: [{ id: "worker", executor: "codex", prompt: "x", on: { done: null } }] },
     { version: 1, repo: "owner/project", chatgptProjectUrl: "https://chatgpt.com/" },
   ), /Workflow repository other\/repo does not match current project owner\/project/);
+});
+
+test("shared browser runtime survives final review handoff and closes only after approval", async t => {
+  const root = await mkdtemp(join(tmpdir(), "devos-cli-shared-browser-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 740, pr: 90 },
+    owner: { mode: "main_agent" },
+    start: "reviewer",
+    workers: [
+      {
+        id: "reviewer",
+        executor: "chatgpt_browser",
+        prompt: "Review.",
+        on: { approved: null },
+      },
+    ],
+  };
+  let workerRuns = 0;
+  let closes = 0;
+  const browser = {
+    kind: "chatgpt_browser" as const,
+    async run(request: { onSession?: (sessionId: string) => void | Promise<void> }) {
+      workerRuns++;
+      await request.onSession?.("https://chatgpt.com/c/review-740");
+      return {
+        text: 'DEVOS_RESULT {"status":"approved"}',
+        sessionId: "https://chatgpt.com/c/review-740",
+      };
+    },
+  };
+  t.mock.method(cliBrowserRuntimeDeps, "ensure", async () => browser as never);
+  t.mock.method(cliBrowserRuntimeDeps, "close", async () => { closes++; });
+
+  const previousOwnerResult = process.env.DEVOS_OWNER_RESULT;
+  delete process.env.DEVOS_OWNER_RESULT;
+  t.after(() => {
+    if (previousOwnerResult === undefined) delete process.env.DEVOS_OWNER_RESULT;
+    else process.env.DEVOS_OWNER_RESULT = previousOwnerResult;
+  });
+
+  const config = {
+    version: 1 as const,
+    repo: "owner/product",
+    chatgptProjectUrl: "https://chatgpt.com/",
+  };
+
+  const handoff = await runWorkflow(workflow, "run", root, config);
+  assert.equal(handoff.mainAgentReviewPending, true);
+  assert.equal(workerRuns, 1);
+  assert.equal(closes, 0);
+
+  process.env.DEVOS_OWNER_RESULT = "approved";
+  const completed = await runWorkflow(workflow, "run", root, config);
+  assert.equal(completed.completionApproved, true);
+  assert.equal(workerRuns, 1, "approval must not rerun the reviewer");
+  assert.equal(closes, 1);
 });
