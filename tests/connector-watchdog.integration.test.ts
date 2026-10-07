@@ -275,6 +275,22 @@ test(
       client = await connectClient(base, tokens.access_token);
       const recoveredTools = await client.listTools();
       assert.ok(recoveredTools.tools.some((tool) => tool.name === "read_file"));
+
+      const configTool = recoveredTools.tools.find((tool) => tool.name === "get_config");
+      assert.ok(configTool, "recovered public session exposes get_config");
+      for (let i = 0; i < 100; i++) {
+        const [tools, config] = await Promise.all([
+          client.listTools(),
+          client.callTool({ name: "get_config", arguments: {} }),
+        ]);
+        assert.ok(tools.tools.some((tool) => tool.name === "get_config"));
+        assert.notEqual(config.isError, true);
+      }
+      const concurrentPublicReads = await Promise.all(
+        Array.from({ length: 20 }, () => client!.callTool({ name: "get_config", arguments: {} })),
+      );
+      assert.ok(concurrentPublicReads.every((result) => result.isError !== true));
+
       const config = await client.callTool({
         name: "read_file",
         arguments: { path: join(f.root, ".devos/connector/config.json") },
