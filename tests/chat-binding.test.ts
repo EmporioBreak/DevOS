@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import type { SpawnOptions } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bindChat, resolveBinding, searchBindingPass, BIND_LIMIT, BIND_PASSES } from '../src/chat-binding.js';
+import { bindChat, readChatBinding, resolveBinding, runDeferredBindingJob, scheduleChatBinding, searchBindingPass, BIND_LIMIT, BIND_PASSES, BIND_PUBLICATION_DELAY_MS } from '../src/chat-binding.js';
 const project = 'https://chatgpt.com/g/demo/project';
 const marker = 'DEVOS_BIND_abcdefghijklmnop';
 function fixture(count: number, foundAt = -1, text = marker, options: { order?: number[]; timestamps?: string[]; delayed?: boolean } = {}) {
@@ -88,6 +89,68 @@ test('removes marker file when browser configuration fails', async () => {
   } finally {
     if (previous === undefined) delete process.env.DEVOS_BROWSER_HEADLESS;
     else process.env.DEVOS_BROWSER_HEADLESS = previous;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test('schedules a one-shot binding worker and returns before lookup starts', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'devos-bind-test-'));
+  const markerFile = join(dir, 'marker');
+  let unrefCalled = false;
+  let spawnArgs: { command: string; args: string[]; options: SpawnOptions } | undefined;
+  await writeFile(markerFile, marker);
+  try {
+    await scheduleChatBinding(markerFile, project, dir, '/devos/cli.js', ['--import=tsx'], (command, args, options) => {
+      spawnArgs = { command, args, options };
+      return { once() { return this; }, unref() { unrefCalled = true; } } as never;
+    });
+    assert.equal(unrefCalled, true);
+    assert.equal(spawnArgs?.options.cwd, dir);
+    assert.equal(spawnArgs?.options.detached, true);
+    assert.deepEqual(spawnArgs?.args.slice(-4), ['/devos/cli.js', '--devos-bind-chat-worker', markerFile, project]);
+    assert.deepEqual(await readChatBinding(dir), { version: 1, status: 'pending', projectUrl: project, requestedAt: (await readChatBinding(dir))?.requestedAt });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test('defers lookup until marker publication and persists exact URL before cleanup', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'devos-bind-test-'));
+  const markerFile = join(dir, 'marker');
+  const url = 'https://chatgpt.com/g/demo/c/current-chat';
+  let markerPublished = false;
+  await writeFile(markerFile, marker);
+  try {
+    assert.equal(await runDeferredBindingJob(markerFile, project, dir, {
+      wait: async milliseconds => {
+        assert.equal(milliseconds, BIND_PUBLICATION_DELAY_MS);
+        markerPublished = true;
+      },
+      bind: async (_file, _project, onResolved) => {
+        assert.equal(markerPublished, true);
+        assert.ok(onResolved);
+        await onResolved!(url);
+        assert.equal((await readChatBinding(dir))?.conversationUrl, url);
+        return url;
+      },
+    }), url);
+    assert.equal((await readChatBinding(dir))?.conversationUrl, url);
+    await assert.rejects(readFile(markerFile, 'utf8'), { code: 'ENOENT' });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test('persists explicit failure and removes marker after exhausted lookup', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'devos-bind-test-'));
+  const markerFile = join(dir, 'marker');
+  await writeFile(markerFile, marker);
+  try {
+    await assert.rejects(runDeferredBindingJob(markerFile, project, dir, {
+      wait: async () => {},
+      bind: async () => { throw new Error('bind_not_found'); },
+    }), /bind_not_found/);
+    assert.equal((await readChatBinding(dir))?.status, 'failed');
+    assert.equal((await readChatBinding(dir))?.error, 'bind_not_found');
+    await assert.rejects(readFile(markerFile, 'utf8'), { code: 'ENOENT' });
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

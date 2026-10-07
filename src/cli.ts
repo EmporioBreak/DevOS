@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 
 import { realpathSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
-import { bindChat } from "./chat-binding.js";
+import {
+  readChatBinding,
+  runDeferredBindingJob,
+  scheduleChatBinding,
+} from "./chat-binding.js";
 import { loadChatGptBrowserConfig } from "./browser-config.js";
 import {
   clearTaskCompleted,
@@ -45,6 +50,12 @@ export const cliBrowserRuntimeDeps = {
   close: closeSharedBrowserRuntime,
 };
 
+export const cliBindingDeps = {
+  schedule: scheduleChatBinding,
+  run: runDeferredBindingJob,
+  read: readChatBinding,
+};
+
 import {
   connector,
   connectorBackgroundRunning,
@@ -54,10 +65,12 @@ import {
 export type CliCommand =
   | { kind: "connector"; action: ConnectorAction }
   | { kind: "bind-chat"; markerFile: string }
+  | { kind: "bind-chat-status" }
   | { kind: "select" }
   | { kind: "run"; mode: "run" | "restart"; target: string };
 
 export function parseCliArgs(args: string[]): CliCommand {
+  if (args.length === 2 && args[0] === "bind-chat" && args[1] === "--status") return { kind: "bind-chat-status" };
   if (args[0] === "bind-chat" && args.length === 2) return { kind: "bind-chat", markerFile: args[1]! };
   if (args.length === 0) {
     return { kind: "select" };
@@ -198,15 +211,41 @@ export async function main(
   args: string[] = process.argv.slice(2),
   cwd: string = process.cwd(),
 ): Promise<void> {
+  if (args[0] === "--devos-bind-chat-worker" && args.length === 3) {
+    await cliBindingDeps.run(args[1]!, args[2]!, cwd);
+    return;
+  }
   if (args[0] === "--devos-browser-runtime") {
     await runBrowserRuntime(args.slice(1));
     return;
   }
   const command = parseCliArgs(args);
 
+  if (command.kind === "bind-chat-status") {
+    const binding = await cliBindingDeps.read(cwd);
+    if (!binding) {
+      process.stdout.write("No ChatGPT conversation binding is saved.\n");
+    } else if (binding.status === "resolved") {
+      process.stdout.write(`${binding.conversationUrl}\n`);
+    } else if (binding.status === "pending") {
+      process.stdout.write("ChatGPT conversation binding is pending.\n");
+    } else {
+      process.stdout.write(`ChatGPT conversation binding failed: ${binding.error}\n`);
+    }
+    return;
+  }
+
   if (command.kind === "bind-chat") {
-    const config = await loadOrCreateProjectConfig(cwd, new LocalCommandRunner());
-    process.stdout.write(`${await bindChat(command.markerFile, config.chatgptProjectUrl)}\n`);
+    let scheduled = false;
+    try {
+      const config = await loadOrCreateProjectConfig(cwd, new LocalCommandRunner());
+      const browserConfig = loadChatGptBrowserConfig(process.env, config.chatgptProjectUrl);
+      await cliBindingDeps.schedule(command.markerFile, browserConfig.projectUrl, cwd, process.argv[1] ?? "");
+      scheduled = true;
+      process.stdout.write("ChatGPT conversation binding scheduled; check `./devos bind-chat --status` for the result.\n");
+    } finally {
+      if (!scheduled) await rm(command.markerFile, { force: true });
+    }
     return;
   }
 
