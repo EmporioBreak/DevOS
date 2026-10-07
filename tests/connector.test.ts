@@ -316,6 +316,55 @@ test("heartbeat failure racing local transport close reports one backend failure
     Client.prototype.ping = originalPing;
   }
 });
+test("stdio transport death immediately reports stale backend state and unhealthy HTTP health", async () => {
+  let failureComponent: string | undefined;
+  let signalFailure!: () => void;
+  const failure = new Promise<void>((resolve) => { signalFailure = resolve; });
+  const g = await connectorModule.startGateway({
+    root: process.cwd(),
+    port: 0,
+    ownerSecret: secret,
+    publicUrl: issuer,
+    oauthClientsPath: null,
+    onFailure: (component) => {
+      failureComponent = component;
+      signalFailure();
+    },
+  });
+  const desktopPid = g.desktopPid;
+  assert.ok(desktopPid);
+  try {
+    assert.equal(g.desktopSnapshot().state, "alive");
+    process.kill(desktopPid!, "SIGKILL");
+    await Promise.race([
+      failure,
+      shortDelay(2_000).then(() => { throw new Error("onclose was not reported"); }),
+    ]);
+    assert.equal(failureComponent, "desktop_commander");
+    assert.equal(g.desktopSnapshot().ready, false);
+    assert.equal(g.desktopSnapshot().state, "stale/dead");
+    const health = (await (await fetch(`http://127.0.0.1:${g.address.port}/health`)).json()) as {
+      ready: boolean;
+      gatewayReady: boolean;
+      backendAlive: boolean;
+      backendState: string;
+    };
+    assert.deepEqual(health, {
+      ready: false,
+      gatewayReady: false,
+      oauthReady: true,
+      backendAlive: false,
+      backendState: "stale/dead",
+      lastBackendOkAt: g.desktopSnapshot().lastBackendOkAt,
+    });
+  } finally {
+    await g.close();
+    if (!dead(desktopPid!)) {
+      process.kill(desktopPid!, "SIGTERM");
+      await waitFor(() => dead(desktopPid!), 2_000);
+    }
+  }
+});
 test("gateway close stays bounded when the local MCP client close never resolves", async () => {
   const g = await gateway();
   const desktopPid = g.desktopPid;

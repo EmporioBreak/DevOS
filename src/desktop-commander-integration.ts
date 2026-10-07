@@ -234,7 +234,7 @@ export class DesktopCommanderIntegration {
     const heartbeat = this.watchdog?.snapshot();
     return {
       ready: this.ready,
-      state: heartbeat?.state ?? "unknown",
+      state: this.disconnectReported ? "stale/dead" : heartbeat?.state ?? "unknown",
       ...(heartbeat?.lastBackendOkAt
         ? { lastBackendOkAt: heartbeat.lastBackendOkAt }
         : {}),

@@ -1,8 +1,8 @@
 # Desktop Commander upstream parity audit
 
-**Baseline:** `main` at `d7626763c0ddd80ee5895c2f9d6a8581c982e0b4`  
-**Upstream:** `wonderwhy-er/DesktopCommanderMCP` tag `v0.2.52`  
-**Pinned dependency:** `@wonderwhy-er/desktop-commander@0.2.52`  
+**Baseline:** `main` at `d7626763c0ddd80ee5895c2f9d6a8581c982e0b4`
+**Upstream:** `wonderwhy-er/DesktopCommanderMCP` tag `v0.2.52`
+**Pinned dependency:** `@wonderwhy-er/desktop-commander@0.2.52`
 **Audit date:** 2026-10-07
 
 The comparison uses upstream `src/remote-device/desktop-commander-integration.ts`, `device.ts`, `remote-channel.ts`, `server.ts`, `custom-stdio.ts`, and `index.ts`. The `remote-channel.ts` transport is not part of DevOS's local stdio adapter; it provides context for upstream remote calls, liveness and routing.
@@ -57,7 +57,7 @@ The adapter extraction and verification are implemented on `codex/desktop-comman
 | Concern | Final DevOS behavior | Evidence / disposition |
 |---|---|---|
 | Child launch and client identity | Stock pinned package; SDK-safe environment plus DevOS allowlist/overrides; `DC_REMOTE_DEVICE=true`; local identity `desktop-commander-client` / `1.0.0`. | Adapter environment and identity tests pass. No package upgrade or upstream patch was needed. |
-| Readiness and liveness | Bounded `tools/list` proves readiness; only then does the single-flight 15s/5s/3-miss watchdog start. Health exposes `unknown`, `alive`, `suspect`, or `stale/dead`. | Adapter and watchdog unit tests pass. Normal-load stress and the process integration test do not trigger a restart. |
+| Readiness and liveness | Bounded `tools/list` proves readiness; only then does the single-flight 15s/5s/3-miss watchdog start. Transport close immediately overrides the last heartbeat state to `stale/dead`; health exposes `unknown`, `alive`, `suspect`, or `stale/dead`. | Adapter and watchdog unit tests pass. Regression verifies exact child `SIGKILL` makes adapter snapshot and public `/health` stale immediately. Normal-load stress and process integration do not trigger a restart. |
 | Request metadata | `tools/call` enforces `_meta.remote=true`, forwarding only a valid progress token and bounded client name/version. | Metadata allowlist test passes, including exclusion of arbitrary metadata and secrets. |
 | Notifications and cancellation | Internal notifications are counted locally and never broadcast. Progress is forwarded only to its originating public request; abort/timeout is request-local. | 1,000-message two-session isolation test passes; cancellation is followed by a successful call. |
 | Deadlines and process sessions | Service requests cap at 60s; tool calls use 60s idle reset by progress and 180s total. Long process work returns a PID/session for later polling. | Deadline/progress/cancel tests and start/poll integration cycles pass. |
@@ -68,7 +68,7 @@ The adapter extraction and verification are implemented on `codex/desktop-comman
 
 - `npm ci`: passed; lockfile unchanged. npm reports 11 audit findings (6 moderate, 5 high); no dependency update was justified by a demonstrated upstream defect.
 - `npm run build`: passed after the final test changes.
-- `npm test`: 301 passed, 0 failed; includes the real local pinned Desktop Commander process integration, diagnostic-only `onerror` proof, and controlled fixture fault injection.
+- `npm test`: 302 passed, 0 failed in 127.8s; includes the real local pinned Desktop Commander process integration, diagnostic-only `onerror` proof, immediate `onclose` → `stale/dead` snapshot and `/health` regression, and controlled fixture fault injection.
 - `tests/desktop-commander-stress.test.ts`: 100 `tools/list` + 100 `get_config`, 20 concurrent config reads, three short process start/poll cycles, healthy watchdog, bounded payload-free history, and exact child cleanup passed.
 - `SIGSTOP` integration: passed in 106.7 seconds. Three-miss detection remained within the test's 40-second bound; supervisor replaced runtime and Desktop Commander PIDs; old session failed closed; a newly initialized MCP session successfully called tools after recovery. Subsequent child, ngrok, runtime and supervisor death paths recovered and cleaned their owned processes.
 - Local real-package smoke: public-path integration covers OAuth, `tools/list`, `read_file`, `start_process`, `list_sessions`, and `read_process_output` after replacement.

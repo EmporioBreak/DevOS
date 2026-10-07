@@ -154,17 +154,24 @@ test("launch matches upstream environment and client identity and forwards safe 
 
 test("unexpected child close clears readiness and reports one disconnect", async () => {
   const f = await fixture();
-  const desktop = new DesktopCommanderIntegration({ root: f.root });
+  const diagnostics: Array<{ snapshot: { state: string } }> = [];
+  const desktop = new DesktopCommanderIntegration({
+    root: f.root,
+    onDiagnostic: (event) => { diagnostics.push(event); },
+  });
   const reasons: string[] = [];
   desktop.onDisconnect((reason) => reasons.push(reason));
   try {
     await desktop.initialize();
     const pid = desktop.snapshot().pid;
     assert.ok(pid);
+    assert.equal(desktop.snapshot().state, "alive");
     process.kill(pid!, "SIGKILL");
     await waitFor(() => reasons.length === 1);
     assert.equal(desktop.ready, false);
     assert.deepEqual(reasons, ["stdio transport closed"]);
+    assert.equal(desktop.snapshot().state, "stale/dead");
+    assert.equal(diagnostics[0]?.snapshot.state, "stale/dead");
   } finally {
     await desktop.close();
     await rm(f.root, { recursive: true, force: true });
