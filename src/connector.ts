@@ -681,11 +681,22 @@ export async function connector(
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
+  const runtimeGroupAlive = (
+    runtime: ReturnType<typeof spawn> | undefined,
+  ): boolean => {
+    if (!runtime?.pid) return false;
+    try {
+      process.kill(-runtime.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const signalRuntimeGroup = (
     runtime: ReturnType<typeof spawn> | undefined,
     signal: NodeJS.Signals,
   ) => {
-    if (!runtime?.pid || runtime.exitCode !== null || runtime.signalCode !== null) return;
+    if (!runtime?.pid) return;
     try { process.kill(-runtime.pid, signal); } catch {}
   };
 
@@ -810,12 +821,12 @@ export async function connector(
     signalRuntimeGroup(currentRuntime, "SIGTERM");
     const shutdownDeadline = Date.now() + 3000;
     while (
-      currentRuntime &&
-      currentRuntime.exitCode === null &&
-      currentRuntime.signalCode === null &&
+      runtimeGroupAlive(currentRuntime) &&
       Date.now() < shutdownDeadline
     ) await delay(25);
-    signalRuntimeGroup(currentRuntime, "SIGKILL");
+    if (runtimeGroupAlive(currentRuntime)) {
+      signalRuntimeGroup(currentRuntime, "SIGKILL");
+    }
     if (!terminalFailed) await rm(stateFile, { force: true });
     await rm(join(dir, "ngrok.yml"), { force: true });
     await new Promise<void>(ok => lock.close(() => ok()));

@@ -142,8 +142,8 @@ async function sleepUntilRetry(
     await Promise.race([
       sleep(ms),
       new Promise<void>(resolve => {
-        onAbort = resolve;
-        signal.addEventListener("abort", resolve, { once: true });
+        onAbort = () => resolve();
+        signal.addEventListener("abort", onAbort, { once: true });
       }),
     ]);
   } finally {
