@@ -109,19 +109,39 @@ export async function ensureSharedBrowserRuntime(
 export async function closeSharedBrowserRuntime(root: string, task: { repo: string; issue: number }): Promise<void> {
   const paths = browserRuntimePaths(root, task.repo, task.issue);
   let graceful = false;
+  let connected = false;
+  let gracefulError: unknown;
   try {
     const socket = await connect(paths.socket, 1_000);
+    connected = true;
     try {
       socket.write('{"type":"close"}\n');
       graceful = await waitForRuntimeClose(socket, 7_000);
+    } catch (error) {
+      gracefulError = error;
     } finally {
       socket.destroy();
     }
-  } catch {}
+  } catch (error) {
+    gracefulError = error;
+  }
 
   if (!graceful) {
     const existing = await readMetadata(paths.metadata);
-    if (existing) await signalOwnedRuntime(existing.pid, existing.identity);
+    if (existing) {
+      await signalOwnedRuntime(existing.pid, existing.identity);
+      try {
+        const socket = await connect(paths.socket, 250);
+        socket.destroy();
+        throw new Error("Shared browser cleanup unconfirmed: runtime socket still accepts connections");
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("cleanup unconfirmed")) throw error;
+      }
+    } else if (connected) {
+      throw gracefulError instanceof Error
+        ? gracefulError
+        : new Error("Shared browser cleanup unconfirmed: connected runtime has no valid ownership metadata");
+    }
   }
   await rm(paths.socket, { force: true });
   await rm(paths.metadata, { force: true });
@@ -152,9 +172,14 @@ export async function startSharedBrowserServer(socketPath: string, metadataPath:
   server.on("connection", socket => { void handleSocket(socket, executor, turns, async () => {
     if (closing) return;
     closing = true;
-    try { await executor.close(); } finally {
+    try {
+      await executor.close();
       server.close();
-      await rm(socketPath, { force: true }); await rm(metadataPath, { force: true });
+      await rm(socketPath, { force: true });
+      await rm(metadataPath, { force: true });
+    } catch (error) {
+      closing = false;
+      throw error;
     }
   }); });
   const stop = () => { if (!closing) { closing = true; void executor.close().finally(async () => { server.close(); await rm(socketPath, { force: true }); await rm(metadataPath, { force: true }); }); } };

@@ -20,6 +20,8 @@ import {
 } from "../src/cli.js";
 import type { ReadyTask } from "../src/ready-tasks.js";
 import type { Workflow } from "../src/workflow.js";
+import { isTaskCompleted } from "../src/completed-tasks.js";
+import { JsonStateStore } from "../src/json-state-store.js";
 
 class TrackingStore implements StateStore {
   cleared = 0;
@@ -261,4 +263,80 @@ test("shared browser runtime survives final review handoff and closes only after
   assert.equal(completed.completionApproved, true);
   assert.equal(workerRuns, 1, "approval must not rerun the reviewer");
   assert.equal(closes, 1);
+});
+
+test("browser cleanup failure preserves approved state and retries finalization without rerunning workers", async t => {
+  const root = await mkdtemp(join(tmpdir(), "devos-cli-browser-cleanup-retry-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 741, pr: 90 },
+    owner: { mode: "main_agent" },
+    start: "reviewer",
+    workers: [
+      {
+        id: "reviewer",
+        executor: "chatgpt_browser",
+        prompt: "Review.",
+        on: { approved: null },
+      },
+    ],
+  };
+  let workerRuns = 0;
+  let closes = 0;
+  let failClose = true;
+  const browser = {
+    kind: "chatgpt_browser" as const,
+    async run(request: { onSession?: (sessionId: string) => void | Promise<void> }) {
+      workerRuns++;
+      await request.onSession?.("https://chatgpt.com/c/review-741");
+      return {
+        text: 'DEVOS_RESULT {"status":"approved"}',
+        sessionId: "https://chatgpt.com/c/review-741",
+      };
+    },
+  };
+  t.mock.method(cliBrowserRuntimeDeps, "ensure", async () => browser as never);
+  t.mock.method(cliBrowserRuntimeDeps, "close", async () => {
+    closes++;
+    if (failClose) throw new Error("simulated browser cleanup failure");
+  });
+
+  const previousOwnerResult = process.env.DEVOS_OWNER_RESULT;
+  delete process.env.DEVOS_OWNER_RESULT;
+  t.after(() => {
+    if (previousOwnerResult === undefined) delete process.env.DEVOS_OWNER_RESULT;
+    else process.env.DEVOS_OWNER_RESULT = previousOwnerResult;
+  });
+  const config = {
+    version: 1 as const,
+    repo: "owner/product",
+    chatgptProjectUrl: "https://chatgpt.com/",
+  };
+
+  const handoff = await runWorkflow(workflow, "run", root, config);
+  assert.equal(handoff.mainAgentReviewPending, true);
+  assert.equal(workerRuns, 1);
+
+  process.env.DEVOS_OWNER_RESULT = "approved";
+  await assert.rejects(
+    runWorkflow(workflow, "run", root, config),
+    /simulated browser cleanup failure/,
+  );
+  const store = new JsonStateStore(root, workflow.task);
+  const pending = await store.load();
+  assert.equal(pending?.completionApproved, true);
+  assert.equal(pending?.sessions.reviewer, "https://chatgpt.com/c/review-741");
+  assert.equal(await isTaskCompleted(root, workflow.task.issue), false);
+  assert.equal(workerRuns, 1);
+  assert.equal(closes, 1);
+
+  failClose = false;
+  delete process.env.DEVOS_OWNER_RESULT;
+  const completed = await runWorkflow(workflow, "run", root, config);
+  assert.equal(completed.completionApproved, true);
+  assert.equal(workerRuns, 1, "cleanup retry must not rerun the reviewer");
+  assert.equal(closes, 2);
+  assert.equal(await isTaskCompleted(root, workflow.task.issue), true);
+  assert.equal(await store.load(), null);
 });

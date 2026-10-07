@@ -154,11 +154,13 @@ export async function runWorkflow(
     ]),
     stateStore,
     ...(mainAgentDecision ? { mainAgentDecision } : {}),
-    finalizeTask: state => recordTaskCompletion(cwd, workflow.task.issue, state),
+    finalizeTask: async state => {
+      if (hasBrowserWorker) await cliBrowserRuntimeDeps.close(cwd, workflow.task);
+      await recordTaskCompletion(cwd, workflow.task.issue, state);
+    },
     resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
     onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
   }).run();
-  if (chatgpt && !state.mainAgentReviewPending) await cliBrowserRuntimeDeps.close(cwd, workflow.task);
   return state;
   } finally {
     await taskLock.release();
