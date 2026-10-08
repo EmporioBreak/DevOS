@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 const REGISTRY_VERSION = 1;
 const KEY_BYTES = 32;
 const MAX_OPAQUE_ID = 512;
+const MAX_CONVERSATIONS = 512;
 
 export interface HostConversationIdentity {
   session: string;
@@ -184,6 +185,12 @@ async function recordHostConversationIdentityNow(
   const record = existing ?? { fingerprint, firstSeenAt: at, lastSeenAt: at };
   record.lastSeenAt = at;
   if (!existing) registry.conversations.push(record);
+  registry.conversations.sort((left, right) =>
+    right.lastSeenAt.localeCompare(left.lastSeenAt),
+  );
+  if (registry.conversations.length > MAX_CONVERSATIONS) {
+    registry.conversations.length = MAX_CONVERSATIONS;
+  }
 
   const temp = path + ".tmp";
   await writeFile(temp, JSON.stringify(registry, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
