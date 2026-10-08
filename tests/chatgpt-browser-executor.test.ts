@@ -175,3 +175,11 @@ test("resumed saved slugged Project chat accepts real slug-less canonical redire
   assert.equal(output.sessionId, requested);
   assert.equal(fixture.sends(), 1);
 });
+
+
+test("submitted turn tolerates only editor-equivalent line ending and trailing whitespace changes", () => {
+  const msg = { id: "u-normalized", author: { role: "user" }, content: { parts: ["First line\r\nSecond line  \n"] } };
+  assert.deepEqual(extractSubmittedTurn({ messages: [msg] }, "First line\nSecond line"), { messageId: "u-normalized" });
+  assert.equal(extractSubmittedTurn({ messages: [msg] }, "First  line\nSecond line"), null);
+  assert.equal(extractSubmittedTurn({ messages: [msg] }, "First line\nSecond lines"), null);
+});

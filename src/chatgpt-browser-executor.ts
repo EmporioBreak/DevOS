@@ -738,6 +738,12 @@ export function conversationRequestShape(payload: unknown): Record<string, unkno
   };
 }
 
+/** ChatGPT composer may normalize line endings, NBSP or trailing blank lines.
+ * Do not collapse interior whitespace or accept partial/similar prompts. */
+export function normalizedSubmittedText(text: string): string {
+  return text.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ").normalize("NFC").trim();
+}
+
 export function extractSubmittedTurn(payload: unknown, prompt: string): SubmittedTurn | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const body = payload as Record<string, unknown>;
@@ -759,7 +765,7 @@ export function extractSubmittedTurn(payload: unknown, prompt: string): Submitte
           typeof part.text === "string") { text.push(part.text); continue; }
       return false;
     }
-    return text.join("") === prompt;
+    return normalizedSubmittedText(text.join("")) === normalizedSubmittedText(prompt);
   });
   if (candidates.length !== 1) return null;
   const user = candidates[0] as Record<string, any>;

@@ -23,6 +23,9 @@ export const CHATGPT_RESPONSE_LOADER_SOURCE = String.raw`
     } catch { /* Non-conversation fetches pass through untouched. */ }
     if (eligible) {
       pending.submissionClaimed = true;
+      function canonicalText(value) {
+        return String(value).replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').normalize('NFC').trim();
+      }
       try {
         var body = typeof init.body === 'string' ? init.body : input && typeof input.clone === 'function' ? await input.clone().text() : null;
         var payload = body ? JSON.parse(body) : null;
@@ -32,7 +35,7 @@ export const CHATGPT_RESPONSE_LOADER_SOURCE = String.raw`
             message.content && Array.isArray(message.content.parts) &&
             message.content.parts.length > 0 &&
             message.content.parts.every(function (part) { return typeof part === 'string'; }) &&
-            message.content.parts.join('') === pending.expectedPrompt;
+            canonicalText(message.content.parts.join('')) === canonicalText(pending.expectedPrompt);
         }) : [];
         var user = matched.length === 1 ? matched[0] : null;
         if (pending === state && user && typeof user.id === 'string' &&
