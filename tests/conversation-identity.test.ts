@@ -214,3 +214,26 @@ test("does not silently rotate the HMAC key when a durable registry already exis
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test("repeated calls within the refresh window reuse durable identity without rewriting freshness", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-conversation-refresh-"));
+  try {
+    const identity = { session: "v1/session-a", source: "meta" as const };
+    const first = await recordHostConversationIdentity(
+      root,
+      identity,
+      new Date("2026-10-08T10:00:00.000Z"),
+    );
+    const second = await recordHostConversationIdentity(
+      root,
+      identity,
+      new Date("2026-10-08T10:00:30.000Z"),
+    );
+    assert.equal(second.fingerprint, first.fingerprint);
+    assert.equal(second.firstSeenAt, first.firstSeenAt);
+    assert.equal(second.lastSeenAt, first.lastSeenAt);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
