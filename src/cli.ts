@@ -12,6 +12,7 @@ import {
   scheduleChatBinding,
 } from "./chat-binding.js";
 import { loadChatGptBrowserConfig } from "./browser-config.js";
+import { runDeferredTokenBindingJob } from "./chat-binding-token.js";
 import {
   clearTaskCompleted,
   isTaskCompleted,
@@ -213,6 +214,10 @@ export async function main(
 ): Promise<void> {
   if (args[0] === "--devos-bind-chat-worker" && args.length === 4) {
     await cliBindingDeps.run(args[1]!, args[2]!, cwd, args[3]!);
+    return;
+  }
+  if (args[0] === "--devos-bind-token-worker" && args.length === 4) {
+    await runDeferredTokenBindingJob(args[1]!, args[2]!, cwd, args[3]!);
     return;
   }
   if (args[0] === "--devos-browser-runtime") {

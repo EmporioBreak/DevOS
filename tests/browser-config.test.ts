@@ -69,6 +69,29 @@ test("accepts the configured ChatGPT Project landing URL", () => {
   );
 });
 
+test("normalizes a live slugged Project URL to the canonical conversation project id", () => {
+  const projectUrl =
+    "https://chatgpt.com/g/g-p-6aba984334d881918dea8eb28b1df635-denis-devos/";
+  assert.deepEqual(getChatGptProjectScope(projectUrl), {
+    origin: "https://chatgpt.com",
+    projectId: "g-p-6aba984334d881918dea8eb28b1df635",
+  });
+  assert.doesNotThrow(() =>
+    assertChatGptProjectScope(
+      projectUrl,
+      "https://chatgpt.com/g/g-p-6aba984334d881918dea8eb28b1df635/c/conversation-1",
+      true,
+    ),
+  );
+  assert.doesNotThrow(() =>
+    assertChatGptProjectScope(
+      projectUrl,
+      "https://chatgpt.com/g/g-p-6aba984334d881918dea8eb28b1df635-denis-devos/c/conversation-1",
+      true,
+    ),
+  );
+});
+
 test("accepts the live ChatGPT Project overview as a landing state only", () => {
   const projectUrl = "https://chatgpt.com/g/g-p-project-denis-devos/";
   const overviewUrl =

@@ -230,3 +230,56 @@ test("failed graceful runtime close preserves ownership metadata so cleanup can 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("shared runtime services binding on the existing browser executor without a worker turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-bind-"));
+  const task = { repo: "owner/repo", issue: 94 };
+  const paths = browserRuntimePaths(root, task.repo, task.issue);
+  let workerRuns = 0;
+  let bindCalls = 0;
+  const executor = {
+    async run() { workerRuns++; return { text: "unused" }; },
+    async resolveBindingToken(projectUrl: string, token: string) {
+      bindCalls++;
+      assert.equal(projectUrl, "https://chatgpt.com/g/project/");
+      assert.equal(token, "DEVOS_BIND_abcdefghijklmnop");
+      return "https://chatgpt.com/g/project/c/current";
+    },
+    async close() {},
+  } as unknown as ChatGptBrowserExecutor;
+  try {
+    await startSharedBrowserServer(paths.socket, paths.metadata, executor);
+    const socket = await new Promise<ReturnType<typeof createConnection>>((resolve, reject) => {
+      const client = createConnection(paths.socket);
+      client.once("connect", () => resolve(client));
+      client.once("error", reject);
+    });
+    const line = new Promise<string>((resolve, reject) => {
+      let buffer = "";
+      socket.on("data", chunk => {
+        buffer += chunk.toString("utf8");
+        const end = buffer.indexOf("\n");
+        if (end >= 0) resolve(buffer.slice(0, end));
+      });
+      socket.once("error", reject);
+    });
+    socket.write(`${JSON.stringify({
+      type: "bind",
+      projectUrl: "https://chatgpt.com/g/project/",
+      token: "DEVOS_BIND_abcdefghijklmnop",
+    })}\n`);
+    const response = JSON.parse(await line) as { type: string; url?: string };
+    socket.destroy();
+    assert.deepEqual(response, {
+      type: "bind_result",
+      url: "https://chatgpt.com/g/project/c/current",
+    });
+    assert.equal(bindCalls, 1);
+    assert.equal(workerRuns, 0);
+  } finally {
+    await closeSharedBrowserRuntime(root, task);
+    await rm(paths.socket, { force: true });
+    await rm(paths.metadata, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -114,7 +114,7 @@ async function readBindingStateLock(path: string): Promise<BindingStateLockRecor
   }
 }
 
-async function updateChatBinding(projectRoot: string, requestId: string, record: ChatBindingRecord): Promise<boolean> {
+export async function updateChatBinding(projectRoot: string, requestId: string, record: ChatBindingRecord): Promise<boolean> {
   const release = await acquireBindingStateLock(projectRoot);
   try {
     const current = await readChatBinding(projectRoot);
@@ -126,7 +126,7 @@ async function updateChatBinding(projectRoot: string, requestId: string, record:
   }
 }
 
-async function setCurrentChatBinding(projectRoot: string, record: ChatBindingRecord): Promise<void> {
+export async function setCurrentChatBinding(projectRoot: string, record: ChatBindingRecord): Promise<void> {
   const release = await acquireBindingStateLock(projectRoot);
   try {
     await writeChatBinding(projectRoot, record);
@@ -135,7 +135,7 @@ async function setCurrentChatBinding(projectRoot: string, record: ChatBindingRec
   }
 }
 
-function assertChatBindingUrl(projectUrl: string, conversationUrl: string): void {
+export function assertChatBindingUrl(projectUrl: string, conversationUrl: string): void {
   const scope = getChatGptProjectScope(projectUrl);
   if (!scope || !new RegExp(`^/g/${scope.projectId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/c/[^/]+/?$`).test(new URL(conversationUrl).pathname) || new URL(conversationUrl).origin !== scope.origin) {
     throw new Error('Invalid DevOS chat binding URL');

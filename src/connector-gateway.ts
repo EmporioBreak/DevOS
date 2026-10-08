@@ -17,6 +17,11 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ConnectorAuth } from "./connector-auth.js";
 import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./desktop-commander-integration.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
+import {
+  addChatBindingTokenToTool,
+  createChatBindingToken,
+  stripChatBindingTokenFromCall,
+} from "./chat-binding-protocol.js";
 
 export function publicIdentity(value: string): URL {
   try {
@@ -246,6 +251,8 @@ interface PublicMcpSession {
   clientId: string;
   activeRequestCount: number;
   lastActivityAt: number;
+  bindingToken?: string;
+  bindingScheduled: boolean;
 }
 
 function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
@@ -309,6 +316,7 @@ export async function startGateway(options: {
     toolIdleMs: number;
     toolTotalMs: number;
   }>;
+  onBindingTokenSeen?: (token: string) => void | Promise<void>;
 }) {
   ownerAuth(options.ownerSecret);
   let identity = options.publicUrl
@@ -501,6 +509,10 @@ export async function startGateway(options: {
             pendingSessionInitializations--;
           };
           const localInfo = desktop.getServerInfo();
+          const bindingToken = options.onBindingTokenSeen
+            ? createChatBindingToken()
+            : undefined;
+          let newSession: PublicMcpSession | undefined;
           const server = new Server(
             localInfo.version ?? {
               name: "desktop-commander",
@@ -521,8 +533,20 @@ export async function startGateway(options: {
                 | undefined
             )?.progressToken;
             const writes: Promise<void>[] = [];
-            const forwardedRequest = adaptChatGptToolCall(request) as typeof request;
+            const bindingAwareRequest = bindingToken
+              ? stripChatBindingTokenFromCall(request, bindingToken)
+              : request;
+            const forwardedRequest = adaptChatGptToolCall(bindingAwareRequest) as typeof request;
             const toolCall = request.method === "tools/call";
+            if (
+              toolCall &&
+              bindingToken &&
+              newSession &&
+              !newSession.bindingScheduled
+            ) {
+              newSession.bindingScheduled = true;
+              void Promise.resolve(options.onBindingTokenSeen?.(bindingToken)).catch(() => {});
+            }
             const timeoutOptions = toolCall
               ? {
                   timeout:
@@ -664,7 +688,7 @@ export async function startGateway(options: {
                       delete properties.origin;
                       delete properties.options;
                     }
-                    return {
+                    const descriptor = {
                       ...compatibleTool,
                       inputSchema,
                       title,
@@ -689,6 +713,9 @@ export async function startGateway(options: {
                         ],
                       },
                     };
+                    return bindingToken
+                      ? addChatBindingTokenToTool(descriptor, bindingToken)
+                      : descriptor;
                   }),
               };
             }
@@ -697,7 +724,6 @@ export async function startGateway(options: {
           server.fallbackNotificationHandler = async (notification) => {
             await desktop.notification(notification);
           };
-          let newSession: PublicMcpSession | undefined;
           const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: randomUUID,
             onsessioninitialized: (sessionId) => {
@@ -713,6 +739,8 @@ export async function startGateway(options: {
             clientId: req.auth!.clientId,
             activeRequestCount: 0,
             lastActivityAt: Date.now(),
+            ...(bindingToken ? { bindingToken } : {}),
+            bindingScheduled: false,
           };
           await server.connect(transport as Transport);
           const onclose = transport.onclose;

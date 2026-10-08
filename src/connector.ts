@@ -21,6 +21,8 @@ import { desktopCommand, safeEnvironment } from "./connector-process.js";
 import { captureProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "./process-identity.js";
 import { runBoundedConnectorSupervisor, type ConnectorSupervisorState } from "./connector-supervisor.js";
 import { appendConnectorDiagnostic, appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
+import { scheduleTokenBinding } from "./chat-binding-token.js";
+import { getChatGptProjectScope } from "./browser-config.js";
 import {
   startGateway,
   ownerAuth,
@@ -84,6 +86,20 @@ export function connectorConfig(config: unknown): {
     );
   return { gatewayPort, ngrokApiPort };
 }
+async function connectorChatGptProjectUrl(root: string): Promise<string | undefined> {
+  try {
+    const value = JSON.parse(
+      await readFile(join(root, ".devos", "config.json"), "utf8"),
+    ) as { version?: unknown; chatgptProjectUrl?: unknown };
+    if (value.version !== 1 || typeof value.chatgptProjectUrl !== "string") return undefined;
+    const projectUrl = value.chatgptProjectUrl.trim();
+    if (!projectUrl || !getChatGptProjectScope(projectUrl)) return undefined;
+    return projectUrl;
+  } catch {
+    return undefined;
+  }
+}
+
 async function readConfig(root: string) {
   try {
     return connectorConfig(
@@ -901,6 +917,7 @@ export async function connectorRuntime(root: string) {
   process.on("disconnect", parentDisconnect);
   try {
     try {
+      const chatgptProjectUrl = await connectorChatGptProjectUrl(root);
       gateway = await startGateway({
       root: softwareRoot,
       port: config.gatewayPort,
@@ -912,6 +929,14 @@ export async function connectorRuntime(root: string) {
         stop();
       },
       onDiagnostic: record => appendDesktopCommanderDiagnostic(root, record),
+      ...(chatgptProjectUrl ? {
+        onBindingTokenSeen: (token: string) => scheduleTokenBinding(
+          token,
+          chatgptProjectUrl,
+          root,
+          join(softwareRoot, "dist/src/cli.js"),
+        ),
+      } : {}),
       });
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Gateway startup failed.");

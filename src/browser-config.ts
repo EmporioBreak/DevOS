@@ -56,6 +56,11 @@ export interface ChatGptProjectScope {
   projectId: string;
 }
 
+function normalizeChatGptProjectId(value: string): string {
+  const live = /^(g-p-[0-9a-f]{32})(?:-.+)?$/i.exec(value);
+  return live?.[1] ?? value;
+}
+
 export function getChatGptProjectScope(value: string): ChatGptProjectScope | null {
   const url = validateChatGptUrl(value);
   if (url.pathname === "/") return null;
@@ -66,7 +71,7 @@ export function getChatGptProjectScope(value: string): ChatGptProjectScope | nul
       "Invalid configured ChatGPT Project URL; expected a /g/<project-id>/ Project URL",
     );
   }
-  return { origin: url.origin, projectId: match[1] };
+  return { origin: url.origin, projectId: normalizeChatGptProjectId(match[1]) };
 }
 
 export function assertChatGptProjectScope(
@@ -81,7 +86,7 @@ export function assertChatGptProjectScope(
   const match = /^\/g\/([^/]+)(?:\/project|\/c(?:\/([^/]+))?)?\/?$/.exec(
     candidate.pathname,
   );
-  const projectId = match?.[1];
+  const projectId = match?.[1] ? normalizeChatGptProjectId(match[1]) : undefined;
   const conversationId = match?.[2];
 
   if (candidate.origin !== scope.origin || projectId !== scope.projectId) {

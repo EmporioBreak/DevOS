@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Executor, WorkerRequest } from "./executor.js";
@@ -18,6 +18,8 @@ import { captureProcessIdentity, processExists, sameProcessIdentity, type Proces
 
 type WireMessage =
   | { type: "run"; request: Omit<WorkerRequest, "onSession"> }
+  | { type: "bind"; projectUrl: string; token: string }
+  | { type: "bind_result"; url: string }
   | { type: "close" }
   | { type: "session"; sessionId: string }
   | { type: "result"; result: WorkerOutput }
@@ -106,6 +108,43 @@ export async function ensureSharedBrowserRuntime(
   } finally { await lock.close(); await rm(paths.lock, { force: true }); }
 }
 
+export async function resolveBindingWithActiveBrowserRuntime(
+  root: string,
+  projectUrl: string,
+  token: string,
+): Promise<string | null> {
+  const dir = join(root, ".devos", "browser-runtime");
+  let names: string[];
+  try {
+    names = (await readdir(dir)).filter(name => name.endsWith(".json")).sort();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  const active: Array<{ socket: string; pid: number; identity: ProcessIdentity }> = [];
+  for (const name of names) {
+    const metadata = await readMetadata(join(dir, name));
+    if (!metadata || !(await processExists(metadata.pid))) continue;
+    const actual = await captureProcessIdentity(metadata.pid);
+    if (!actual || !sameProcessIdentity(metadata.identity, actual) || !actual.commandLine?.includes("--devos-browser-runtime")) continue;
+    active.push(metadata);
+  }
+  if (active.length === 0) return null;
+  if (active.length > 1) throw new Error("bind_multiple_browser_runtimes");
+  const socket = await connect(active[0]!.socket, 1_000);
+  try {
+    const lines = readLines(socket);
+    socket.write(`${JSON.stringify({ type: "bind", projectUrl, token })}\n`);
+    for await (const message of lines) {
+      if (message.type === "bind_result") return message.url;
+      if (message.type === "error") throw new Error(message.message);
+    }
+    throw new Error("bind_browser_runtime_disconnected");
+  } finally {
+    socket.destroy();
+  }
+}
+
 export async function closeSharedBrowserRuntime(root: string, task: { repo: string; issue: number }): Promise<void> {
   const paths = browserRuntimePaths(root, task.repo, task.issue);
   let graceful = false;
@@ -192,6 +231,15 @@ async function handleSocket(socket: Socket, executor: ChatGptBrowserExecutor, tu
     if (message.type === "close") {
       try { await close(); socket.write('{"type":"closed"}\n'); }
       catch (error) { socket.write(`${JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) })}\n`); }
+      return;
+    }
+    if (message.type === "bind") {
+      try {
+        const url = await executor.resolveBindingToken(message.projectUrl, message.token);
+        socket.write(`${JSON.stringify({ type: "bind_result", url })}\n`);
+      } catch (error) {
+        socket.write(`${JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) })}\n`);
+      }
       return;
     }
     if (message.type !== "run") { socket.write(`${JSON.stringify({ type: "error", message: "Invalid shared browser request" })}\n`); return; }

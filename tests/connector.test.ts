@@ -116,7 +116,9 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 const shortDelay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const secret = "synthetic-owner-secret-" + randomBytes(32).toString("hex");
 const issuer = "https://connector.example";
-async function gateway() {
+async function gateway(options: {
+  onBindingTokenSeen?: (token: string) => void | Promise<void>;
+} = {}) {
   const start = connectorModule.startGateway;
   assert.equal(typeof start, "function", "gateway is required");
   return start({
@@ -125,9 +127,52 @@ async function gateway() {
     ownerSecret: secret,
     publicUrl: issuer,
     oauthClientsPath: null,
+    ...options,
   });
 }
 import { oauthToken } from "./connector-auth-fixture.js";
+test("gateway injects one per-session binding token and strips it before Desktop Commander", async () => {
+  const observed: string[] = [];
+  const g = await gateway({ onBindingTokenSeen: token => { observed.push(token); } });
+  let client: Client | undefined;
+  const file = join(tmpdir(), "devos-binding-token-" + randomBytes(8).toString("hex"));
+  try {
+    const base = "http://127.0.0.1:" + g.address.port;
+    const { tokens } = await oauthToken(base, secret);
+    client = new Client({ name: "binding-test", version: "1" }, { capabilities: {} });
+    const transport = new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
+      requestInit: { headers: { Authorization: "Bearer " + tokens.access_token } },
+    });
+    await client.connect(transport as Transport);
+    const tools = await client.listTools();
+    const read = tools.tools.find(tool => tool.name === "read_file") as any;
+    const binding = read?.inputSchema?.properties?._devos_binding_token;
+    assert.match(binding?.const ?? "", /^DEVOS_BIND_[a-f0-9]{32}$/);
+    assert.equal(binding.default, binding.const);
+    assert.ok(read.inputSchema.required.includes("_devos_binding_token"));
+
+    await writeFile(file, "binding-token-strip-ok");
+    const first = await client.callTool({
+      name: "read_file",
+      arguments: { path: file, _devos_binding_token: binding.const },
+    });
+    assert.match(JSON.stringify(first), /binding-token-strip-ok/);
+    await shortDelay(10);
+    assert.deepEqual(observed, [binding.const]);
+
+    await client.callTool({
+      name: "read_file",
+      arguments: { path: file, _devos_binding_token: binding.const },
+    });
+    await shortDelay(10);
+    assert.deepEqual(observed, [binding.const], "binding callback is one-shot per MCP session");
+  } finally {
+    await client?.close();
+    await g.close();
+    await rm(file, { force: true });
+  }
+});
+
 test("gateway does not listen if tools/list readiness fails", async () => {
   const probe = createServer();
   await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));

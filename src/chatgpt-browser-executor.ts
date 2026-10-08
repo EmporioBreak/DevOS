@@ -16,6 +16,7 @@ import {
   type ChatGptBrowserConfig,
 } from "./browser-config.js";
 import { CHATGPT_RESPONSE_LOADER_SOURCE } from "./chatgpt-response-loader.js";
+import { createCanonicalBindingClient, resolveCanonicalBinding } from "./chat-binding-api.js";
 
 export class BrowserResumeUnavailableError extends Error {
   constructor(readonly sessionId: string, message: string) {
@@ -84,6 +85,7 @@ export class ChatGptBrowserExecutor implements Executor {
   private ownedProcess: OwnedBrowserProcess | undefined;
   private launching: Promise<BrowserContext> | undefined;
   private readonly workerPages = new Map<string, Page>();
+  private bindingObserverPage: Page | undefined;
 
   constructor(
     private readonly config: ChatGptBrowserConfig = loadChatGptBrowserConfig(),
@@ -92,6 +94,17 @@ export class ChatGptBrowserExecutor implements Executor {
 
   async run(request: WorkerRequest): Promise<WorkerOutput> {
     return await this.runTurn(request);
+  }
+
+  async resolveBindingToken(projectUrl: string, token: string): Promise<string> {
+    const context = await this.getContext(15_000);
+    let page = this.bindingObserverPage;
+    if (!page || page.isClosed?.()) {
+      page = await context.newPage();
+      this.bindingObserverPage = page;
+    }
+    const client = await createCanonicalBindingClient(page, projectUrl);
+    return await resolveCanonicalBinding(client, projectUrl, token);
   }
 
   private async runTurn(request: WorkerRequest): Promise<WorkerOutput> {
@@ -228,7 +241,11 @@ export class ChatGptBrowserExecutor implements Executor {
       debugLog("browser.cleanup", { phase: "context", decision: "unconfirmed" });
       throw new Error("Browser cleanup unconfirmed: bounded close failed; no unproven/user browser process was killed");
     }
-    if (this.context === context) { this.context = undefined; this.workerPages.clear(); }
+    if (this.context === context) {
+      this.context = undefined;
+      this.workerPages.clear();
+      this.bindingObserverPage = undefined;
+    }
     if (this.ownedProcess === owned) this.ownedProcess = undefined;
     debugLog("browser.cleanup", { phase: "context", decision: "closed" });
   }
@@ -449,7 +466,11 @@ export class ChatGptBrowserExecutor implements Executor {
       : [];
     this.ownedProcess = launched.length === 1 ? launched[0] : undefined;
     context.on("close", () => {
-      if (this.context === context) { this.context = undefined; this.workerPages.clear(); }
+      if (this.context === context) {
+      this.context = undefined;
+      this.workerPages.clear();
+      this.bindingObserverPage = undefined;
+    }
     });
     try {
       await context.addInitScript({ content: CHATGPT_RESPONSE_LOADER_SOURCE });
