@@ -42,25 +42,6 @@ if [ "${1-}" = "connector" ] && [ -f "$ROOT/src/connector.ts" ] && [ -f "$ROOT/p
   exec node "$SELF_CLI" "$@"
 fi
 
-# Current-chat binding is a source-local helper, not a task orchestration run.
-# It must work while the checkout is on an active task branch and must not
-# auto-update main or start the background DevOS stack.
-if [ "${1-}" = "bind-chat" ] && [ -f "$ROOT/src/chat-binding.ts" ] && [ -f "$ROOT/package.json" ]; then
-  if ! command -v npm >/dev/null 2>&1; then
-    echo "DevOS chat binding requires npm." >&2
-    exit 1
-  fi
-  if [ ! -d "$ROOT/node_modules" ]; then
-    (cd "$ROOT" && npm ci >/dev/null)
-  fi
-  if ! BUILD_OUTPUT=$(cd "$ROOT" && npm run build 2>&1); then
-    printf '%s\n' "$BUILD_OUTPUT" >&2
-    exit 1
-  fi
-  cd "$ROOT"
-  exec node "$SELF_CLI" "$@"
-fi
-
 if ! command -v gh >/dev/null 2>&1; then
   echo "DevOS requires the GitHub CLI (gh) authenticated for this project's repository." >&2
   exit 1

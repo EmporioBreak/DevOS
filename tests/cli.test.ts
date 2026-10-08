@@ -9,7 +9,6 @@ import {
   assertMainAgentDecisionPending,
   assertWorkflowMatchesProject,
   chooseReadyTask,
-  cliBindingDeps,
   cliBrowserRuntimeDeps,
   formatRunResult,
   isCliEntrypoint,
@@ -46,54 +45,13 @@ test("accepts interactive, file, and issue run commands", () => {
   });
 });
 
-test("parses bind-chat status inspection", () => {
-  assert.deepEqual(parseCliArgs(["bind-chat", "--status"]), { kind: "bind-chat-status" });
-});
-
-test("source launcher bypasses self-host main gating for bind-chat", async () => {
-  const launcher = await readFile(new URL("../devos", import.meta.url), "utf8");
-  const bindIndex = launcher.indexOf('if [ "${1-}" = "bind-chat" ]');
-  const ghIndex = launcher.indexOf('if ! command -v gh');
-  const selfHostIndex = launcher.indexOf("if is_self_host_checkout; then");
-
-  assert.ok(bindIndex >= 0, "bind-chat source fast-path must exist");
-  assert.ok(bindIndex < ghIndex, "bind-chat must not require gh/self-host bootstrap");
-  assert.ok(bindIndex < selfHostIndex, "bind-chat must bypass main-branch self-host gating");
-  assert.match(
-    launcher.slice(bindIndex, ghIndex),
-    /exec node "\$SELF_CLI" "\$@"/,
-  );
-});
-
-test("bind-chat schedules a deferred worker and leaves marker for it", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "devos-cli-bind-test-"));
-  const markerFile = join(directory, "marker");
-  const original = cliBindingDeps.schedule;
-  let scheduled = false;
-  try {
-    await mkdir(join(directory, ".devos"), { recursive: true });
-    await writeFile(join(directory, ".devos", "config.json"), JSON.stringify({ version: 1, repo: "owner/project", chatgptProjectUrl: "https://chatgpt.com/g/demo/project" }));
-    await writeFile(markerFile, "DEVOS_BIND_abcdefghijklmnop");
-    cliBindingDeps.schedule = async (file, projectUrl, projectRoot, entrypoint) => {
-      assert.equal(file, markerFile);
-      assert.equal(projectUrl, "https://chatgpt.com/g/demo/project");
-      assert.equal(projectRoot, directory);
-      assert.ok(entrypoint);
-      scheduled = true;
-    };
-    await main(["bind-chat", markerFile], directory);
-    assert.equal(scheduled, true);
-    assert.equal(await readFile(markerFile, "utf8"), "DEVOS_BIND_abcdefghijklmnop");
-  } finally {
-    cliBindingDeps.schedule = original;
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
 test("rejects unsupported CLI shapes including watch", () => {
   assert.throws(() => parseCliArgs(["start", "workflow.json"]), /Usage: \.\/devos/);
   assert.throws(() => parseCliArgs(["run"]), /Usage: \.\/devos/);
   assert.throws(() => parseCliArgs(["watch", "owner/product"]), /Usage: \.\/devos/);
+  assert.throws(() => parseCliArgs(["bind-chat", "/tmp/marker"]), /Usage: \.\/devos/);
+  assert.throws(() => parseCliArgs(["bind-chat", "--status"]), /Usage: \.\/devos/);
+  assert.throws(() => parseCliArgs(["--devos-bind-chat-worker", "a", "b", "c"]), /Usage: \.\/devos/);
 });
 
 test("parses positive numeric targets as issue numbers", () => {
