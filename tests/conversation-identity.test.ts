@@ -62,7 +62,7 @@ test("missing or malformed host session metadata is unresolved", () => {
   );
 });
 
-test("fingerprint is stable for one scoped conversation and isolated across conversations", () => {
+test("fingerprint is stable for one host session and isolated across conversations", () => {
   const key = Buffer.alloc(32, 7);
   const base = {
     session: "v1/session-a",
@@ -72,13 +72,18 @@ test("fingerprint is stable for one scoped conversation and isolated across conv
   };
   const same = conversationIdentityFingerprint(base, key);
   assert.equal(same, conversationIdentityFingerprint({ ...base }, key));
-  assert.notEqual(
+  assert.equal(
     same,
-    conversationIdentityFingerprint({ ...base, session: "v1/session-b" }, key),
+    conversationIdentityFingerprint({
+      ...base,
+      subject: undefined,
+      organization: undefined,
+      source: "header",
+    } as any, key),
   );
   assert.notEqual(
     same,
-    conversationIdentityFingerprint({ ...base, subject: "v1/other-user" }, key),
+    conversationIdentityFingerprint({ ...base, session: "v1/session-b" }, key),
   );
 });
 
