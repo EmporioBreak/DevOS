@@ -137,7 +137,14 @@ export async function runWorkflow(
     : undefined;
   const commandRunner = new LocalCommandRunner();
   const codex = new CodexExecutor(commandRunner);
-  const chatgpt = hasBrowserWorker
+  const savedState = await stateStore.load();
+  // No worker can be dispatched during final owner review, or on a repeat
+  // finalization attempt after approval. Avoid starting a headless browser
+  // runtime only to close it immediately.
+  const needsBrowser = hasBrowserWorker &&
+    !savedState?.completionApproved &&
+    !(savedState?.mainAgentReviewPending && mainAgentDecision !== "changes_requested");
+  const chatgpt = needsBrowser
     ? await cliBrowserRuntimeDeps.ensure(
         cwd,
         workflow.task,
@@ -162,6 +169,12 @@ export async function runWorkflow(
     resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
     onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
   }).run();
+  // A final owner handoff may last hours or days. All worker turns have
+  // finished: release the browser process now, preserving only saved session
+  // URLs. If changes are requested, the next run restores worker tabs.
+  if (hasBrowserWorker && state.mainAgentReviewPending) {
+    await cliBrowserRuntimeDeps.close(cwd, workflow.task);
+  }
   return state;
   } finally {
     await taskLock.release();

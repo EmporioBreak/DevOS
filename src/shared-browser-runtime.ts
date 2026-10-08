@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Executor, WorkerRequest } from "./executor.js";
@@ -13,6 +13,7 @@ import {
   isBrowserResumeUnavailableError,
 } from "./chatgpt-browser-executor.js";
 import type { ChatGptBrowserConfig } from "./browser-config.js";
+import { profileProcesses, terminateOwnedBrowser, type OwnedBrowserProcess } from "./owned-browser-process.js";
 import type { WorkerOutput } from "./workflow.js";
 import { captureProcessIdentity, processExists, sameProcessIdentity, type ProcessIdentity } from "./process-identity.js";
 
@@ -108,6 +109,35 @@ export async function ensureSharedBrowserRuntime(
 
 export async function closeSharedBrowserRuntime(root: string, task: { repo: string; issue: number }): Promise<void> {
   const paths = browserRuntimePaths(root, task.repo, task.issue);
+  // The runtime may remove its metadata before the close acknowledgement is
+  // observed. Capture ownership first: an acknowledgement is NOT proof that
+  // the detached Node process has exited.
+  const owner = await readMetadata(paths.metadata);
+  if (!owner) {
+    // Nothing left to close is idempotently successful, but a live IPC socket
+    // without verifiable owner metadata must NEVER receive a close command.
+    let metadataPresent = false;
+    try { await readFile(paths.metadata); metadataPresent = true; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (metadataPresent)
+      throw new Error("Shared browser cleanup unconfirmed: invalid runtime ownership metadata");
+    try {
+      const unowned = await connect(paths.socket, 250);
+      unowned.destroy();
+      throw new Error("Shared browser cleanup unconfirmed: unowned runtime socket");
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("cleanup unconfirmed")) throw error;
+    }
+    await rm(paths.socket, { force: true });
+    return;
+  }
+  if (owner.pid !== process.pid) {
+    const identity = await captureProcessIdentity(owner.pid);
+    if (identity && !sameProcessIdentity(owner.identity, identity))
+      throw new Error("Shared browser cleanup unconfirmed: runtime ownership changed");
+  }
   let graceful = false;
   let connected = false;
   let gracefulError: unknown;
@@ -127,7 +157,7 @@ export async function closeSharedBrowserRuntime(root: string, task: { repo: stri
   }
 
   if (!graceful) {
-    const existing = await readMetadata(paths.metadata);
+    const existing = owner ?? await readMetadata(paths.metadata);
     if (existing) {
       await signalOwnedRuntime(existing.pid, existing.identity);
       try {
@@ -143,6 +173,27 @@ export async function closeSharedBrowserRuntime(root: string, task: { repo: stri
         : new Error("Shared browser cleanup unconfirmed: connected runtime has no valid ownership metadata");
     }
   }
+  // Check the *process*, not merely the IPC socket. The detached browser
+  // runtime may retain an event loop with zero visible tabs.
+  if (graceful && owner && owner.pid !== process.pid) {
+    if (!(await waitOwnedRuntimeExit(owner.pid, owner.identity, 1_500))) {
+      await signalOwnedRuntime(owner.pid, owner.identity);
+    }
+  }
+  if (owner && owner.pid !== process.pid &&
+      !(await waitOwnedRuntimeExit(owner.pid, owner.identity, 500))) {
+    throw new Error("Shared browser cleanup unconfirmed: owned runtime process still alive");
+  }
+  // If the runtime needed SIGKILL, its Camoufox child could outlive it.
+  // Capture exact process ownership BEFORE asking the runtime to stop; never
+  // scan-and-kill unrelated browser profiles or arbitrary OS processes.
+  if (owner?.browserRoot && owner.profileDir) {
+    const alive = (await profileProcesses(owner.profileDir)).some(
+      item => item.pid === owner.browserRoot!.pid && item.identity === owner.browserRoot!.identity,
+    );
+    if (alive && !(await terminateOwnedBrowser(owner.browserRoot, owner.profileDir)))
+      throw new Error("Shared browser cleanup unconfirmed: owned Camoufox root remains alive");
+  }
   await rm(paths.socket, { force: true });
   await rm(paths.metadata, { force: true });
 }
@@ -152,7 +203,18 @@ export async function runBrowserRuntime(args: string[]): Promise<void> {
   const issue = Number(issueText);
   if (!root || !repo || !Number.isSafeInteger(issue) || !socketPath || !projectUrl || !profileDir || !["0", "1"].includes(headless ?? "")) throw new Error("Invalid internal browser runtime arguments");
   const paths = browserRuntimePaths(root, repo, issue);
-  const executor = new ChatGptBrowserExecutor({ projectUrl, profileDir, headless: headless === "1" });
+  const executor = new ChatGptBrowserExecutor(
+    { projectUrl, profileDir, headless: headless === "1" },
+    undefined,
+    async browserRoot => {
+      const existing = await readMetadata(paths.metadata);
+      if (!existing || existing.pid !== process.pid)
+        throw new Error("Cannot record owned browser root without live task runtime metadata");
+      await writeMetadataAtomic(paths.metadata, {
+        ...existing, browserRoot, profileDir,
+      });
+    },
+  );
   await startSharedBrowserServer(socketPath, paths.metadata, executor);
 }
 
@@ -190,8 +252,12 @@ async function handleSocket(socket: Socket, executor: ChatGptBrowserExecutor, tu
   const lines = readLines(socket);
   for await (const message of lines) {
     if (message.type === "close") {
-      try { await close(); socket.write('{"type":"closed"}\n'); }
-      catch (error) { socket.write(`${JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) })}\n`); }
+      try {
+        await close();
+        socket.end('{"type":"closed"}\n');
+      } catch (error) {
+        socket.write(`${JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) })}\n`);
+      }
       return;
     }
     if (message.type !== "run") { socket.write(`${JSON.stringify({ type: "error", message: "Invalid shared browser request" })}\n`); return; }
@@ -290,7 +356,25 @@ async function waitForRuntimeClose(socket: Socket, timeout: number): Promise<boo
   }
 }
 
-async function readMetadata(path: string): Promise<{ pid: number; identity: ProcessIdentity; socket: string } | undefined> {
+interface BrowserRuntimeMetadata {
+  pid: number;
+  identity: ProcessIdentity;
+  socket: string;
+  browserRoot?: OwnedBrowserProcess;
+  profileDir?: string;
+}
+
+async function writeMetadataAtomic(path: string, data: BrowserRuntimeMetadata): Promise<void> {
+  const temp = path + ".tmp-" + process.pid;
+  try {
+    await writeFile(temp, JSON.stringify(data), { mode: 0o600 });
+    await rename(temp, path);
+  } finally {
+    await rm(temp, { force: true });
+  }
+}
+
+async function readMetadata(path: string): Promise<BrowserRuntimeMetadata | undefined> {
   try {
     const value = JSON.parse(await readFile(path, "utf8"));
     const identity = value.identity as ProcessIdentity;
@@ -299,29 +383,61 @@ async function readMetadata(path: string): Promise<{ pid: number; identity: Proc
       typeof identity.startTime === "string" &&
       typeof identity.executable === "string" &&
       typeof identity.commandLine === "string" &&
-      typeof value.socket === "string"
-      ? value
+      typeof value.socket === "string" &&
+      (value.browserRoot === undefined ||
+        (Number.isSafeInteger(value.browserRoot.pid) &&
+          typeof value.browserRoot.identity === "string" &&
+          typeof value.profileDir === "string"))
+      ? value as BrowserRuntimeMetadata
       : undefined;
   }
   catch { return undefined; }
 }
+/** A restarted process may reuse the same PID: only the original process
+ * identity counts as alive. Never wait on or signal a different owner. */
+async function waitOwnedRuntimeExit(
+  pid: number, identity: ProcessIdentity, timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (!(await processExists(pid))) return true;
+    const actual = await captureProcessIdentity(pid);
+    if (!actual || !sameProcessIdentity(identity, actual)) return true;
+    if (Date.now() >= deadline) return false;
+    await delay(100);
+  } while (true);
+}
+
 async function signalOwnedRuntime(pid: number, identity: ProcessIdentity): Promise<void> {
   if (pid <= 1 || pid === process.pid) throw new Error("Invalid shared browser runtime owner metadata");
-  if (!(await processExists(pid))) return;
+  if (await waitOwnedRuntimeExit(pid, identity, 0)) return;
   const actual = await captureProcessIdentity(pid);
-  if (!actual) throw new Error("Cannot validate the existing shared browser runtime owner");
-  if (!sameProcessIdentity(identity, actual)) return;
-  if (!actual.commandLine?.includes("--devos-browser-runtime")) throw new Error("Refusing to stop a process not identified as the shared browser runtime");
-  process.kill(pid, "SIGTERM");
-  const deadline = Date.now() + 6_000;
-  while (Date.now() < deadline) {
-    if (!(await processExists(pid))) return;
-    const current = await captureProcessIdentity(pid);
-    if (current && !sameProcessIdentity(identity, current)) return;
-    await delay(100);
+  if (!actual || !sameProcessIdentity(identity, actual)) return;
+  if (!actual.commandLine?.includes("--devos-browser-runtime"))
+    throw new Error("Refusing to stop a process not identified as the shared browser runtime");
+
+  try { process.kill(pid, "SIGTERM"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    return;
   }
+  if (await waitOwnedRuntimeExit(pid, identity, 4_000)) return;
+
+  // Only the exact same task-scoped process (PID + start time + executable +
+  // argv) may receive the hard kill. Never use process-group or broad pkill.
+  const remaining = await captureProcessIdentity(pid);
+  if (!remaining || !sameProcessIdentity(identity, remaining)) return;
+  if (!remaining.commandLine?.includes("--devos-browser-runtime"))
+    throw new Error("Refusing to force-stop an unverified runtime process");
+  try { process.kill(pid, "SIGKILL"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    return;
+  }
+  if (await waitOwnedRuntimeExit(pid, identity, 2_000)) return;
   throw new Error("The previous shared browser runtime did not stop within the cleanup deadline");
 }
+
 function runtimeErrorKind(error: unknown): "browser_pre_submit" | "browser_resume_unavailable" | "browser_post_submit" | "generic" {
   if (isBrowserPreSubmitFailureError(error)) return "browser_pre_submit";
   if (isBrowserResumeUnavailableError(error)) return "browser_resume_unavailable";

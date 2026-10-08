@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createConnection } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { browserRuntimePaths, closeSharedBrowserRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
 import { BrowserPreSubmitFailureError, type ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
 
@@ -227,6 +227,23 @@ test("failed graceful runtime close preserves ownership metadata so cleanup can 
   } finally {
     await rm(paths.socket, { force: true });
     await rm(paths.metadata, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unowned socket cannot be closed as if it were a DevOS browser runtime", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-unowned-socket-"));
+  const task = { repo: "other/repo", issue: 88 };
+  const paths = browserRuntimePaths(root, task.repo, task.issue);
+  const server = createServer(socket => socket.end("unrelated\n"));
+  try {
+    await new Promise<void>(resolve => server.listen(paths.socket, resolve));
+    await assert.rejects(closeSharedBrowserRuntime(root, task),
+      /unowned runtime socket/);
+    assert.equal(server.listening, true);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(paths.socket, { force: true });
     await rm(root, { recursive: true, force: true });
   }
 });

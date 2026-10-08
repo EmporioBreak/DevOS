@@ -95,6 +95,7 @@ export class ChatGptBrowserExecutor implements Executor {
   constructor(
     private readonly config: ChatGptBrowserConfig = loadChatGptBrowserConfig(),
     private readonly timeoutMs = 60 * 60_000,
+    private readonly onOwnedBrowserProcess?: (owned: OwnedBrowserProcess) => Promise<void>,
   ) {}
 
   async run(request: WorkerRequest): Promise<WorkerOutput> {
@@ -303,14 +304,40 @@ export class ChatGptBrowserExecutor implements Executor {
     if (!context && !owned) return;
     debugLog("browser.cleanup", { phase: "context", decision: "closing" });
     let confirmed = false;
-    if (context) await closeBeforeDeadline(async () => { await context.close(); confirmed = true; }, Date.now() + Math.min(this.timeoutMs, 5_000));
-    if (!confirmed && owned) {
-      debugLog("browser.cleanup", { phase: "context", decision: "terminate-owned-process" });
-      confirmed = await terminateOwnedBrowser(owned, this.config.profileDir);
+    if (context) {
+      try {
+        await closeBeforeDeadline(async () => {
+          await context.close();
+          confirmed = true;
+        }, Date.now() + Math.min(this.timeoutMs, 5_000));
+      } catch {
+        // Playwright may disconnect while Camoufox is still alive. A captured,
+        // exact-profile process identity is the only safe fallback target.
+      }
+    }
+    if (owned) {
+      // context.close() completing does NOT prove that the native Firefox root
+      // and its event loop have exited. Wait briefly, then terminate only the
+      // exact root created for our private profile.
+      const deadline = Date.now() + 1_500;
+      while (Date.now() < deadline) {
+        const active = (await profileProcesses(this.config.profileDir))
+          .some(process => process.pid === owned.pid && process.identity === owned.identity);
+        if (!active) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      const stillAlive = (await profileProcesses(this.config.profileDir))
+        .some(process => process.pid === owned.pid && process.identity === owned.identity);
+      if (stillAlive) {
+        debugLog("browser.cleanup", { phase: "context", decision: "terminate-owned-process" });
+        confirmed = await terminateOwnedBrowser(owned, this.config.profileDir);
+      } else {
+        confirmed = true;
+      }
     }
     if (!confirmed) {
       debugLog("browser.cleanup", { phase: "context", decision: "unconfirmed" });
-      throw new Error("Browser cleanup unconfirmed: bounded close failed; no unproven/user browser process was killed");
+      throw new Error("Browser cleanup unconfirmed: exact owned process termination not verified");
     }
     if (this.context === context) { this.context = undefined; this.workerPages.clear(); }
     if (this.ownedProcess === owned) this.ownedProcess = undefined;
@@ -538,6 +565,13 @@ export class ChatGptBrowserExecutor implements Executor {
           .filter(candidate => !baseline.some(existing => existing.pid === candidate.pid))
       : [];
     this.ownedProcess = launched.length === 1 ? launched[0] : undefined;
+    if (this.ownedProcess && this.onOwnedBrowserProcess) {
+      try { await this.onOwnedBrowserProcess(this.ownedProcess); }
+      catch (error) {
+        await this.close();
+        throw error;
+      }
+    }
     context.on("close", () => {
       if (this.context === context) { this.context = undefined; this.workerPages.clear(); }
     });
