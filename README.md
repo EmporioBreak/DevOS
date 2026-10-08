@@ -577,6 +577,6 @@ Main agent/пользователь после независимого review �
 
 Атрибуция: Desktop Commander — MIT, © 2024–2025 Eduard Ruzga and Desktop Commander Contributors ([upstream](https://github.com/wonderwhy-er/DesktopCommanderMCP)); MCP TypeScript SDK — MIT ([upstream](https://github.com/modelcontextprotocol/typescript-sdk)); ngrok — proprietary CLI ([условия](https://ngrok.com/terms-of-service)). Лицензии npm-пакетов остаются в установленных зависимостях. Актуальная оценка dependency debt и известных advisory ведётся в `docs/security/dependency-audit.md`; точный `npm audit` count подтверждается свежим локальным запуском перед merge, без `npm audit fix --force`.
 
-### Bind the current ChatGPT Project chat
+### Browser-worker conversations
 
-Write a unique `DEVOS_BIND_<random>` marker into a temporary file using Desktop Commander and send the same marker as a standalone chat message. Run `./devos bind-chat /absolute/path/to/marker-file` to schedule a one-shot lookup after the current turn can publish the marker. The helper uses the configured Camoufox profile, checks up to 30 project chats newest-first per pass (three bounded passes), waits briefly for each exact marker to render, and saves the exact conversation URL to `.devos/chat-binding.json`. Run `./devos bind-chat --status` to read the saved URL or pending/failure status. The marker file is deleted on every exit.
+DevOS records the exact URL when it creates a ChatGPT browser-worker conversation and reuses that URL when continuing the worker. User-created ChatGPT conversations are not reverse-bound from MCP calls.
