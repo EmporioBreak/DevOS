@@ -9,8 +9,6 @@ const MAX_CONVERSATIONS = 512;
 
 export interface HostConversationIdentity {
   session: string;
-  subject?: string;
-  organization?: string;
   source: "meta" | "header";
 }
 
@@ -18,7 +16,6 @@ export interface ConversationIdentityRecord {
   fingerprint: string;
   firstSeenAt: string;
   lastSeenAt: string;
-  route?: string;
 }
 
 interface ConversationIdentityRegistry {
@@ -58,28 +55,18 @@ export function extractHostConversationIdentity(
       ? (meta as Record<string, unknown>)
       : undefined;
 
-  const metaSession = opaque(record?.["openai/session"]);
-  if (metaSession) {
-    const subject = opaque(record?.["openai/subject"]);
-    const organization = opaque(record?.["openai/organization"]);
-    return {
-      session: metaSession,
-      ...(subject ? { subject } : {}),
-      ...(organization ? { organization } : {}),
-      source: "meta",
-    };
+  const hasMetaSession =
+    !!record && Object.prototype.hasOwnProperty.call(record, "openai/session");
+  if (hasMetaSession) {
+    const metaSession = opaque(record?.["openai/session"]);
+    if (!metaSession) return undefined;
+    const headerSession = header(headers, "x-openai-session");
+    if (headerSession && headerSession !== metaSession) return undefined;
+    return { session: metaSession, source: "meta" };
   }
 
   const session = header(headers, "x-openai-session");
-  if (!session) return undefined;
-  const subject = header(headers, "x-openai-subject");
-  const organization = header(headers, "x-openai-organization");
-  return {
-    session,
-    ...(subject ? { subject } : {}),
-    ...(organization ? { organization } : {}),
-    source: "header",
-  };
+  return session ? { session, source: "header" } : undefined;
 }
 
 export function conversationIdentityFingerprint(
@@ -147,8 +134,7 @@ async function readRegistry(path: string): Promise<ConversationIdentityRegistry>
       if (
         typeof record.fingerprint !== "string" ||
         typeof record.firstSeenAt !== "string" ||
-        typeof record.lastSeenAt !== "string" ||
-        (record.route !== undefined && typeof record.route !== "string")
+        typeof record.lastSeenAt !== "string"
       ) {
         throw new Error("Invalid conversation identity registry");
       }
@@ -156,7 +142,6 @@ async function readRegistry(path: string): Promise<ConversationIdentityRegistry>
         fingerprint: record.fingerprint,
         firstSeenAt: record.firstSeenAt,
         lastSeenAt: record.lastSeenAt,
-        ...(typeof record.route === "string" ? { route: record.route } : {}),
       });
     }
     return { version: 1, conversations: parsed };
