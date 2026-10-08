@@ -16,6 +16,7 @@ import {
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ConnectorAuth } from "./connector-auth.js";
 import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./desktop-commander-integration.js";
+import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
 
 export function publicIdentity(value: string): URL {
@@ -342,6 +343,7 @@ export async function startGateway(options: {
     failureReported = true;
     options.onFailure?.("desktop_commander");
   };
+  const localTools = new DevosToolRegistry(options.root);
   let desktop: DesktopCommanderIntegration;
   desktop = new DesktopCommanderIntegration({
     root: options.root,
@@ -571,7 +573,17 @@ export async function startGateway(options: {
                     }
                   : {}),
               };
-              if (forwardedRequest.method === "tools/list") {
+              if (forwardedRequest.method === "tools/call" &&
+                  typeof forwardedRequest.params?.name === "string" &&
+                  localTools.has(forwardedRequest.params.name)) {
+                forwardedRequestPromise = localTools.call(
+                  forwardedRequest.params.name, forwardedRequest.params.arguments,
+                );
+              } else if (forwardedRequest.method === "tools/call" &&
+                         typeof forwardedRequest.params?.name === "string" &&
+                         forwardedRequest.params.name.startsWith("devos_")) {
+                throw new Error("Unknown DevOS tool");
+              } else if (forwardedRequest.method === "tools/list") {
                 forwardedRequestPromise = desktop.listTools(forwardOptions);
               } else if (forwardedRequest.method === "tools/call") {
                 if (!forwardedRequest.params || typeof forwardedRequest.params.name !== "string")
@@ -620,10 +632,14 @@ export async function startGateway(options: {
                 tools: Array<Record<string, unknown>>;
                 [key: string]: unknown;
               };
+              const conflicting = listed.tools.find(tool =>
+                localTools.has(String(tool.name ?? "")) ||
+                String(tool.name ?? "").startsWith("devos_"));
+              if (conflicting) throw new Error("Desktop Commander tool conflicts with reserved DevOS namespace");
               const excludedForChatGpt = new Set(["track_ui_event"]);
               return {
                 ...listed,
-                tools: listed.tools
+                tools: [...listed.tools
                   .filter(
                     (tool) => !excludedForChatGpt.has(String(tool.name ?? "")),
                   )
@@ -689,7 +705,7 @@ export async function startGateway(options: {
                         ],
                       },
                     };
-                  }),
+                  }), ...localTools.list()],
               };
             }
             return result;

@@ -1058,7 +1058,11 @@ await server.connect(new StdioServerTransport());
       client.listTools(),
       client.listTools(),
     ]);
-    assert.ok(concurrentLists.every((list) => list.tools.length === 1));
+    assert.ok(concurrentLists.every((list) =>
+      list.tools.some((tool) => tool.name === "controlled") &&
+      list.tools.some((tool) => tool.name === "devos_task_status") &&
+      list.tools.some((tool) => tool.name === "devos_worker_report")
+    ), "both concurrent listings preserve the upstream tool and include DevOS tools");
 
     let progressCount = 0;
     const slowProgress = await client.callTool(

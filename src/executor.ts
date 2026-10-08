@@ -6,6 +6,7 @@ export interface WorkerRequest {
   workerId?: string;
   knownBrowserSessions?: Record<string, string>;
   browserTurnId?: string;
+  allowToolReportedStatus?: boolean;
   sessionId?: string;
   enforceProjectScope?: boolean;
   onSession?: (sessionId: string) => void | Promise<void>;

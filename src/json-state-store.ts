@@ -58,6 +58,7 @@ function validateState(value: unknown): RunState {
   const browserWorkersStarted = record.browserWorkersStarted;
   const browserSessionRecovery = record.browserSessionRecovery;
   const browserPreSubmitRetry = record.browserPreSubmitRetry;
+  const activeReport = record.activeReport;
   const sessionProjectRoots = record.sessionProjectRoots;
   const startedAt = record.startedAt;
   const reviewLoops = record.reviewLoops;
@@ -95,6 +96,16 @@ function validateState(value: unknown): RunState {
     throw new Error("Invalid DevOS state");
   }
 
+  if (activeReport !== undefined && (
+    !activeReport || typeof activeReport !== "object" || Array.isArray(activeReport) ||
+    Object.keys(activeReport).some(key => !["workerId", "turn", "tokenHash"].includes(key)) ||
+    typeof (activeReport as Record<string, unknown>).workerId !== "string" ||
+    !(activeReport as { workerId: string }).workerId.trim() ||
+    !Number.isSafeInteger((activeReport as { turn?: unknown }).turn) ||
+    (activeReport as { turn: number }).turn < 0 ||
+    !/^[a-f0-9]{64}$/.test(String((activeReport as { tokenHash?: unknown }).tokenHash))
+  )) throw new Error("Invalid DevOS active report");
+
   if (
     Object.keys(record).some(
       key =>
@@ -105,6 +116,7 @@ function validateState(value: unknown): RunState {
         key !== "browserWorkersStarted" &&
         key !== "browserSessionRecovery" &&
         key !== "browserPreSubmitRetry" &&
+        key !== "activeReport" &&
         key !== "task" &&
         key !== "ownerReviewPending" &&
         key !== "mainAgentReviewPending" &&
@@ -136,6 +148,7 @@ function validateState(value: unknown): RunState {
     ...(browserPreSubmitRetry === undefined
       ? {}
       : { browserPreSubmitRetry: [...browserPreSubmitRetry] }),
+    ...(activeReport === undefined ? {} : { activeReport: { ...(activeReport as { workerId: string; turn: number; tokenHash: string }) } }),
     ...(completionApproved === undefined ? {} : { completionApproved }),
     ...(task === undefined ? {} : { task }),
     ...(mainAgentReviewPending === undefined ? {} : { mainAgentReviewPending }),
