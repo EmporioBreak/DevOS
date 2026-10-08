@@ -85,14 +85,11 @@ export function conversationIdentityFingerprint(
   identity: HostConversationIdentity,
   key: Buffer,
 ): string {
-  const scope = [
-    "devos-chatgpt-session-v1",
-    identity.organization ?? "",
-    identity.subject ?? "",
-    identity.session,
-  ].join("\0");
   return "chatgpt-session-v1_" +
-    createHmac("sha256", key).update(scope).digest("base64url");
+    createHmac("sha256", key)
+      .update("devos-chatgpt-session-v1\0")
+      .update(identity.session)
+      .digest("base64url");
 }
 
 async function readOrCreateKey(root: string): Promise<Buffer> {
