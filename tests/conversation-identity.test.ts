@@ -30,8 +30,6 @@ test("prefers documented openai/session metadata over transport headers", () => 
 
   assert.deepEqual(identity, {
     session: "v1/session-meta",
-    subject: "v1/subject-meta",
-    organization: "v1/org-meta",
     source: "meta",
   });
 });
