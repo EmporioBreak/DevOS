@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,13 @@ if (process.argv[2] === "--runtime-child") {
     projectUrl: "https://chatgpt.com/",
     profileDir,
     headless: true,
-  }, 2_000);
+  }, 2_000, async browserRoot => {
+    const current = JSON.parse(await readFile(metadataPath, "utf8"));
+    const temp = metadataPath + ".update";
+    await writeFile(temp, JSON.stringify({ ...current, browserRoot, profileDir }), { mode: 0o600 });
+    await rename(temp, metadataPath);
+  });
+  await startSharedBrowserServer(socketPath, metadataPath, executor);
   const context = await (
     executor as unknown as { getContext(timeout: number): Promise<BrowserContext> }
   ).getContext(15_000);
@@ -36,7 +42,6 @@ if (process.argv[2] === "--runtime-child") {
     configurable: true,
     value: () => new Promise<void>(() => {}),
   });
-  await startSharedBrowserServer(socketPath, metadataPath, executor);
   process.stdout.write(JSON.stringify({ ready: true, js, pid: process.pid }) + "\n");
 } else {
   const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-smoke-"));
@@ -88,6 +93,10 @@ if (process.argv[2] === "--runtime-child") {
     const roots = await profileProcesses(ownedProfile);
     assert.equal(roots.length, 1);
     const ownedPid = roots[0]!.pid;
+    const ownerMetadata = JSON.parse(await readFile(runtime.metadata, "utf8"));
+    assert.equal(ownerMetadata.browserRoot.pid, ownedPid);
+    assert.equal(ownerMetadata.browserRoot.identity, roots[0]!.identity);
+    assert.equal(ownerMetadata.profileDir, ownedProfile);
 
     for (let i = 0; i < 2; i++) {
       const script = [
@@ -120,6 +129,7 @@ if (process.argv[2] === "--runtime-child") {
       sameBrowserRootAcrossControllers: true,
       ownedCleanupFallback: true,
       controlSurvived: true,
+      browserRootOwnerRecorded: true,
     }));
   } finally {
     if (child && child.exitCode === null) child.kill("SIGTERM");

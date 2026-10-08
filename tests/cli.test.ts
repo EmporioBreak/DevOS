@@ -213,7 +213,7 @@ test("rejects workflow repository mismatch before execution", () => {
   ), /Workflow repository other\/repo does not match current project owner\/project/);
 });
 
-test("shared browser runtime survives final review handoff and closes only after approval", async t => {
+test("browser runtime closes at final handoff and again after owner approval without rerunning workers", async t => {
   const root = await mkdtemp(join(tmpdir(), "devos-cli-shared-browser-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const workflow: Workflow = {
@@ -232,6 +232,7 @@ test("shared browser runtime survives final review handoff and closes only after
   };
   let workerRuns = 0;
   let closes = 0;
+  let ensures = 0;
   const browser = {
     kind: "chatgpt_browser" as const,
     async run(request: { prompt: string; onSession?: (sessionId: string) => void | Promise<void> }) {
@@ -251,7 +252,7 @@ test("shared browser runtime survives final review handoff and closes only after
       };
     },
   };
-  t.mock.method(cliBrowserRuntimeDeps, "ensure", async () => browser as never);
+  t.mock.method(cliBrowserRuntimeDeps, "ensure", async () => { ensures++; return browser as never; });
   t.mock.method(cliBrowserRuntimeDeps, "close", async () => { closes++; });
 
   const previousOwnerResult = process.env.DEVOS_OWNER_RESULT;
@@ -270,13 +271,22 @@ test("shared browser runtime survives final review handoff and closes only after
   const handoff = await runWorkflow(workflow, "run", root, config);
   assert.equal(handoff.mainAgentReviewPending, true);
   assert.equal(workerRuns, 1);
-  assert.equal(closes, 0);
+  assert.equal(closes, 1, "idle final-owner handoff releases runtime");
+  assert.equal(ensures, 1);
+
+  process.env.DEVOS_OWNER_RESULT = "changes_requested";
+  const reworked = await runWorkflow(workflow, "run", root, config);
+  assert.equal(reworked.mainAgentReviewPending, true);
+  assert.equal(workerRuns, 2, "changes requested must resume the reviewer in its saved conversation");
+  assert.equal(closes, 2, "after re-review, idle browser is closed again");
+  assert.equal(ensures, 2, "a new browser runtime is only launched when more worker work exists");
 
   process.env.DEVOS_OWNER_RESULT = "approved";
   const completed = await runWorkflow(workflow, "run", root, config);
   assert.equal(completed.completionApproved, true);
-  assert.equal(workerRuns, 1, "approval must not rerun the reviewer");
-  assert.equal(closes, 1);
+  assert.equal(workerRuns, 2, "approval must not rerun the reviewer");
+  assert.equal(closes, 3, "approval retries cleanup idempotently");
+  assert.equal(ensures, 2, "owner approval must not start an empty browser");
 });
 
 test("browser cleanup failure preserves approved state and retries finalization without rerunning workers", async t => {
@@ -298,7 +308,7 @@ test("browser cleanup failure preserves approved state and retries finalization 
   };
   let workerRuns = 0;
   let closes = 0;
-  let failClose = true;
+  let failClose = false;
   const browser = {
     kind: "chatgpt_browser" as const,
     async run(request: { prompt: string; onSession?: (sessionId: string) => void | Promise<void> }) {
@@ -339,6 +349,8 @@ test("browser cleanup failure preserves approved state and retries finalization 
   const handoff = await runWorkflow(workflow, "run", root, config);
   assert.equal(handoff.mainAgentReviewPending, true);
   assert.equal(workerRuns, 1);
+  assert.equal(closes, 1, "handoff closed its browser");
+  failClose = true;
 
   process.env.DEVOS_OWNER_RESULT = "approved";
   await assert.rejects(
@@ -351,14 +363,14 @@ test("browser cleanup failure preserves approved state and retries finalization 
   assert.equal(pending?.sessions.reviewer, "https://chatgpt.com/c/review-741");
   assert.equal(await isTaskCompleted(root, workflow.task.issue), false);
   assert.equal(workerRuns, 1);
-  assert.equal(closes, 1);
+  assert.equal(closes, 2);
 
   failClose = false;
   delete process.env.DEVOS_OWNER_RESULT;
   const completed = await runWorkflow(workflow, "run", root, config);
   assert.equal(completed.completionApproved, true);
   assert.equal(workerRuns, 1, "cleanup retry must not rerun the reviewer");
-  assert.equal(closes, 2);
+  assert.equal(closes, 3);
   assert.equal(await isTaskCompleted(root, workflow.task.issue), true);
   assert.equal(await store.load(), null);
 });
@@ -368,4 +380,67 @@ test("CLI rejects unsupported browser status fallback configuration", () => {
   assert.equal(workerReportsEnabled("1"), true);
   assert.throws(() => workerReportsEnabled("0"), /no longer supported/);
   assert.throws(() => workerReportsEnabled("off"), /must be 1/);
+});
+
+test("handoff cleanup failure is retryable without opening a new browser or resending the worker", async t => {
+  const root = await mkdtemp(join(tmpdir(), "devos-handoff-close-retry-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workflow: Workflow = {
+    version: 1,
+    task: { repo: "owner/product", issue: 742 },
+    owner: { mode: "main_agent" },
+    start: "reviewer",
+    workers: [{ id: "reviewer", executor: "chatgpt_browser",
+      prompt: "Review.", on: { approved: null } }],
+  };
+  const oldDecision = process.env.DEVOS_OWNER_RESULT;
+  delete process.env.DEVOS_OWNER_RESULT;
+  t.after(() => {
+    if (oldDecision === undefined) delete process.env.DEVOS_OWNER_RESULT;
+    else process.env.DEVOS_OWNER_RESULT = oldDecision;
+  });
+  let workerRuns = 0;
+  let ensured = 0;
+  let closes = 0;
+  const browser = {
+    kind: "chatgpt_browser" as const,
+    async run(request: { prompt: string; onSession?: (id: string) => void | Promise<void> }) {
+      workerRuns++;
+      const token = /turn_token=([a-f0-9]{64})/.exec(request.prompt)?.[1];
+      const turn = /turn=(\d+), turn_token=/.exec(request.prompt)?.[1];
+      assert.ok(token && turn);
+      await request.onSession?.("https://chatgpt.com/c/review-742");
+      const receipt = await new DevosToolRegistry(root).call("devos_worker_report", {
+        repo: "owner/product", issue: 742, worker_id: "reviewer", turn: Number(turn),
+        turn_token: token, status: "approved", summary: "Reviewer completed",
+      });
+      assert.equal(receipt.isError, undefined);
+      return { text: "", sessionId: "https://chatgpt.com/c/review-742" };
+    },
+  };
+  t.mock.method(cliBrowserRuntimeDeps, "ensure", async () => { ensured++; return browser as never; });
+  t.mock.method(cliBrowserRuntimeDeps, "close", async () => {
+    closes++;
+    if (closes === 1) throw new Error("browser not fully terminated");
+  });
+  const config = { version: 1 as const, repo: "owner/product",
+    chatgptProjectUrl: "https://chatgpt.com/" };
+  await assert.rejects(runWorkflow(workflow, "run", root, config),
+    /browser not fully terminated/);
+  const persisted = await new JsonStateStore(root, workflow.task).load();
+  assert.equal(persisted?.mainAgentReviewPending, true);
+  assert.equal(persisted?.sessions.reviewer, "https://chatgpt.com/c/review-742");
+  assert.equal(workerRuns, 1);
+
+  const recovered = await runWorkflow(workflow, "run", root, config);
+  assert.equal(recovered.mainAgentReviewPending, true);
+  assert.equal(closes, 2);
+  assert.equal(ensured, 1, "retry must not start a browser to clean up an idle task");
+  assert.equal(workerRuns, 1, "retry must not send the prompt again");
+
+  process.env.DEVOS_OWNER_RESULT = "approved";
+  const completed = await runWorkflow(workflow, "run", root, config);
+  assert.equal(completed.completionApproved, true);
+  assert.equal(closes, 3);
+  assert.equal(ensured, 1);
 });
