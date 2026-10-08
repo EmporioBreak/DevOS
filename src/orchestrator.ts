@@ -3,8 +3,16 @@ import {
 } from "./chatgpt-browser-executor.js";
 import { isCodexResumeUnavailableError } from "./codex-executor.js";
 import type { Executor } from "./executor.js";
+import { randomBytes } from "node:crypto";
+import { DevosToolRegistry, reportTokenHash } from "./mcp-tools/registry.js";
 import { parseDevosResult } from "./result.js";
 import type { ExecutorKind, TaskRef, WorkerOutput, WorkerStatus, Workflow, WorkerSpec } from "./workflow.js";
+
+export interface WorkerReportTurn {
+  workerId: string;
+  turn: number;
+  tokenHash: string;
+}
 
 export interface RunState {
   currentWorkerId: string;
@@ -14,6 +22,7 @@ export interface RunState {
   browserWorkersStarted?: string[];
   browserSessionRecovery?: string[];
   browserPreSubmitRetry?: string[];
+  activeReport?: WorkerReportTurn;
   task?: TaskRef;
   mainAgentReviewPending?: boolean;
   completionApproved?: boolean;
@@ -68,6 +77,7 @@ export interface OrchestratorOptions {
   finalizeTask?: (state: RunState) => Promise<void>;
   resolveTask?: (task: TaskRef) => Promise<TaskRef>;
   onEvent?: (event: OrchestrationEvent) => void | Promise<void>;
+  enableWorkerReports?: boolean;
   maxWorkerRuns?: number;
   maxReviewLoops?: number;
   maxWallClockDurationMs?: number;
@@ -222,6 +232,21 @@ export class Orchestrator {
         session: sessionId ? "resumed" : "fresh",
       });
       const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
+      // One capability per browser turn; only its hash is persisted and the
+      // report cannot be replayed after a task restart or subsequent turn.
+      const workerReportToken = worker.executor === "chatgpt_browser" &&
+        this.options.enableWorkerReports ? randomBytes(32).toString("hex") : undefined;
+      if (workerReportToken) {
+        state = {
+          ...state,
+          activeReport: {
+            workerId: worker.id,
+            turn: state.completedRuns,
+            tokenHash: reportTokenHash(workerReportToken),
+          },
+        };
+        await stateStore.save(state);
+      }
       const onSession = async (reportedSessionId: string) => {
         state = {
           ...state,
@@ -243,12 +268,14 @@ export class Orchestrator {
           : undefined;
         output = await executor.run({
           projectRoot: this.options.projectRoot,
-          prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot),
+          prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot,
+            workerReportToken ? { turn: state.completedRuns, token: workerReportToken } : undefined),
           workerId: worker.id,
           ...(worker.executor === "chatgpt_browser"
             ? {
                 knownBrowserSessions: knownBrowserSessions!,
                 browserTurnId: `${state.completedRuns}:${worker.id}`,
+                ...(workerReportToken ? { allowToolReportedStatus: true } : {}),
               }
             : {}),
           ...(sessionId ? { sessionId } : {}),
@@ -307,7 +334,21 @@ export class Orchestrator {
       if (output.sessionId !== undefined) await onSession(output.sessionId);
       const sessions = state.sessions;
       const sessionProjectRoots = state.sessionProjectRoots;
-      const result = parseDevosResult(output.text);
+      const reportedStatus = state.activeReport && workerReportToken
+        ? await new DevosToolRegistry(this.options.projectRoot).readReport(activeWorkflow.task, state.activeReport)
+        : null;
+      let parsed: ReturnType<typeof parseDevosResult> | undefined;
+      try {
+        parsed = parseDevosResult(output.text);
+      } catch (error) {
+        // A present but invalid/malformed final marker must never be silently
+        // overridden by a tool report. Only a missing marker may fall back.
+        if (!reportedStatus || output.text.includes("DEVOS_RESULT"))
+          throw error;
+      }
+      if (parsed && reportedStatus && parsed.status !== reportedStatus)
+        throw new Error(`Worker ${worker.id} reported conflicting statuses via MCP and final message`);
+      const result = parsed ?? { status: reportedStatus! };
       if (worker.executor === "codex" && result.status === "needs_local_worker") {
         state = { ...state, sessions, ...(sessionProjectRoots ? { sessionProjectRoots } : {}) };
         await stateStore.save(state);
@@ -316,8 +357,9 @@ export class Orchestrator {
           `Worker ${worker.id} uses codex and cannot return needs_local_worker`,
         );
       }
+      const { activeReport: _completedReport, ...completedState } = state;
       state = {
-        ...state,
+        ...completedState,
         sessions,
         ...(sessionProjectRoots ? { sessionProjectRoots } : {}),
         completedRuns: state.completedRuns + 1,
@@ -463,7 +505,10 @@ export class Orchestrator {
 
 }
 
-export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec, projectRoot?: string): string {
+export function buildWorkerPrompt(
+  workflow: Workflow, worker: WorkerSpec, projectRoot?: string,
+  report?: { turn: number; token: string },
+): string {
   const refs = [
     `${workflow.task.repo} Issue #${workflow.task.issue}`,
     workflow.task.pr ? `PR #${workflow.task.pr}` : null,
@@ -484,6 +529,13 @@ export function buildWorkerPrompt(workflow: Workflow, worker: WorkerSpec, projec
     worker.executor === "codex"
       ? "This worker already runs on the local Codex executor. It must not return needs_local_worker; return failed for an unrecoverable local-executor failure."
       : "If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_local_worker instead of failed.",
-    'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_local_worker|failed"}',
+    ...(report ? [
+      "If the devos_worker_report MCP tool is available, call it once with the final worker status before ending your answer.",
+      `Its arguments: repo=${JSON.stringify(workflow.task.repo)}, issue=${workflow.task.issue}, worker_id=${JSON.stringify(worker.id)}, turn=${report.turn}, turn_token=${report.token}; provide status and a short summary.`,
+      "Do not write the turn token in GitHub comments or your final answer. A tool acknowledgement records evidence, not final task approval.",
+      "Always finish with a short final text and, for redundancy, end with the legacy DEVOS_RESULT line when possible. If the tool is unavailable, the legacy line is mandatory. If both are present their statuses must match.",
+    ] : [
+      'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_local_worker|failed"}',
+    ]),
   ].join("\n");
 }

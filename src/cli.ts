@@ -153,6 +153,7 @@ export async function runWorkflow(
       ...(chatgpt ? [["chatgpt_browser", chatgpt] as const] : []),
     ]),
     stateStore,
+    enableWorkerReports: hasBrowserWorker,
     ...(mainAgentDecision ? { mainAgentDecision } : {}),
     finalizeTask: async state => {
       if (hasBrowserWorker) await cliBrowserRuntimeDeps.close(cwd, workflow.task);

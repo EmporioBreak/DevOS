@@ -1,4 +1,4 @@
-import { parseDevosResult } from './result.js';
+import { parseDevosResult } from "./result.js";
 export interface SubmittedTurn {
   messageId: string;
   conversationId?: string;
@@ -10,7 +10,10 @@ function record(value: unknown): value is RecordValue {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 /** Fail closed: ancestry, not recency, ties a final message to the outgoing user. */
-export function readCompletedTurn(data: unknown, conversationId: string, turn: SubmittedTurn): string | null {
+export function readCompletedTurn(
+  data: unknown, conversationId: string, turn: SubmittedTurn,
+  allowToolReportedStatus = false,
+): string | null {
   if (!record(data) || (data.conversation_id ?? data.id) !== conversationId || !record(data.mapping)) {
     throw new Error('Recovery conversation identity absent or changed');
   }
@@ -68,6 +71,8 @@ export function readCompletedTurn(data: unknown, conversationId: string, turn: S
   if (!record(content) || content.content_type !== 'text' || !Array.isArray(content.parts) || !content.parts.every((part: unknown) => typeof part === 'string'))
     throw new Error('Recovery final content unavailable');
   const text = content.parts.join('');
-  parseDevosResult(text);
+  // Legacy browser calls still require a valid final marker at the recovery
+  // boundary. Only token-scoped MCP turns defer status validation to Orchestrator.
+  if (!allowToolReportedStatus) parseDevosResult(text);
   return text;
 }

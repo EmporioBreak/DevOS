@@ -8,7 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { JsonStateStore } from "../src/json-state-store.js";
-import { DevosToolRegistry } from "../src/mcp-tools/registry.js";
+import { DevosToolRegistry, reportTokenHash } from "../src/mcp-tools/registry.js";
 import { startGateway } from "../src/connector-gateway.js";
 import { oauthToken } from "./connector-auth-fixture.js";
 
@@ -21,20 +21,23 @@ test("local DevOS tools scope reports to active turns and preserve task state", 
   const store = new JsonStateStore(root, task);
   try {
     assert.deepEqual(unpack(await registry.call("devos_task_status", task)), { found: false, task });
+    const token = randomBytes(32).toString("hex");
+    const active = { workerId: "reviewer", turn: 2, tokenHash: reportTokenHash(token) };
     await store.save({ currentWorkerId: "reviewer", completedRuns: 2,
-      sessions: { reviewer: "https://chatgpt.com/c/private-session" } });
+      sessions: { reviewer: "https://chatgpt.com/c/private-session" }, activeReport: active });
     const status = unpack(await registry.call("devos_task_status", task));
     assert.deepEqual(status, { found: true, task, worker_id: "reviewer", turn: 2,
       review_loops: 0, main_agent_review_pending: false, completion_approved: false });
     assert.ok(!JSON.stringify(status).includes("private-session"));
-    const report = { ...task, worker_id: "reviewer", turn: 2, status: "changes_requested", summary: "Regression found" };
+    const report = { ...task, worker_id: "reviewer", turn: 2, status: "changes_requested", summary: "Regression found", turn_token: token };
     const first = await registry.call("devos_worker_report", report);
     assert.equal(unpack(first).recorded, true);
     assert.deepEqual(await registry.call("devos_worker_report", report), first);
     const file = join(root, ".devos", "worker-reports",
-      `${encodeURIComponent(task.repo)}-issue-${task.issue}`, "turn-2-reviewer.json");
+      `${encodeURIComponent(task.repo)}-issue-${task.issue}`, `turn-2-${active.tokenHash}.json`);
     assert.deepEqual(JSON.parse(await readFile(file, "utf8")),
-      { task, worker_id: "reviewer", turn: 2, status: "changes_requested", summary: "Regression found" });
+      { task, worker_id: "reviewer", turn: 2, status: "changes_requested", summary: "Regression found", token_hash: active.tokenHash });
+    assert.equal(await registry.readReport(task, active), "changes_requested");
     assert.equal((await store.load())?.currentWorkerId, "reviewer");
     for (const bad of [
       { ...report, summary: "Different report" },
@@ -43,11 +46,14 @@ test("local DevOS tools scope reports to active turns and preserve task state", 
       { ...report, status: "invalid" },
       { ...report, repo: "../escape" },
       { ...report, extra: 1 },
+      { ...report, turn_token: randomBytes(32).toString("hex") },
     ]) assert.equal((await registry.call("devos_worker_report", bad)).isError, true);
-    await store.save({ currentWorkerId: "developer", completedRuns: 3, sessions: {} });
+    const secondToken = randomBytes(32).toString("hex");
+    await store.save({ currentWorkerId: "developer", completedRuns: 3, sessions: {},
+      activeReport: { workerId: "developer", turn: 3, tokenHash: reportTokenHash(secondToken) } });
     assert.equal((await registry.call("devos_worker_report", report)).isError, true);
     const next = await registry.call("devos_worker_report",
-      { ...report, worker_id: "developer", turn: 3, status: "done" });
+      { ...report, worker_id: "developer", turn: 3, status: "done", turn_token: secondToken });
     assert.equal(next.isError, undefined);
   } finally {
     await rm(root, { recursive: true, force: true });

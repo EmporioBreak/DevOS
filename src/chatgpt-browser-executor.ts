@@ -390,7 +390,7 @@ export class ChatGptBrowserExecutor implements Executor {
           const data: unknown = await response.json().catch(() => { throw new Error("Recovery conversation data is not structured JSON"); });
           if (expired) throw new Error("Timeout: read-only recovery deadline exhausted");
           if (!isSameChatGptConversation(session, page.url())) throw new Error("Recovery conversation identity changed during read");
-          const text = readCompletedTurn(data, conversationId, turn);
+          const text = readCompletedTurn(data, conversationId, turn, request.allowToolReportedStatus === true);
           debugLog("browser.recovery", { phase: "post-submit", attempt, requestedUrl: session, actualUrl: page.url(), decision: text ? "completed" : "still-running" });
           return text;
         };

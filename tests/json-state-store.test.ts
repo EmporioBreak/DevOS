@@ -213,3 +213,23 @@ test("state saves use unique same-directory temporary paths", () => {
   assert.equal(first, target + ".tmp.123.one");
   assert.equal(second, target + ".tmp.123.two");
 });
+
+test("rejects invalid active MCP report proof instead of accepting a stale or malformed turn", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-state-"));
+  const store = new JsonStateStore(root, { repo: "owner/project", issue: 103 });
+  try {
+    const base = { currentWorkerId: "reviewer", completedRuns: 0, sessions: {} };
+    for (const bad of [
+      { workerId: "reviewer", turn: 0, tokenHash: "invalid" },
+      { workerId: "", turn: 0, tokenHash: "a".repeat(64) },
+      { workerId: "reviewer", turn: -1, tokenHash: "a".repeat(64) },
+      { workerId: "reviewer", turn: 0, tokenHash: "a".repeat(64), extra: "ignored" },
+    ]) await assert.rejects(store.save({ ...base, activeReport: bad } as any), /Invalid DevOS active report/);
+    await store.save({ ...base, activeReport: {
+      workerId: "reviewer", turn: 0, tokenHash: "f".repeat(64),
+    } });
+    assert.equal((await store.load())?.activeReport?.tokenHash, "f".repeat(64));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
