@@ -114,3 +114,31 @@ test("durable registry stores only fingerprint and timestamps, never raw host id
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test("concurrent identity writes do not lose conversations", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-conversation-race-"));
+  try {
+    await Promise.all([
+      recordHostConversationIdentity(root, {
+        session: "v1/session-a",
+        subject: "v1/subject",
+        source: "meta",
+      }, new Date("2026-10-08T10:00:00.000Z")),
+      recordHostConversationIdentity(root, {
+        session: "v1/session-b",
+        subject: "v1/subject",
+        source: "meta",
+      }, new Date("2026-10-08T10:00:01.000Z")),
+    ]);
+    const raw = await readFile(join(root, ".devos", "conversation-identities.json"), "utf8");
+    const registry = JSON.parse(raw);
+    assert.equal(registry.conversations.length, 2);
+    assert.notEqual(
+      registry.conversations[0].fingerprint,
+      registry.conversations[1].fingerprint,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
