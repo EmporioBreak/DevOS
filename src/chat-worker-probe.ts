@@ -8,7 +8,7 @@ import { join } from "node:path";
 export const CHAT_WORKER_PROBE_TOOL = {
   name: "devos_worker_probe",
   title: "DevOS worker identity probe (no access grant)",
-  description: "Harmless one-time challenge for DevOS-owned browser worker verification. Does not authorize tools, read files, or operate the Mac. Ordinary chats may call it but receive no permissions.",
+  description: "Only for browser workers launched by the local DevOS orchestrator. A one-time read-only identity challenge; NEVER grants Mac access itself. Do not call from user-created or ordinary ChatGPT chats; those use the separate owner approval form.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   _meta: { securitySchemes: [{ type: "oauth2", scopes: ["mcp:tools"] }] },

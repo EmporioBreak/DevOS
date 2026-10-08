@@ -18,6 +18,9 @@ Ordinary chats that do not need DevOS or Desktop Commander must not call
 
 Before a main-agent conversation actually uses DevOS/Desktop Commander MCP,
 call the side-effect-free `devos_noop` to check that conversation's approval.
+Never use `devos_worker_probe` for a manually created main-agent chat: it
+cannot discover the private chat URL, and cannot replace the password/URL
+owner-approval flow. The worker probe is exclusively for DevOS-created workers.
 If not approved, invoke `devos_authorize_chat` only for this MCP workflow to
 show the inline approval form. The owner enters the exact private chat URL and
 the **separate chat-access password** into the widget; the password must
