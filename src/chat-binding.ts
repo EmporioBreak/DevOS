@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { Camoufox } from '@camoufox/camoufox';
 import type { BrowserContext, Page } from 'playwright-core';
 import { loadChatGptBrowserConfig, getChatGptProjectScope } from './browser-config.js';
 import { loadOrCreateCamoufoxIdentity } from './camoufox-identity.js';
+import { captureProcessIdentity, processExists, sameProcessIdentity, type ProcessIdentity } from './process-identity.js';
 
 export const BIND_MARKER = /^DEVOS_BIND_[A-Za-z0-9_-]{12,128}$/;
 export const BIND_LIMIT = 30;
@@ -18,6 +19,7 @@ export interface ChatBindingRecord {
   version: 1;
   status: 'pending' | 'resolved' | 'failed';
   projectUrl: string;
+  requestId?: string;
   requestedAt: string;
   conversationUrl?: string;
   completedAt?: string;
@@ -33,6 +35,7 @@ export async function readChatBinding(projectRoot: string): Promise<ChatBindingR
     const record = JSON.parse(await readFile(chatBindingStatePath(projectRoot), 'utf8')) as ChatBindingRecord;
     if (!record || record.version !== 1 || !['pending', 'resolved', 'failed'].includes(record.status) ||
       typeof record.projectUrl !== 'string' || !getChatGptProjectScope(record.projectUrl) ||
+      (record.requestId !== undefined && (typeof record.requestId !== 'string' || !record.requestId)) ||
       typeof record.requestedAt !== 'string' || !Number.isFinite(Date.parse(record.requestedAt)) ||
       (record.status === 'resolved' && (typeof record.conversationUrl !== 'string' || !record.completedAt || !Number.isFinite(Date.parse(record.completedAt)))) ||
       (record.status === 'failed' && (typeof record.error !== 'string' || !record.completedAt || !Number.isFinite(Date.parse(record.completedAt))))) {
@@ -58,6 +61,80 @@ async function writeChatBinding(projectRoot: string, record: ChatBindingRecord):
   }
 }
 
+interface BindingStateLockRecord {
+  pid: number;
+  runId: string;
+  identity: ProcessIdentity;
+}
+
+async function acquireBindingStateLock(projectRoot: string): Promise<() => Promise<void>> {
+  const path = `${chatBindingStatePath(projectRoot)}.lock`;
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const runId = randomUUID();
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      const handle = await open(path, 'wx', 0o600);
+      const identity = await captureProcessIdentity(process.pid);
+      if (!identity) {
+        await handle.close();
+        await rm(path, { force: true });
+        throw new Error('bind_state_owner_unknown');
+      }
+      await handle.writeFile(JSON.stringify({ pid: process.pid, runId, identity } satisfies BindingStateLockRecord), 'utf8');
+      await handle.close();
+      return async () => {
+        const current = await readBindingStateLock(path);
+        if (current?.pid === process.pid && current.runId === runId) await rm(path, { force: true });
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const existing = await readBindingStateLock(path);
+      if (existing) {
+        const live = await processExists(existing.pid);
+        const actual = live ? await captureProcessIdentity(existing.pid) : null;
+        if (!live || (actual && !sameProcessIdentity(existing.identity, actual))) {
+          await rm(path, { force: true });
+          continue;
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+  throw new Error('bind_state_busy');
+}
+
+async function readBindingStateLock(path: string): Promise<BindingStateLockRecord | null> {
+  try {
+    const value = JSON.parse(await readFile(path, 'utf8')) as BindingStateLockRecord;
+    if (!Number.isSafeInteger(value?.pid) || typeof value?.runId !== 'string' || !value?.identity ||
+      typeof value.identity.startTime !== 'string' || typeof value.identity.executable !== 'string') return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+async function updateChatBinding(projectRoot: string, requestId: string, record: ChatBindingRecord): Promise<boolean> {
+  const release = await acquireBindingStateLock(projectRoot);
+  try {
+    const current = await readChatBinding(projectRoot);
+    if (current?.requestId !== requestId) return false;
+    await writeChatBinding(projectRoot, { ...record, requestId });
+    return true;
+  } finally {
+    await release();
+  }
+}
+
+async function setCurrentChatBinding(projectRoot: string, record: ChatBindingRecord): Promise<void> {
+  const release = await acquireBindingStateLock(projectRoot);
+  try {
+    await writeChatBinding(projectRoot, record);
+  } finally {
+    await release();
+  }
+}
+
 function assertChatBindingUrl(projectUrl: string, conversationUrl: string): void {
   const scope = getChatGptProjectScope(projectUrl);
   if (!scope || !new RegExp(`^/g/${scope.projectId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/c/[^/]+/?$`).test(new URL(conversationUrl).pathname) || new URL(conversationUrl).origin !== scope.origin) {
@@ -79,10 +156,11 @@ export async function searchBindingPass(page: BindingPage, projectUrl: string, m
   const scope = getChatGptProjectScope(projectUrl);
   if (!scope) throw new Error('bind_requires_project');
   await page.goto(projectUrl);
-  // The project sidebar presents conversation links in newest-first order.
-  // Preserve that order; optional update timestamps make the ordering explicit
-  // when the host exposes them on the link.
-  const links = await page.locator(`a[href*="/g/${scope.projectId}/c/"]`).all();
+  // The labeled project-chat list is the sidebar's newest-first source. Read
+  // only that list, excluding its separate global Recents list. Preserve its
+  // visible order unless the host provides timestamps on every row.
+  const links = await page.locator(`[aria-label^="Chats in "] a[href*="/g/${scope.projectId}/c/"]`).all();
+  if (links.length === 0) throw new Error('bind_project_list_unavailable');
   const rows = await Promise.all(links.map(async (link, index) => ({
     link,
     index,
@@ -160,8 +238,9 @@ export async function scheduleChatBinding(
     const marker = (await readFile(markerFile, 'utf8')).trim();
     if (!BIND_MARKER.test(marker)) throw new Error('bind_invalid_marker');
     if (!getChatGptProjectScope(projectUrl)) throw new Error('bind_requires_project');
+    const requestId = randomUUID();
     const requestedAt = new Date().toISOString();
-    await writeChatBinding(projectRoot, { version: 1, status: 'pending', projectUrl, requestedAt });
+    await setCurrentChatBinding(projectRoot, { version: 1, status: 'pending', projectUrl, requestId, requestedAt });
     let child: ChildProcess;
     try {
       child = spawnWorker(process.execPath, [
@@ -170,6 +249,7 @@ export async function scheduleChatBinding(
         '--devos-bind-chat-worker',
         markerFile,
         projectUrl,
+        requestId,
       ], {
         cwd: projectRoot,
         detached: true,
@@ -177,7 +257,7 @@ export async function scheduleChatBinding(
         env: process.env,
       });
     } catch (error) {
-      await writeChatBinding(projectRoot, {
+      await updateChatBinding(projectRoot, requestId, {
         version: 1,
         status: 'failed',
         projectUrl,
@@ -188,7 +268,7 @@ export async function scheduleChatBinding(
       throw error;
     }
     child.once('error', () => {
-      void writeChatBinding(projectRoot, {
+      void updateChatBinding(projectRoot, requestId, {
         version: 1,
         status: 'failed',
         projectUrl,
@@ -208,6 +288,7 @@ export async function runDeferredBindingJob(
   markerFile: string,
   projectUrl: string,
   projectRoot: string,
+  requestId: string,
   dependencies: {
     wait?: (milliseconds: number) => Promise<void>;
     bind?: typeof bindChat;
@@ -218,11 +299,14 @@ export async function runDeferredBindingJob(
   let requestedAt = new Date().toISOString();
   try {
     const current = await readChatBinding(projectRoot);
-    if (current?.status === 'pending' && current.projectUrl === projectUrl) requestedAt = current.requestedAt;
+    if (current?.requestId !== requestId || current.projectUrl !== projectUrl) throw new Error('bind_superseded');
+    requestedAt = current.requestedAt;
     await wait(BIND_PUBLICATION_DELAY_MS);
+    const afterWait = await readChatBinding(projectRoot);
+    if (afterWait?.requestId !== requestId) throw new Error('bind_superseded');
     return await bind(markerFile, projectUrl, async conversationUrl => {
       assertChatBindingUrl(projectUrl, conversationUrl);
-      await writeChatBinding(projectRoot, {
+      const saved = await updateChatBinding(projectRoot, requestId, {
         version: 1,
         status: 'resolved',
         projectUrl,
@@ -230,19 +314,17 @@ export async function runDeferredBindingJob(
         completedAt: new Date().toISOString(),
         conversationUrl,
       });
+      if (!saved) throw new Error('bind_superseded');
     });
   } catch (error) {
-    const current = await readChatBinding(projectRoot).catch(() => null);
-    if (current?.status !== 'resolved') {
-      await writeChatBinding(projectRoot, {
-        version: 1,
-        status: 'failed',
-        projectUrl,
-        requestedAt,
-        completedAt: new Date().toISOString(),
-        error: error instanceof Error && /^bind_[a-z_]+$/.test(error.message) ? error.message : 'bind_failed',
-      });
-    }
+    await updateChatBinding(projectRoot, requestId, {
+      version: 1,
+      status: 'failed',
+      projectUrl,
+      requestedAt,
+      completedAt: new Date().toISOString(),
+      error: error instanceof Error && /^bind_[a-z_]+$/.test(error.message) ? error.message : 'bind_failed',
+    });
     throw error;
   } finally {
     await rm(markerFile, { force: true });

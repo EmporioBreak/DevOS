@@ -9,13 +9,14 @@ const project = 'https://chatgpt.com/g/demo/project';
 const marker = 'DEVOS_BIND_abcdefghijklmnop';
 function fixture(count: number, foundAt = -1, text = marker, options: { order?: number[]; timestamps?: string[]; delayed?: boolean } = {}) {
   let current = '';
+  let listSelector = '';
   const visited: string[] = [];
   const order = options.order ?? Array.from({ length: count }, (_, i) => i);
   const rendered = new Set<string>();
   const page = {
     async goto(url: string) { current = url; if (url.includes('/c/')) { visited.push(url); if (!options.delayed) rendered.add(url); } },
     url() { return current; },
-    locator() { return { async all() { return order.map(i => ({
+    locator(selector: string) { listSelector = selector; return { async all() { return order.map(i => ({
       async getAttribute(name: string) {
         if (name === 'href') return `/g/demo/c/chat-${i}`;
         if (name === 'data-updated-at') return options.timestamps?.[i] ?? null;
@@ -27,7 +28,7 @@ function fixture(count: number, foundAt = -1, text = marker, options: { order?: 
       async waitFor() { rendered.add(current); },
     }; },
   };
-  return { page, visited };
+  return { page, visited, listSelector: () => listSelector };
 }
 test('stops on exact matching chat and returns exact URL', async () => {
   const f = fixture(20, 3);
@@ -49,6 +50,13 @@ test('orders timestamped links newest-first before applying the cap', async () =
   const f = fixture(35, 30, marker, { order: [...order].reverse(), timestamps });
   assert.equal(await searchBindingPass(f.page, project, marker), 'https://chatgpt.com/g/demo/c/chat-30');
   assert.deepEqual(f.visited.slice(0, 5).map(url => Number(url.split('chat-')[1])), [34, 33, 32, 31, 30]);
+});
+test('uses the labeled project sidebar order for the 30-chat cap without timestamps', async () => {
+  const order = Array.from({ length: 35 }, (_, i) => (i * 11) % 35);
+  const f = fixture(35, order[29], marker, { order });
+  assert.equal(await searchBindingPass(f.page, project, marker), `https://chatgpt.com/g/demo/c/chat-${order[29]}`);
+  assert.deepEqual(f.visited.map(url => Number(url.split('chat-')[1])), order.slice(0, 30));
+  assert.match(f.listSelector(), /^\[aria-label\^="Chats in "\] a\[href\*="\/g\/demo\/c\/"\]$/);
 });
 test('waits for asynchronously rendered exact marker text', async () => {
   const f = fixture(1, 0, marker, { delayed: true });
@@ -106,8 +114,9 @@ test('schedules a one-shot binding worker and returns before lookup starts', asy
     assert.equal(unrefCalled, true);
     assert.equal(spawnArgs?.options.cwd, dir);
     assert.equal(spawnArgs?.options.detached, true);
-    assert.deepEqual(spawnArgs?.args.slice(-4), ['/devos/cli.js', '--devos-bind-chat-worker', markerFile, project]);
-    assert.deepEqual(await readChatBinding(dir), { version: 1, status: 'pending', projectUrl: project, requestedAt: (await readChatBinding(dir))?.requestedAt });
+    assert.deepEqual(spawnArgs?.args.slice(-5, -1), ['/devos/cli.js', '--devos-bind-chat-worker', markerFile, project]);
+    assert.match(spawnArgs?.args.at(-1) ?? '', /^[\da-f-]{36}$/);
+    assert.equal((await readChatBinding(dir))?.requestId, spawnArgs?.args.at(-1));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -119,7 +128,13 @@ test('defers lookup until marker publication and persists exact URL before clean
   let markerPublished = false;
   await writeFile(markerFile, marker);
   try {
-    assert.equal(await runDeferredBindingJob(markerFile, project, dir, {
+    let workerArgs: string[] = [];
+    await scheduleChatBinding(markerFile, project, dir, '/devos/cli.js', [], (_command, args) => {
+      workerArgs = args;
+      return { once() { return this; }, unref() {} } as never;
+    });
+    const requestId = workerArgs.at(-1)!;
+    assert.equal(await runDeferredBindingJob(markerFile, project, dir, requestId, {
       wait: async milliseconds => {
         assert.equal(milliseconds, BIND_PUBLICATION_DELAY_MS);
         markerPublished = true;
@@ -143,13 +158,61 @@ test('persists explicit failure and removes marker after exhausted lookup', asyn
   const markerFile = join(dir, 'marker');
   await writeFile(markerFile, marker);
   try {
-    await assert.rejects(runDeferredBindingJob(markerFile, project, dir, {
+    let workerArgs: string[] = [];
+    await scheduleChatBinding(markerFile, project, dir, '/devos/cli.js', [], (_command, args) => {
+      workerArgs = args;
+      return { once() { return this; }, unref() {} } as never;
+    });
+    await assert.rejects(runDeferredBindingJob(markerFile, project, dir, workerArgs.at(-1)!, {
       wait: async () => {},
       bind: async () => { throw new Error('bind_not_found'); },
     }), /bind_not_found/);
     assert.equal((await readChatBinding(dir))?.status, 'failed');
     assert.equal((await readChatBinding(dir))?.error, 'bind_not_found');
     await assert.rejects(readFile(markerFile, 'utf8'), { code: 'ENOENT' });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test('stale in-flight binding cannot overwrite a newer chat result', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'devos-bind-test-'));
+  const firstMarker = join(dir, 'marker-a');
+  const secondMarker = join(dir, 'marker-b');
+  const firstUrl = 'https://chatgpt.com/g/demo/c/chat-a';
+  const secondUrl = 'https://chatgpt.com/g/demo/c/chat-b';
+  let firstArgs: string[] = [];
+  let secondArgs: string[] = [];
+  await writeFile(firstMarker, marker);
+  await writeFile(secondMarker, 'DEVOS_BIND_ponmlkjihgfedcba');
+  const fakeChild = () => ({ once() { return this; }, unref() {} }) as never;
+  try {
+    await scheduleChatBinding(firstMarker, project, dir, '/devos/cli.js', [], (_command, args) => { firstArgs = args; return fakeChild(); });
+    let bindStarted!: () => void;
+    let finishFirst!: () => void;
+    const started = new Promise<void>(resolve => { bindStarted = resolve; });
+    const release = new Promise<void>(resolve => { finishFirst = resolve; });
+    const olderJob = runDeferredBindingJob(firstMarker, project, dir, firstArgs.at(-1)!, {
+      wait: async () => {},
+      bind: async (_file, _project, onResolved) => {
+        bindStarted();
+        await release;
+        await onResolved!(firstUrl);
+        return firstUrl;
+      },
+    });
+    await started;
+    await scheduleChatBinding(secondMarker, project, dir, '/devos/cli.js', [], (_command, args) => { secondArgs = args; return fakeChild(); });
+    finishFirst();
+    await assert.rejects(olderJob, /bind_superseded/);
+    assert.equal((await readChatBinding(dir))?.requestId, secondArgs.at(-1));
+    assert.equal((await readChatBinding(dir))?.status, 'pending');
+    await runDeferredBindingJob(secondMarker, project, dir, secondArgs.at(-1)!, {
+      wait: async () => {},
+      bind: async (_file, _project, onResolved) => { await onResolved!(secondUrl); return secondUrl; },
+    });
+    const saved = await readChatBinding(dir);
+    assert.equal(saved?.requestId, secondArgs.at(-1));
+    assert.equal(saved?.conversationUrl, secondUrl);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

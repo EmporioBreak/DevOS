@@ -211,8 +211,8 @@ export async function main(
   args: string[] = process.argv.slice(2),
   cwd: string = process.cwd(),
 ): Promise<void> {
-  if (args[0] === "--devos-bind-chat-worker" && args.length === 3) {
-    await cliBindingDeps.run(args[1]!, args[2]!, cwd);
+  if (args[0] === "--devos-bind-chat-worker" && args.length === 4) {
+    await cliBindingDeps.run(args[1]!, args[2]!, cwd, args[3]!);
     return;
   }
   if (args[0] === "--devos-browser-runtime") {
