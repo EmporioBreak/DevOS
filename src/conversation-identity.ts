@@ -203,3 +203,31 @@ export async function recordHostConversationIdentity(
   });
   return result;
 }
+
+export type ConversationIdentityObservation =
+  | { status: "recorded"; record: ConversationIdentityRecord }
+  | { status: "unresolved" }
+  | { status: "tool_error" };
+
+export async function observeSuccessfulToolConversationIdentity(
+  root: string,
+  request: unknown,
+  result: unknown,
+  headers?: HeaderBag,
+  now = new Date(),
+): Promise<ConversationIdentityObservation> {
+  if (
+    !result ||
+    typeof result !== "object" ||
+    Array.isArray(result) ||
+    (result as { isError?: unknown }).isError === true
+  ) {
+    return { status: "tool_error" };
+  }
+  const identity = extractHostConversationIdentity(request, headers);
+  if (!identity) return { status: "unresolved" };
+  return {
+    status: "recorded",
+    record: await recordHostConversationIdentity(root, identity, now),
+  };
+}
