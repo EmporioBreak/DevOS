@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import type { Page } from "playwright-core";
+import { captureProcessIdentity } from "../src/process-identity.js";
 import { ChatWorkerProbeRegistry } from "../src/chat-worker-probe.js";
 import { ChatWorkerGrantRegistry } from "../src/chat-worker-grants.js";
 import { observeWorkerAuthorization } from "../src/chat-worker-observer.js";
@@ -30,6 +31,12 @@ async function temp() {
     activeReport: { workerId: "developer", turn: 1 },
     sessions: { developer: url },
   }));
+  const lockPath=join(root,".devos","locks","EmporioBreak%2FDevOS-issue-99.lock");
+  await mkdir(dirname(lockPath),{recursive:true,mode:0o700});
+  const identity=await captureProcessIdentity(process.pid);
+  assert.ok(identity);
+  await writeFile(lockPath,JSON.stringify({repo:task.repo,issue:task.issue,pid:process.pid,
+    identity,runId:"test-active-task",startedAt:new Date().toISOString()}),{mode:0o600});
   const probe = new ChatWorkerProbeRegistry(root, secret);
   const issued = probe.issue(fp, Date.now());
   assert.equal(issued.status, "issued");

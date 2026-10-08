@@ -1,4 +1,7 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { readlinkSync } from "node:fs";
+import { sameProcessIdentity, type ProcessIdentity } from "./process-identity.js";
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { canonicalPrivateChatUrl } from "./chat-access.js";
@@ -32,7 +35,48 @@ function validGrant(g: WorkerGrant): boolean {
   } catch { return false; }
 }
 
+/** A persisted activeReport alone is not proof of an active worker.
+ * If the orchestrator crashes without updating state, a stale MACed grant
+ * must not remain usable even for its remaining TTL. */
+function liveTaskOwner(root: string, grant: WorkerGrant): boolean {
+  try {
+    const lockPath=join(root,".devos","locks",`${encodeURIComponent(grant.repo)}-issue-${grant.issue}.lock`);
+    const stat=lstatSync(lockPath);
+    if(!stat.isFile() || (stat.mode & 0o077)!==0) return false;
+    const lock=JSON.parse(readFileSync(lockPath,"utf8")) as {
+      repo?:string;issue?:number;pid?:number;identity?:ProcessIdentity;
+    };
+    if(lock.repo!==grant.repo || lock.issue!==grant.issue ||
+       !Number.isSafeInteger(lock.pid) || !lock.pid || !lock.identity ||
+       lock.identity.pid!==lock.pid) return false;
+    process.kill(lock.pid,0);
+    let actual:ProcessIdentity;
+    if(process.platform==="darwin"){
+      const field=(key:"lstart"|"comm"|"command")=>{
+        const outcome=spawnSync("/bin/ps",["-p",String(lock.pid),"-o",key+"="],{
+          encoding:"utf8",timeout:1500,env:{...process.env,LC_ALL:"C"}
+        });
+        return outcome.status===0 ? outcome.stdout.trim() : "";
+      };
+      const startTime=field("lstart"), executable=field("comm"), commandLine=field("command");
+      if(!startTime || !executable || !commandLine) return false;
+      actual={pid:lock.pid,startTime,executable,commandLine};
+    }else if(process.platform==="linux"){
+      const stat=readFileSync("/proc/"+lock.pid+"/stat","utf8");
+      const end=stat.lastIndexOf(")");
+      if(end<0) return false;
+      const startTime=stat.slice(end+2).trim().split(/\\s+/)[19];
+      const executable=readlinkSync("/proc/"+lock.pid+"/exe");
+      const commandLine=readFileSync("/proc/"+lock.pid+"/cmdline","utf8").replace(/\\0+/g," ").trim();
+      if(!startTime || !executable || !commandLine) return false;
+      actual={pid:lock.pid,startTime,executable,commandLine};
+    }else return false;
+    return sameProcessIdentity(lock.identity,actual);
+  }catch{return false}
+}
+
 function activeWorker(root: string, grant: WorkerGrant): boolean {
+  if(!liveTaskOwner(root,grant)) return false;
   const path = join(root, ".devos", "state", `${encodeURIComponent(grant.repo)}-issue-${grant.issue}.json`);
   try {
     const state = JSON.parse(readFileSync(path, "utf8")) as Record<string, any>;

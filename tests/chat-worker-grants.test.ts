@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { captureProcessIdentity } from "../src/process-identity.js";
 import test from "node:test";
 import { ChatWorkerProbeRegistry } from "../src/chat-worker-probe.js";
 import { ChatWorkerGrantRegistry, bindProvenWorkerMessage, localWorkerAuthorization } from "../src/chat-worker-grants.js";
@@ -17,6 +18,12 @@ const statePath = (root: string) => join(root, ".devos", "state", "EmporioBreak%
 async function active(root: string, workerId = "developer", turn = 1, sessions = { developer: urlA, reviewer: urlB }) {
   const path = statePath(root);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const lockPath=join(root,".devos","locks","EmporioBreak%2FDevOS-issue-99.lock");
+  await mkdir(dirname(lockPath),{recursive:true,mode:0o700});
+  const identity=await captureProcessIdentity(process.pid);
+  assert.ok(identity);
+  await writeFile(lockPath,JSON.stringify({repo:task.repo,issue:task.issue,pid:process.pid,
+    identity,runId:"test-active-task",startedAt:new Date().toISOString()}),{mode:0o600});
   await writeFile(path, JSON.stringify({
     currentWorkerId: workerId, completedRuns: turn, activeReport: {workerId,turn},
     sessions, mainAgentReviewPending: false, completionApproved: false,
@@ -35,6 +42,16 @@ test("one exact active worker gets passwordless access, unrelated session remain
     assert.equal(grants.isGranted(fpA,5_000_000),false);
     const c=pending.issue(fpA,5_000_000);assert.equal(c.status,"issued");if(c.status!=="issued")return;
     assert.equal(grants.bindVerified(c.nonce,task,"developer",1,urlA,5_000_100),true);
+    assert.equal(grants.isGranted(fpA,5_000_101),true);
+    const lockPath=join(root,".devos","locks","EmporioBreak%2FDevOS-issue-99.lock");
+    const savedLock=await readFile(lockPath,"utf8");
+    const forgedLock=JSON.parse(savedLock);
+    forgedLock.pid=99999999;
+    forgedLock.identity.pid=99999999;
+    await writeFile(lockPath,JSON.stringify(forgedLock));
+    assert.equal(grants.isGranted(fpA,5_000_101),false,
+      "orphaned active task JSON cannot authorize after owner process disappears");
+    await writeFile(lockPath,savedLock);
     assert.equal(grants.isGranted(fpA,5_000_101),true);
     assert.equal(grants.isGranted(fpB,5_000_101),false,"other chat on same OAuth client is not authorized");
     assert.equal(grants.bindVerified(c.nonce,task,"developer",1,urlA,5_000_102),false,"nonce replay blocked");

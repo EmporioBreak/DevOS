@@ -11,6 +11,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ChatAccessRegistry, canonicalPrivateChatUrl, chatSessionSignal } from "../src/chat-access.js";
 import { runChatAccessAdmin } from "../src/chat-access-admin.js";
 import { ChatWorkerGrantRegistry } from "../src/chat-worker-grants.js";
+import { captureProcessIdentity } from "../src/process-identity.js";
 import { startGateway } from "../src/connector-gateway.js";
 import { oauthToken } from "./connector-auth-fixture.js";
 
@@ -145,6 +146,12 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
       activeReport: { workerId: "developer", turn: 0 },
       sessions: { developer: url }, mainAgentReviewPending: false, completionApproved: false,
     }));
+    const lockPath=join(root,".devos","locks","EmporioBreak%2FDevOS-issue-99.lock");
+    await mkdir(join(root,".devos","locks"),{recursive:true});
+    const identity=await captureProcessIdentity(process.pid);
+    assert.ok(identity);
+    await writeFile(lockPath,JSON.stringify({repo:"EmporioBreak/DevOS",issue:99,pid:process.pid,
+      identity,runId:"test-active-task",startedAt:new Date().toISOString()}),{mode:0o600});
     const workerRegistry = new ChatWorkerGrantRegistry(root, secret);
     assert.equal(workerRegistry.bindVerified(safeProbe.nonce,
       { repo: "EmporioBreak/DevOS", issue: 99 }, "developer", 0, url), true);
