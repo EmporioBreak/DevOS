@@ -46,17 +46,24 @@ test("uses x-openai-session only as compatibility fallback", () => {
     ),
     {
       session: "header-session",
-      subject: "header-subject",
       source: "header",
     },
   );
 });
 
-test("missing or malformed host session metadata is unresolved", () => {
+test("missing, malformed, or conflicting host session metadata is unresolved", () => {
   assert.equal(extractHostConversationIdentity({ method: "tools/call", params: {} }), undefined);
   assert.equal(
     extractHostConversationIdentity(
       { method: "tools/call", params: { _meta: { "openai/session": "bad\nvalue" } } },
+      { "x-openai-session": "header-session" },
+    ),
+    undefined,
+  );
+  assert.equal(
+    extractHostConversationIdentity(
+      { method: "tools/call", params: { _meta: { "openai/session": "meta-session" } } },
+      { "x-openai-session": "different-header-session" },
     ),
     undefined,
   );
@@ -66,8 +73,6 @@ test("fingerprint is stable for one host session and isolated across conversatio
   const key = Buffer.alloc(32, 7);
   const base = {
     session: "v1/session-a",
-    subject: "v1/subject",
-    organization: "v1/org",
     source: "meta" as const,
   };
   const same = conversationIdentityFingerprint(base, key);
@@ -90,8 +95,6 @@ test("durable registry stores only fingerprint and timestamps, never raw host id
   try {
     const identity = {
       session: "v1/private-session-value",
-      subject: "v1/private-subject-value",
-      organization: "v1/private-org-value",
       source: "meta" as const,
     };
     const first = await recordHostConversationIdentity(
@@ -109,7 +112,7 @@ test("durable registry stores only fingerprint and timestamps, never raw host id
     assert.equal(second.lastSeenAt, "2026-10-08T10:05:00.000Z");
 
     const raw = await readFile(join(root, ".devos", "conversation-identities.json"), "utf8");
-    assert.doesNotMatch(raw, /private-session-value|private-subject-value|private-org-value/);
+    assert.doesNotMatch(raw, /private-session-value/);
     const registry = JSON.parse(raw);
     assert.equal(registry.conversations.length, 1);
     assert.equal(registry.conversations[0].fingerprint, first.fingerprint);
@@ -125,12 +128,10 @@ test("concurrent identity writes do not lose conversations", async () => {
     await Promise.all([
       recordHostConversationIdentity(root, {
         session: "v1/session-a",
-        subject: "v1/subject",
         source: "meta",
       }, new Date("2026-10-08T10:00:00.000Z")),
       recordHostConversationIdentity(root, {
         session: "v1/session-b",
-        subject: "v1/subject",
         source: "meta",
       }, new Date("2026-10-08T10:00:01.000Z")),
     ]);
