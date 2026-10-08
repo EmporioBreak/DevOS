@@ -147,3 +147,13 @@ test("rejects provisional local ChatGPT conversation IDs as resumable sessions",
   assert.throws(() => loadChatGptBrowserConfig({ DEVOS_BROWSER_HEADLESS: "yes" }), /must be 0 or 1/);
  });
 
+
+test("canonical Project redirect strips human-readable slug, but different immutable IDs remain distinct", () => {
+  const configured = "https://chatgpt.com/g/g-p-6aba984334d881918dea8eb28b1df635-denis-devos/project";
+  const canonical = "https://chatgpt.com/g/g-p-6aba984334d881918dea8eb28b1df635/c/session-1";
+  assert.equal(assertChatGptProjectScope(configured, canonical, true).href, canonical);
+  assert.throws(() => assertChatGptProjectScope(configured,
+    "https://chatgpt.com/g/g-p-7aba984334d881918dea8eb28b1df635/c/session-1", true), /escaped/);
+  assert.throws(() => assertChatGptProjectScope(configured,
+    "https://chatgpt.com/c/session-1", true), /escaped/);
+});

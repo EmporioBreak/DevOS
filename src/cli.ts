@@ -153,7 +153,7 @@ export async function runWorkflow(
       ...(chatgpt ? [["chatgpt_browser", chatgpt] as const] : []),
     ]),
     stateStore,
-    enableWorkerReports: hasBrowserWorker,
+    enableWorkerReports: hasBrowserWorker && workerReportsEnabled(process.env.DEVOS_WORKER_MCP_REPORTS),
     ...(mainAgentDecision ? { mainAgentDecision } : {}),
     finalizeTask: async state => {
       if (hasBrowserWorker) await cliBrowserRuntimeDeps.close(cwd, workflow.task);
@@ -373,6 +373,14 @@ export function assertMainAgentDecisionPending(state: RunState | null, decision?
       "DEVOS_OWNER_RESULT requires an existing task waiting for final review",
     );
   }
+}
+
+/** Explicit fallback mode for an MCP outage or SSE/DOM acceptance test.
+ * Existing running turns are never replayed simply by toggling this flag. */
+export function workerReportsEnabled(value: string | undefined): boolean {
+  if (value === undefined || value === "1") return true;
+  if (value === "0") throw new Error("Browser workers require devos_worker_report; DEVOS_WORKER_MCP_REPORTS=0 is no longer supported");
+  throw new Error("DEVOS_WORKER_MCP_REPORTS must be 1 if set");
 }
 
 export function parseIssueNumber(value: string): number | null {

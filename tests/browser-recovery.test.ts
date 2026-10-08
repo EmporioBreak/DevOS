@@ -380,9 +380,10 @@ test("unknown fresh browser failure clears safe retry permission and cannot star
       executors: new Map([["chatgpt_browser", unknown]]),
       stateStore: store,
     }).run(),
-    /Missing saved browser session/,
+    /Unresolved prior browser turn/,
   );
   assert.equal(calls, 1);
+  assert.equal(store.state?.activeReport?.workerId, "browser", "ambiguous attempt must remain persisted");
 });
 
 test("ambiguous post-submit fresh failure preserves created identity instead of authorizing fresh replacement", async () => {
@@ -499,7 +500,8 @@ test("possible submission without a saved URL revokes safe retry and cannot crea
   await assert.rejects(new Orchestrator(runOptions).run(), /post-submit.*not replayed/);
   assert.notEqual(store.state?.browserPreSubmitRetry?.includes("browser"), true);
   assert.equal(store.state?.sessions.browser, undefined);
-  await assert.rejects(new Orchestrator(runOptions).run(), /Missing saved browser session/);
+  await assert.rejects(new Orchestrator(runOptions).run(), /Unresolved prior browser turn/);
   assert.deepEqual(f.urls, [project, project]);
   assert.equal(f.sends(), 1);
+  assert.equal(store.state?.activeReport?.workerId, "browser", "unknown submit must block any replay");
 });

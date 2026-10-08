@@ -76,8 +76,8 @@ test("reuses each worker session across review loops", async () => {
   assert.deepEqual(chat.requests[1]?.knownBrowserSessions, {
     reviewer: "https://chatgpt.com/c/review-1",
   });
-  assert.equal(chat.requests[0]?.browserTurnId, "1:reviewer");
-  assert.equal(chat.requests[1]?.browserTurnId, "3:reviewer");
+  assert.match(chat.requests[0]?.browserTurnId ?? "", /^1:reviewer:[a-f0-9]{64}$/);
+  assert.match(chat.requests[1]?.browserTurnId ?? "", /^3:reviewer:[a-f0-9]{64}$/);
   assert.match(chat.requests[0]?.prompt ?? "", /Issue #12/);
   assert.match(chat.requests[0]?.prompt ?? "", /PR #34/);
   assert.match(
@@ -358,7 +358,7 @@ test("marks a browser worker as started before its first executor call", async (
 });
 
 
-test("persists a returned browser session before parsing malformed worker output", async () => {
+test("persists malformed browser turn and refuses automatic post-submit replay", async () => {
   const workflow: Workflow = {
     version: 1,
     task: { repo: "owner/product", issue: 106 },
@@ -392,28 +392,24 @@ test("persists a returned browser session before parsing malformed worker output
     /DEVOS_RESULT/,
   );
 
-  assert.deepEqual(withoutBudgetMetadata(store.state), {
-    currentWorkerId: "worker",
-    completedRuns: 0,
-    sessions: { worker: sessionId },
-    browserWorkersStarted: ["worker"],
-    task: { repo: "owner/product", issue: 106 },
-  });
+  const recovered = withoutBudgetMetadata(store.state);
+  assert.equal(recovered.currentWorkerId, "worker");
+  assert.equal(recovered.completedRuns, 0);
+  assert.equal(recovered.sessions.worker, sessionId);
+  assert.deepEqual(recovered.browserWorkersStarted, ["worker"]);
+  assert.equal(recovered.activeReport?.turn, 0);
 
-  const result = await new Orchestrator({
-    projectRoot: "/project",
-    workflow,
+  await assert.rejects(new Orchestrator({
+    projectRoot: "/project", workflow,
     executors: new Map([["chatgpt_browser", chat]]),
     stateStore: store,
-  }).run();
+  }).run(), /Unresolved prior browser turn/);
+  assert.equal(chat.requests.length, 1, "unconfirmed status must never rerun the browser");
 
-  assert.equal(chat.requests[1]?.sessionId, sessionId);
-  assert.equal(result.sessions.worker, sessionId);
-  assert.equal(result.completedRuns, 1);
 });
 
 
-test("persists an early browser session when response loading fails after conversation creation", async () => {
+test("preserves early Project session and refuses uncertain browser resubmit", async () => {
   const workflow: Workflow = {
     version: 1,
     task: { repo: "owner/product", issue: 107 },
@@ -452,27 +448,21 @@ test("persists an early browser session when response loading fails after conver
     /simulated response loader failure/,
   );
 
-  assert.deepEqual(withoutBudgetMetadata(store.state), {
-    currentWorkerId: "worker",
-    completedRuns: 0,
-    sessions: { worker: sessionId },
-    browserWorkersStarted: ["worker"],
-    task: { repo: "owner/product", issue: 107 },
-  });
-
+  const recovered = withoutBudgetMetadata(store.state);
+  assert.equal(recovered.sessions.worker, sessionId);
+  assert.deepEqual(recovered.browserWorkersStarted, ["worker"]);
+  assert.equal(recovered.activeReport?.workerId, "worker");
+  assert.equal(recovered.activeReport?.turn, 0);
   const resumed = new QueueExecutor("chatgpt_browser", [
     { text: 'DEVOS_RESULT {"status":"done"}', sessionId },
   ]);
-  const result = await new Orchestrator({
-    projectRoot: "/project",
-    workflow,
+  await assert.rejects(new Orchestrator({
+    projectRoot: "/project", workflow,
     executors: new Map([["chatgpt_browser", resumed]]),
     stateStore: store,
-  }).run();
+  }).run(), /Unresolved prior browser turn/);
+  assert.equal(resumed.requests.length, 0, "no replay after ambiguous initial submit");
 
-  assert.equal(resumed.requests[0]?.sessionId, sessionId);
-  assert.equal(result.sessions.worker, sessionId);
-  assert.equal(result.completedRuns, 1);
 });
 
 test("missing saved browser conversation stops and preserves all identity and PR", async () => {
