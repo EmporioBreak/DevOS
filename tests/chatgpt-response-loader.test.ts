@@ -105,4 +105,8 @@ test("page-world submission ID is captured only for the armed exact user prompt"
   assert.deepEqual(await run("exact\n prompt"), { messageId: "user-actual", conversationId: "saved" }, "editor-equivalent line endings and trailing whitespace match");
   assert.deepEqual(await run("exact\n prompts"), { messageId: null, conversationId: null }, "different text remains rejected");
   assert.deepEqual(await run("exact\n  prompt"), { messageId: null, conversationId: null }, "interior double spacing cannot be invented");
+  const nonce = "a".repeat(64);
+  payload.messages[1]!.content.parts = ["Composer changed formatting but retained proof: ", nonce];
+  assert.deepEqual(await run("Worker task\nDevOS browser attempt ID: " + nonce + "."), { messageId: "user-actual", conversationId: "saved" });
+  assert.deepEqual(await run("Worker task\nDevOS browser attempt ID: " + "b".repeat(64) + "."), { messageId: null, conversationId: null });
 });

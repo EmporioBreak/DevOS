@@ -183,3 +183,12 @@ test("submitted turn tolerates only editor-equivalent line ending and trailing w
   assert.equal(extractSubmittedTurn({ messages: [msg] }, "First  line\nSecond line"), null);
   assert.equal(extractSubmittedTurn({ messages: [msg] }, "First line\nSecond lines"), null);
 });
+
+test("a unique per-turn correlation marker recovers a formatted request without accepting another turn", () => {
+  const nonce = "a".repeat(64);
+  const prompt = "Long original worker prompt with formatting.\n\nDevOS browser attempt ID: " + nonce + ". Correlate only this turn.";
+  const user = { id: "u-proof", author: { role: "user" }, content: { parts: ["Reformatted user text with marker ", nonce] } };
+  assert.deepEqual(extractSubmittedTurn({ messages: [user] }, prompt), { messageId: "u-proof" });
+  assert.equal(extractSubmittedTurn({ messages: [{ ...user, content: { parts: ["marker ", "b".repeat(64)] } }] }, prompt), null);
+  assert.equal(extractSubmittedTurn({ messages: [user, user] }, prompt), null);
+});

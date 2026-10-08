@@ -30,12 +30,14 @@ export const CHATGPT_RESPONSE_LOADER_SOURCE = String.raw`
         var body = typeof init.body === 'string' ? init.body : input && typeof input.clone === 'function' ? await input.clone().text() : null;
         var payload = body ? JSON.parse(body) : null;
         var messages = payload && payload.messages;
+        var nonce = /DevOS browser attempt ID: ([a-f0-9]{64})\b/.exec(pending.expectedPrompt || '');
         var matched = Array.isArray(messages) ? messages.filter(function (message) {
           return message && message.author && message.author.role === 'user' &&
             message.content && Array.isArray(message.content.parts) &&
             message.content.parts.length > 0 &&
             message.content.parts.every(function (part) { return typeof part === 'string'; }) &&
-            canonicalText(message.content.parts.join('')) === canonicalText(pending.expectedPrompt);
+            (canonicalText(message.content.parts.join('')) === canonicalText(pending.expectedPrompt) ||
+              !!(nonce && message.content.parts.join('').includes(nonce[1])));
         }) : [];
         var user = matched.length === 1 ? matched[0] : null;
         if (pending === state && user && typeof user.id === 'string' &&

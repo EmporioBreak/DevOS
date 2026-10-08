@@ -298,7 +298,10 @@ export class Orchestrator {
         const executing = executor.run({
           projectRoot: this.options.projectRoot,
           prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot,
-            workerReportToken ? { turn: state.completedRuns, token: workerReportToken } : undefined),
+            workerReportToken ? { turn: state.completedRuns, token: workerReportToken } : undefined) +
+            (browserTurnToken
+              ? "\n\nDevOS browser attempt ID: " + state.activeReport!.tokenHash + ". This is a non-secret correlation identifier; do not repeat it in your final answer or GitHub comments."
+              : ""),
           workerId: worker.id,
           ...(worker.executor === "chatgpt_browser"
             ? {

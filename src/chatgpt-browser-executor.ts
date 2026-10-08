@@ -748,6 +748,7 @@ export function extractSubmittedTurn(payload: unknown, prompt: string): Submitte
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const body = payload as Record<string, unknown>;
   if (!Array.isArray(body.messages)) return null;
+  const nonce = /DevOS browser attempt ID: ([a-f0-9]{64})\b/.exec(prompt)?.[1];
   const candidates = body.messages.filter((entry: unknown) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
     const user = entry as Record<string, any>;
@@ -765,7 +766,9 @@ export function extractSubmittedTurn(payload: unknown, prompt: string): Submitte
           typeof part.text === "string") { text.push(part.text); continue; }
       return false;
     }
-    return normalizedSubmittedText(text.join("")) === normalizedSubmittedText(prompt);
+    const submitted = text.join("");
+    return normalizedSubmittedText(submitted) === normalizedSubmittedText(prompt) ||
+      !!(nonce && submitted.includes(nonce));
   });
   if (candidates.length !== 1) return null;
   const user = candidates[0] as Record<string, any>;
