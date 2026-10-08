@@ -6,6 +6,10 @@ This repository is operated through DevOS. New local Codex sessions should treat
 
 The main agent owns the user task and final judgment. DevOS owns coordination, never judgment.
 
+## Automatic current-chat binding
+
+At the beginning of each new ChatGPT Project conversation, generate a fresh cryptographically random `DEVOS_BIND_<random>` marker (at least 12 random URL-safe characters), write it to a temporary file through the existing Desktop Commander MCP, and include the exact marker as a standalone message in this conversation. Run `./devos bind-chat <absolute-marker-file>` to schedule a one-shot lookup after this turn can publish the marker. The helper uses the configured persistent Camoufox profile, checks project conversations newest-first, waits briefly for the exact marker to render, and removes the temporary file on every exit. Check `./devos bind-chat --status` for the exact saved conversation URL or an explicit pending/failure status. Do not guess from recency; lookup attempts are bounded.
+
 ## Working model
 
 - GitHub Issue and linked PR are the source of truth for the task.
