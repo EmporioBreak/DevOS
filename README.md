@@ -577,6 +577,10 @@ Main agent/пользователь после независимого review �
 
 Атрибуция: Desktop Commander — MIT, © 2024–2025 Eduard Ruzga and Desktop Commander Contributors ([upstream](https://github.com/wonderwhy-er/DesktopCommanderMCP)); MCP TypeScript SDK — MIT ([upstream](https://github.com/modelcontextprotocol/typescript-sdk)); ngrok — proprietary CLI ([условия](https://ngrok.com/terms-of-service)). Лицензии npm-пакетов остаются в установленных зависимостях. Актуальная оценка dependency debt и известных advisory ведётся в `docs/security/dependency-audit.md`; точный `npm audit` count подтверждается свежим локальным запуском перед merge, без `npm audit fix --force`.
 
-### Bind the current ChatGPT Project chat
+### ChatGPT conversation identity
 
-Write a unique `DEVOS_BIND_<random>` marker into a temporary file using Desktop Commander and send the same marker as a standalone chat message. Run `./devos bind-chat /absolute/path/to/marker-file` to schedule a one-shot lookup after the current turn can publish the marker. The helper uses the configured Camoufox profile, checks up to 30 project chats newest-first per pass (three bounded passes), waits briefly for each exact marker to render, and saves the exact conversation URL to `.devos/chat-binding.json`. Run `./devos bind-chat --status` to read the saved URL or pending/failure status. The marker file is deleted on every exit.
+For ChatGPT MCP calls, DevOS uses the host-provided `_meta["openai/session"]` value as the canonical conversation-scoped identity. The raw host value is never written to disk: the connector stores only a project-local keyed fingerprint in `.devos/conversation-identities.json`. `x-openai-session` is accepted only as a transport compatibility fallback when request metadata is absent.
+
+This identity is intentionally separate from a ChatGPT browser URL. DevOS does not scrape the sidebar, scan transcript text, open batches of chats, or launch Camoufox merely to discover which conversation called the connector. Browser workers already persist the exact URLs of conversations they create or resume; an unrelated ChatGPT conversation may have a valid MCP identity while its public `/c/<conversation_id>` route remains unknown.
+
+The older `./devos bind-chat` marker flow is retained only for diagnostics/compatibility and is not part of normal new-chat startup.
