@@ -6,6 +6,7 @@ const REGISTRY_VERSION = 1;
 const KEY_BYTES = 32;
 const MAX_OPAQUE_ID = 512;
 const MAX_CONVERSATIONS = 512;
+const REFRESH_INTERVAL_MS = 60_000;
 
 export interface HostConversationIdentity {
   session: string;
@@ -195,6 +196,12 @@ async function recordHostConversationIdentityNow(
   const registry = await readRegistry(path);
   const at = now.toISOString();
   const existing = registry.conversations.find(item => item.fingerprint === fingerprint);
+  if (existing) {
+    const previous = Date.parse(existing.lastSeenAt);
+    if (Number.isFinite(previous) && now.getTime() - previous < REFRESH_INTERVAL_MS) {
+      return { ...existing };
+    }
+  }
   const record = existing ?? { fingerprint, firstSeenAt: at, lastSeenAt: at };
   record.lastSeenAt = at;
   if (!existing) registry.conversations.push(record);
