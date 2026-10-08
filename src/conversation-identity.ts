@@ -59,10 +59,12 @@ export function extractHostConversationIdentity(
 
   const metaSession = opaque(record?.["openai/session"]);
   if (metaSession) {
+    const subject = opaque(record?.["openai/subject"]);
+    const organization = opaque(record?.["openai/organization"]);
     return {
       session: metaSession,
-      ...(opaque(record?.["openai/subject"]) ? { subject: opaque(record?.["openai/subject"]) } : {}),
-      ...(opaque(record?.["openai/organization"]) ? { organization: opaque(record?.["openai/organization"]) } : {}),
+      ...(subject ? { subject } : {}),
+      ...(organization ? { organization } : {}),
       source: "meta",
     };
   }
@@ -168,10 +170,12 @@ async function readRegistry(path: string): Promise<ConversationIdentityRegistry>
   }
 }
 
-export async function recordHostConversationIdentity(
+let registryWrites: Promise<void> = Promise.resolve();
+
+async function recordHostConversationIdentityNow(
   root: string,
   identity: HostConversationIdentity,
-  now = new Date(),
+  now: Date,
 ): Promise<ConversationIdentityRecord> {
   const key = await readOrCreateKey(root);
   const fingerprint = conversationIdentityFingerprint(identity, key);
@@ -188,4 +192,25 @@ export async function recordHostConversationIdentity(
   await writeFile(temp, JSON.stringify(registry, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   await rename(temp, path);
   return { ...record };
+}
+
+export async function recordHostConversationIdentity(
+  root: string,
+  identity: HostConversationIdentity,
+  now = new Date(),
+): Promise<ConversationIdentityRecord> {
+  let resolveRecord!: (value: ConversationIdentityRecord) => void;
+  let rejectRecord!: (error: unknown) => void;
+  const result = new Promise<ConversationIdentityRecord>((resolve, reject) => {
+    resolveRecord = resolve;
+    rejectRecord = reject;
+  });
+  registryWrites = registryWrites.then(async () => {
+    try {
+      resolveRecord(await recordHostConversationIdentityNow(root, identity, now));
+    } catch (error) {
+      rejectRecord(error);
+    }
+  });
+  return result;
 }
