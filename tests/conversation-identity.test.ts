@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   conversationIdentityFingerprint,
   extractHostConversationIdentity,
+  observeSuccessfulToolConversationIdentity,
   recordHostConversationIdentity,
 } from "../src/conversation-identity.js";
 
@@ -142,6 +143,45 @@ test("concurrent identity writes do not lose conversations", async () => {
       registry.conversations[0].fingerprint,
       registry.conversations[1].fingerprint,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test("tool observation records only successful calls with proven host session identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-conversation-observe-"));
+  try {
+    const request = {
+      method: "tools/call",
+      params: { _meta: { "openai/session": "v1/session-observed" } },
+    };
+    const recorded = await observeSuccessfulToolConversationIdentity(
+      root,
+      request,
+      { content: [{ type: "text", text: "ok" }] },
+      undefined,
+      new Date("2026-10-08T11:00:00.000Z"),
+    );
+    assert.equal(recorded.status, "recorded");
+
+    const unresolved = await observeSuccessfulToolConversationIdentity(
+      root,
+      { method: "tools/call", params: {} },
+      { content: [{ type: "text", text: "ok" }] },
+    );
+    assert.deepEqual(unresolved, { status: "unresolved" });
+
+    const failed = await observeSuccessfulToolConversationIdentity(
+      root,
+      request,
+      { isError: true, content: [{ type: "text", text: "failed" }] },
+    );
+    assert.deepEqual(failed, { status: "tool_error" });
+
+    const raw = await readFile(join(root, ".devos", "conversation-identities.json"), "utf8");
+    const registry = JSON.parse(raw);
+    assert.equal(registry.conversations.length, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
