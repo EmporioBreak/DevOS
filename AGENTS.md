@@ -10,6 +10,19 @@ The main agent owns the user task and final judgment. DevOS owns coordination, n
 
 DevOS saves exact conversation URLs for browser-worker conversations it creates and resumes them through task-scoped session state. It does not attempt to identify or recover the URL of an arbitrary user-created ChatGPT conversation through MCP requests, markers, or ChatGPT UI traversal.
 
+## Mandatory main-agent chat authorization
+
+Before beginning substantive main-agent DevOS work in a new conversation,
+invoke the side-effect-free `devos_noop` MCP tool to obtain the chat reference.
+Until the owner has registered **both** that reference and the exact private
+`https://chatgpt.com/c/<conversation_id>` URL through the local
+`./devos connector access approve` command, do not create Issues, launch
+workers, or operate the Mac through MCP. Ask for the URL once and wait for
+local approval; a pasted URL alone is not authorization on a shared ChatGPT
+account. If the host does not provide a usable session identity, fail
+closed and explain that binding cannot proceed. Already approved chats can
+continue normally. Do not reverse-bind via browser/sidebar traversal.
+
 ## Working model
 
 - GitHub Issue and linked PR are the source of truth for the task.

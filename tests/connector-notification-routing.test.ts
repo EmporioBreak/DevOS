@@ -9,6 +9,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { LoggingMessageNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { startGateway } from "../src/connector-gateway.js";
+import { ChatAccessRegistry } from "../src/chat-access.js";
 import { oauthToken } from "./connector-auth-fixture.js";
 
 const ownerSecret = "notification-fixture-" + randomBytes(32).toString("hex");
@@ -59,7 +60,7 @@ async function connectClient(base: string, token: string) {
   const client = new Client({ name: "public-fixture", version: "1" }, { capabilities: {} });
   await client.connect(
     new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
-      requestInit: { headers: { Authorization: "Bearer " + token } },
+      requestInit: { headers: { Authorization: "Bearer " + token, "x-openai-session": "notification-test-chat" } },
     }) as Transport,
   );
   return client;
@@ -87,7 +88,10 @@ test("internal log flood stays private while progress and concurrent tool calls 
   let firstLogNotifications = 0;
   let secondLogNotifications = 0;
   try {
-    const { tokens } = await oauthToken(base, ownerSecret, issuer + "/mcp");
+    const { tokens, client: oauthClient } = await oauthToken(base, ownerSecret, issuer + "/mcp");
+    const chats = new ChatAccessRegistry(fixture.root, ownerSecret);
+    chats.approve(chats.fingerprint(oauthClient.client_id, "notification-test-chat"),
+      "https://chatgpt.com/c/6ac799bd-7ffc-83eb-b2b0-15d6a2f558a0");
     first = await connectClient(base, tokens.access_token);
     second = await connectClient(base, tokens.access_token);
     first.setNotificationHandler(LoggingMessageNotificationSchema, () => {

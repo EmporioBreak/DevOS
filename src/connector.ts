@@ -903,6 +903,7 @@ export async function connectorRuntime(root: string) {
     try {
       gateway = await startGateway({
       root: softwareRoot,
+      chatAccessRoot: root,
       port: config.gatewayPort,
       ownerSecret: ownerAuth(process.env.DEVOS_CONNECTOR_OWNER_SECRET),
       oauthClientsPath: join(root, ".devos/connector/oauth-clients.json"),

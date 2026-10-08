@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import test from "node:test";
 import { parseCliArgs } from "../src/cli.js";
 import * as connectorModule from "../src/connector.js";
+import { ChatAccessRegistry } from "../src/chat-access.js";
 import {
   adaptChatGptToolCall,
   CONNECTOR_REQUEST_TIMEOUTS,
@@ -107,7 +108,7 @@ test("ChatGPT compatibility adapter restores rich Desktop Commander arguments", 
 });
 
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -384,7 +385,11 @@ test("gateway close stays bounded when the local MCP client close never resolves
   }
 });
 test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and real stdio tools", async () => {
-  const g = await gateway();
+  const root = await mkdtemp(join(tmpdir(), "devos-gateway-chat-"));
+  await symlink(join(process.cwd(), "node_modules"), join(root, "node_modules"), "dir");
+  const g = await connectorModule.startGateway({
+    root, port: 0, ownerSecret: secret, publicUrl: issuer, oauthClientsPath: null,
+  });
   let client: Client | undefined;
   try {
     assert.equal(g.address.address, "127.0.0.1");
@@ -444,12 +449,16 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
     ).json();
     assert.deepEqual(auth.code_challenge_methods_supported, ["S256"]);
     const { tokens, client: registered } = await oauthToken(base, secret);
+    const chats = new ChatAccessRegistry(root, secret);
+    chats.approve(chats.fingerprint(registered.client_id, "gateway-test-chat"),
+      "https://chatgpt.com/c/6ac799bd-7ffc-83eb-b2b0-15d6a2f558a0");
     client = new Client({ name: "test", version: "1" }, { capabilities: {} });
     const transport = new StreamableHTTPClientTransport(
       new URL(base + "/mcp"),
       {
         requestInit: {
-          headers: { Authorization: "Bearer " + tokens.access_token },
+          headers: { Authorization: "Bearer " + tokens.access_token,
+            "x-openai-session": "gateway-test-chat" },
         },
       },
     );
@@ -564,6 +573,7 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
   } finally {
     await client?.close();
     await g.close();
+    await rm(root, { recursive: true, force: true });
   }
 });
 test("approved public OAuth client and bearer state survive connector restart", async () => {
@@ -963,7 +973,10 @@ await server.connect(new StdioServerTransport());
     }
   })();
   const base = "http://127.0.0.1:" + g.address.port;
-  const { tokens } = await oauthToken(base, secret);
+  const { tokens, client: oauthClient } = await oauthToken(base, secret);
+  const chats = new ChatAccessRegistry(root, secret);
+  chats.approve(chats.fingerprint(oauthClient.client_id, "stream-test-chat"),
+    "https://chatgpt.com/c/6ac799bd-7ffc-83eb-b2b0-15d6a2f558a0");
   const client = new Client(
     { name: "stream-test", version: "1" },
     { capabilities: {} },
@@ -972,7 +985,8 @@ await server.connect(new StdioServerTransport());
     await client.connect(
       new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
         requestInit: {
-          headers: { Authorization: "Bearer " + tokens.access_token },
+          headers: { Authorization: "Bearer " + tokens.access_token,
+            "x-openai-session": "stream-test-chat" },
         },
       }) as Transport,
     );

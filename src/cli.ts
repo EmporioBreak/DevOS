@@ -12,6 +12,7 @@ import {
   recordTaskCompletion,
 } from "./completed-tasks.js";
 import { CodexExecutor } from "./codex-executor.js";
+import { runChatAccessAdmin, type ChatAccessCommand } from "./chat-access-admin.js";
 import { LocalCommandRunner } from "./command-runner.js";
 import { debugLog } from "./debug-log.js";
 import type { Executor } from "./executor.js";
@@ -52,6 +53,7 @@ import {
 
 export type CliCommand =
   | { kind: "connector"; action: ConnectorAction }
+  | { kind: "chat_access"; command: ChatAccessCommand }
   | { kind: "select" }
   | { kind: "run"; mode: "run" | "restart"; target: string };
 
@@ -60,6 +62,14 @@ export function parseCliArgs(args: string[]): CliCommand {
     return { kind: "select" };
   }
 
+  if (args[0] === "connector" && args[1] === "access") {
+    if (args.length === 3 && args[2] === "list")
+      return { kind: "chat_access", command: { action: "list" } };
+    if (args.length === 5 && args[2] === "approve")
+      return { kind: "chat_access", command: { action: "approve", fingerprint: args[3]!, url: args[4]! } };
+    if (args.length === 4 && args[2] === "revoke")
+      return { kind: "chat_access", command: { action: "revoke", fingerprint: args[3]! } };
+  }
   if (
     args[0] === "connector" &&
     ["setup", "doctor", "run", "start", "stop", "status"].includes(
@@ -79,7 +89,7 @@ export function parseCliArgs(args: string[]): CliCommand {
   }
 
   throw new Error(
-    "Usage: ./devos | ./devos <run|restart> <workflow.json|issue-number> | ./devos connector <setup|doctor|run|start|stop|status>",
+    "Usage: ./devos | ./devos <run|restart> <workflow.json|issue-number> | ./devos connector <setup|doctor|run|start|stop|status|access list|access approve <chat_ref> <chat_url>|access revoke <chat_ref>>",
   );
 }
 
@@ -204,6 +214,10 @@ export async function main(
 
   if (command.kind === "connector") {
     await connector(command.action, cwd);
+    return;
+  }
+  if (command.kind === "chat_access") {
+    process.stdout.write(await runChatAccessAdmin(cwd, command.command));
     return;
   }
 
