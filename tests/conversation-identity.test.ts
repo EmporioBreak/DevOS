@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -182,6 +182,36 @@ test("tool observation records only successful calls with proven host session id
     const raw = await readFile(join(root, ".devos", "conversation-identities.json"), "utf8");
     const registry = JSON.parse(raw);
     assert.equal(registry.conversations.length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test("does not silently rotate the HMAC key when a durable registry already exists", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-conversation-key-loss-"));
+  try {
+    await mkdir(join(root, ".devos"), { recursive: true });
+    await writeFile(
+      join(root, ".devos", "conversation-identities.json"),
+      JSON.stringify({
+        version: 1,
+        conversations: [{
+          fingerprint: "chatgpt-session-v1_existing",
+          firstSeenAt: "2026-10-08T10:00:00.000Z",
+          lastSeenAt: "2026-10-08T10:00:00.000Z",
+        }],
+      }) + "\n",
+      "utf8",
+    );
+
+    await assert.rejects(
+      () => recordHostConversationIdentity(root, {
+        session: "v1/session-a",
+        source: "meta",
+      }),
+      /identity key missing for existing registry/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
