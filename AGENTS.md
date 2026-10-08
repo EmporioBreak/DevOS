@@ -12,16 +12,18 @@ DevOS saves exact conversation URLs for browser-worker conversations it creates 
 
 ## Mandatory main-agent chat authorization
 
-Before beginning substantive main-agent DevOS work in a new conversation,
-invoke the side-effect-free `devos_noop` MCP tool to obtain the chat reference.
-Until the owner has registered **both** that reference and the exact private
-`https://chatgpt.com/c/<conversation_id>` URL through the local
-`./devos connector access approve` command, do not create Issues, launch
-workers, or operate the Mac through MCP. Ask for the URL once and wait for
-local approval; a pasted URL alone is not authorization on a shared ChatGPT
-account. If the host does not provide a usable session identity, fail
-closed and explain that binding cannot proceed. Already approved chats can
-continue normally. Do not reverse-bind via browser/sidebar traversal.
+Before substantive main-agent DevOS work in a new conversation, invoke
+the side-effect-free `devos_noop` tool to check whether the current chat is
+approved. If not approved, invoke `devos_authorize_chat` to display the
+inline approval form. The owner enters the exact private chat URL and
+the **separate chat-access password** into the widget; the password must
+never appear in the prompt, tool arguments, output or GitHub. An
+authenticated local `./devos connector access approve` command remains a
+fallback for clients without MCP Apps UI. Until the gateway confirms that
+the same session is authorized, do not create Issues, launch workers, or
+operate the Mac through MCP. A pasted URL alone is not authorization on
+a shared ChatGPT account. If the host omits usable session metadata, fail
+closed and explain the block. Do not use marker/sidebar UI traversal.
 
 ## Working model
 
