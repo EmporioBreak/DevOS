@@ -379,8 +379,8 @@ export function assertMainAgentDecisionPending(state: RunState | null, decision?
  * Existing running turns are never replayed simply by toggling this flag. */
 export function workerReportsEnabled(value: string | undefined): boolean {
   if (value === undefined || value === "1") return true;
-  if (value === "0") return false;
-  throw new Error("DEVOS_WORKER_MCP_REPORTS must be 0 or 1");
+  if (value === "0") throw new Error("Browser workers require devos_worker_report; DEVOS_WORKER_MCP_REPORTS=0 is no longer supported");
+  throw new Error("DEVOS_WORKER_MCP_REPORTS must be 1 if set");
 }
 
 export function parseIssueNumber(value: string): number | null {

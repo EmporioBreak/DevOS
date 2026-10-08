@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { JsonStateStore } from "../src/json-state-store.js";
 import { DevosToolRegistry, reportTokenHash } from "../src/mcp-tools/registry.js";
-import { Orchestrator } from "../src/orchestrator.js";
+import { Orchestrator, awaitWorkerReportOrBrowser } from "../src/orchestrator.js";
 import { BrowserResumeUnavailableError } from "../src/chatgpt-browser-executor.js";
 import type { Executor, WorkerRequest } from "../src/executor.js";
 import type { Workflow, WorkerStatus } from "../src/workflow.js";
@@ -73,7 +73,7 @@ test("MCP reports route through the predeclared graph without a textual final ma
     assert.deepEqual(expected, []);
   });
 });
-test("mismatched final status and MCP report fails closed", async () => {
+test("MCP tool status wins over contradictory browser text", async () => {
   await fixture(async (root, registry, store) => {
     const executor: Executor = {
       kind: "chatgpt_browser",
@@ -83,12 +83,12 @@ test("mismatched final status and MCP report fails closed", async () => {
         return { text: 'Completed.\nDEVOS_RESULT {"status":"changes_requested"}' };
       },
     };
-    await assert.rejects(new Orchestrator({
+    const result = await new Orchestrator({
       projectRoot: root, workflow, stateStore: store,
       executors: new Map([["chatgpt_browser", executor]]),
       enableWorkerReports: true,
-    }).run(), /conflicting statuses/);
-    assert.equal((await store.load())?.completedRuns, 0);
+    }).run();
+    assert.equal(result.completedRuns, 1);
   });
 });
 test("stale report from earlier run and invalid token cannot route a new run", async () => {
@@ -98,6 +98,7 @@ test("stale report from earlier run and invalid token cannot route a new run", a
       kind: "chatgpt_browser",
       async run(request) {
         firstToken = tokenFor(request);
+        await request.onSession?.("https://chatgpt.com/g/project/c/reviewer");
         await sendReport(registry, request, "approved");
         return { text: "A completed response without status marker" };
       },
@@ -116,30 +117,31 @@ test("stale report from earlier run and invalid token cannot route a new run", a
           summary: "Old status", turn_token: firstToken,
         });
         assert.equal(bad.isError, true);
-        return { text: "Another completed response without status marker" };
+        throw new Error("No valid MCP report received");
       },
     };
     await assert.rejects(new Orchestrator({
       ...options, executors: new Map([["chatgpt_browser", second]]),
-    }).run(), /DEVOS_RESULT/);
+    }).run(), /No valid MCP report received/);
     assert.equal((await store.load())?.completedRuns, 0);
   });
 });
-test("malformed textual status cannot be overridden by an MCP report", async () => {
+test("malformed final text is ignored when authenticated MCP is present", async () => {
   await fixture(async (root, registry, store) => {
     const executor: Executor = {
       kind: "chatgpt_browser",
       async run(request) {
+        await request.onSession?.("https://chatgpt.com/g/project/c/reviewer");
         await sendReport(registry, request, "approved");
         return { text: 'Completed.\nDEVOS_RESULT {"status":"invalid"}' };
       },
     };
-    await assert.rejects(new Orchestrator({
+    const result = await new Orchestrator({
       projectRoot: root, workflow, stateStore: store,
       executors: new Map([["chatgpt_browser", executor]]),
       enableWorkerReports: true,
-    }).run(), /invalid status/);
-    assert.equal((await store.load())?.completedRuns, 0);
+    }).run();
+    assert.equal(result.completedRuns, 1);
   });
 });
 test("identical final and MCP statuses remain compatible", async () => {
@@ -147,6 +149,7 @@ test("identical final and MCP statuses remain compatible", async () => {
     const executor: Executor = {
       kind: "chatgpt_browser",
       async run(request) {
+        await request.onSession?.("https://chatgpt.com/g/project/c/reviewer");
         await sendReport(registry, request, "approved");
         return { text: 'Complete.\nDEVOS_RESULT {"status":"approved"}' };
       },
@@ -160,21 +163,22 @@ test("identical final and MCP statuses remain compatible", async () => {
     assert.equal(result.mainAgentReviewPending, true);
   });
 });
-test("misplaced DEVOS_RESULT cannot be hidden by a valid MCP report", async () => {
+test("misplaced text marker is irrelevant after terminal MCP call", async () => {
   await fixture(async (root, registry, store) => {
     const executor: Executor = {
       kind: "chatgpt_browser",
       async run(request) {
+        await request.onSession?.("https://chatgpt.com/g/project/c/reviewer");
         await sendReport(registry, request, "approved");
         return { text: 'DEVOS_RESULT {"status":"changes_requested"}\nTrailing explanation' };
       },
     };
-    await assert.rejects(new Orchestrator({
+    const result = await new Orchestrator({
       projectRoot: root, workflow, stateStore: store,
       executors: new Map([["chatgpt_browser", executor]]),
       enableWorkerReports: true,
-    }).run(), /DEVOS_RESULT/);
-    assert.equal((await store.load())?.completedRuns, 0);
+    }).run();
+    assert.equal(result.completedRuns, 1);
   });
 });
 
@@ -383,5 +387,22 @@ test("no-MCP success accepts a single machine-valid final answer and releases at
     assert.equal(result.completedRuns, 1);
     assert.equal(result.mainAgentReviewPending, true);
     assert.equal(result.activeReport, undefined);
+  });
+});
+
+
+test("MCP-only rejects a browser final text when no terminal report arrives", { timeout: 3_000 }, async () => {
+  await fixture(async (root, registry) => {
+    const proof = { workerId: "reviewer", turn: 0, tokenHash: reportTokenHash("a".repeat(64)) };
+    await assert.rejects(awaitWorkerReportOrBrowser({
+      browser: Promise.resolve({
+        text: 'DEVOS_RESULT {"status":"approved"}',
+        sessionId: "https://chatgpt.com/g/project/c/reviewer",
+      }),
+      registry, task, active: proof,
+      getSession: () => "https://chatgpt.com/g/project/c/reviewer",
+      sessionSaved: Promise.resolve(),
+      reportTimeoutMs: 50,
+    }), /Required devos_worker_report not received/);
   });
 });

@@ -150,11 +150,13 @@ test("CHAOS: one browser runtime deduplicates reconnects, keeps 10 worker-turn i
 
 test("CHAOS: one browser context uses distinct worker pages and reconstructs tabs", async () => {
   const pages: Array<Page> = [];
-  const fakePage = (id: string) => {
+  const fakePage = (id: string, ownerContext?: BrowserContext) => {
     let currentUrl = "https://chatgpt.com/g/one/c/" + id;
     return {
       id, url: () => currentUrl,
-      isClosed: () => false, async goto(url: string) {
+      isClosed: () => false, context: () => ownerContext ?? context,
+      async bringToFront() {}, async evaluate() { return null; },
+      async goto(url: string) {
         assert.ok(url.startsWith("https://chatgpt.com/g/one/c/"));
         currentUrl = url;
       },
@@ -163,7 +165,14 @@ test("CHAOS: one browser context uses distinct worker pages and reconstructs tab
   const context = {
     pages: () => pages,
     async newPage() {
-      const page = fakePage("new-" + pages.length);
+      assert.equal(pages.length, 0, "context.newPage only allowed for initial window");
+      const page = fakePage("initial");
+      pages.push(page);
+      return page;
+    },
+    async waitForEvent(event: string) {
+      assert.equal(event, "page");
+      const page = fakePage("tab-" + pages.length);
       pages.push(page);
       return page;
     },
@@ -187,10 +196,56 @@ test("CHAOS: one browser context uses distinct worker pages and reconstructs tab
   const restored = new ChatGptBrowserExecutor({
     projectUrl: "https://chatgpt.com/g/one/project", profileDir: "/unused", headless: false,
   });
+  const restoredPages: Page[] = [];
+  const restoredContext = {
+    pages: () => restoredPages,
+    async newPage() {
+      const page = fakePage("restored-first", restoredContext as unknown as BrowserContext);
+      restoredPages.push(page);
+      return page;
+    },
+    async waitForEvent(event: string) {
+      assert.equal(event, "page");
+      const page = fakePage("restored-tab-" + restoredPages.length,
+        restoredContext as unknown as BrowserContext);
+      restoredPages.push(page);
+      return page;
+    },
+  };
   const next = await (restored as any).getWorkerPage({
     workerId: "worker-4", knownBrowserSessions: workerSessions,
-  }, { pages: () => [], newPage: async () => fakePage("replacement") });
+  }, restoredContext);
   assert.ok(next, "reconstructed worker tab");
+  assert.equal(restoredPages.length, 10, "each saved worker gets one tab, not a new window");
+
+  // A surviving restored page for a later worker must be claimed BEFORE
+  // creating missing earlier worker tabs, regardless of session map order.
+  const survivor = fakePage("worker-9");
+  const survivorContext = {
+    pages: () => survivors,
+    async newPage() {
+      assert.equal(survivors.length, 0);
+      const page = fakePage("only-initial", survivorContext as unknown as BrowserContext);
+      survivors.push(page);
+      return page;
+    },
+    async waitForEvent() {
+      const page = fakePage("new-tab-" + survivors.length, survivorContext as unknown as BrowserContext);
+      survivors.push(page);
+      return page;
+    },
+  };
+  const survivors: Page[] = [survivor];
+  const another = new ChatGptBrowserExecutor({
+    projectUrl: "https://chatgpt.com/g/one/project", profileDir: "/unused", headless: false,
+  });
+  const selected = await (another as any).getWorkerPage({
+    workerId: "worker-0", knownBrowserSessions: workerSessions,
+  }, survivorContext);
+  assert.notEqual(selected, survivor, "restored active worker gets a separate page");
+  assert.equal((another as any).workerPages.get("worker-9"), survivor,
+    "existing later tab must not be hijacked by an earlier worker");
+  assert.equal(survivors.length, 10);
 });
 
 test("CHAOS: 100 repeated turns on one tab do not accumulate network listeners", { timeout: 20_000 }, async () => {

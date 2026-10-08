@@ -24,6 +24,7 @@ import type { ReadyTask } from "../src/ready-tasks.js";
 import type { Workflow } from "../src/workflow.js";
 import { isTaskCompleted } from "../src/completed-tasks.js";
 import { JsonStateStore } from "../src/json-state-store.js";
+import { DevosToolRegistry } from "../src/mcp-tools/registry.js";
 
 class TrackingStore implements StateStore {
   cleared = 0;
@@ -233,11 +234,19 @@ test("shared browser runtime survives final review handoff and closes only after
   let closes = 0;
   const browser = {
     kind: "chatgpt_browser" as const,
-    async run(request: { onSession?: (sessionId: string) => void | Promise<void> }) {
+    async run(request: { prompt: string; onSession?: (sessionId: string) => void | Promise<void> }) {
       workerRuns++;
+      const proof = /turn_token=([a-f0-9]{64})/.exec(request.prompt)?.[1];
+      const turn = /turn=(\d+), turn_token=/.exec(request.prompt)?.[1];
+      assert.ok(proof && turn);
       await request.onSession?.("https://chatgpt.com/c/review-740");
+      const reported = await new DevosToolRegistry(root).call("devos_worker_report", {
+        repo: "owner/product", issue: 740, worker_id: "reviewer",
+        turn: Number(turn), turn_token: proof, status: "approved", summary: "QA fixture completed",
+      });
+      assert.equal(reported.isError, undefined);
       return {
-        text: 'DEVOS_RESULT {"status":"approved"}',
+        text: "",
         sessionId: "https://chatgpt.com/c/review-740",
       };
     },
@@ -292,11 +301,19 @@ test("browser cleanup failure preserves approved state and retries finalization 
   let failClose = true;
   const browser = {
     kind: "chatgpt_browser" as const,
-    async run(request: { onSession?: (sessionId: string) => void | Promise<void> }) {
+    async run(request: { prompt: string; onSession?: (sessionId: string) => void | Promise<void> }) {
       workerRuns++;
+      const proof = /turn_token=([a-f0-9]{64})/.exec(request.prompt)?.[1];
+      const turn = /turn=(\d+), turn_token=/.exec(request.prompt)?.[1];
+      assert.ok(proof && turn);
       await request.onSession?.("https://chatgpt.com/c/review-741");
+      const reported = await new DevosToolRegistry(root).call("devos_worker_report", {
+        repo: "owner/product", issue: 741, worker_id: "reviewer",
+        turn: Number(turn), turn_token: proof, status: "approved", summary: "QA fixture completed",
+      });
+      assert.equal(reported.isError, undefined);
       return {
-        text: 'DEVOS_RESULT {"status":"approved"}',
+        text: "",
         sessionId: "https://chatgpt.com/c/review-741",
       };
     },
@@ -346,9 +363,9 @@ test("browser cleanup failure preserves approved state and retries finalization 
   assert.equal(await store.load(), null);
 });
 
-test("explicit MCP outage mode preserves legacy browser status fallback", () => {
+test("CLI rejects unsupported browser status fallback configuration", () => {
   assert.equal(workerReportsEnabled(undefined), true);
   assert.equal(workerReportsEnabled("1"), true);
-  assert.equal(workerReportsEnabled("0"), false);
-  assert.throws(() => workerReportsEnabled("off"), /must be 0 or 1/);
+  assert.throws(() => workerReportsEnabled("0"), /no longer supported/);
+  assert.throws(() => workerReportsEnabled("off"), /must be 1/);
 });

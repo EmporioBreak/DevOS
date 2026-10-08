@@ -78,6 +78,10 @@ export const chatGptBrowserDeps = {
       fingerprint_preset: options.identity.preset,
       headless: options.headless,
       timeout: options.timeout,
+      firefox_user_prefs: {
+        "browser.link.open_newwindow": 3,
+        "browser.link.open_newwindow.restriction": 0,
+      },
     }),
 };
 
@@ -171,10 +175,14 @@ export class ChatGptBrowserExecutor implements Executor {
           throw new BrowserPreSubmitFailureError(message);
         }
       };
-      const streamResponse = sendAndRead(page, request.prompt, this.timeoutMs, assertSubmissionScope, preparedMessage).then(
-        text => ({ text } as const),
-        error => ({ error } as const),
-      );
+      // MCP worker status is the only normal completion signal. Submit once
+      // and never parse UI/DOM/SSE final text for these turns.
+      const streamResponse = request.reportTurn
+        ? submitOnly(page, request.prompt, this.timeoutMs, assertSubmissionScope, preparedMessage)
+            .then(() => new Promise<never>(() => {}), error => ({ error } as const))
+        : sendAndRead(page, request.prompt, this.timeoutMs, assertSubmissionScope, preparedMessage).then(
+            text => ({ text } as const), error => ({ error } as const),
+          );
       const response = request.reportTurn && reportAbort
         ? Promise.race([
             streamResponse,
@@ -331,7 +339,7 @@ export class ChatGptBrowserExecutor implements Executor {
       try {
         if (budget <= 0) throw new Error("Timeout: preparation deadline exhausted");
         const preparation = async () => {
-          const context = await this.getContext(budget);
+          const context = await this.getContext(budget, !request.reportTurn);
           if (expired) { await this.close(); throw new Error("Timeout: preparation deadline exhausted"); }
           phase = "new-page";
           page = await this.getWorkerPage(request, context);
@@ -392,7 +400,7 @@ export class ChatGptBrowserExecutor implements Executor {
           this.assertIdentity(request, currentPage, enforceScope);
           phase = "prepare-message";
           if (expired) throw new Error("Timeout: preparation deadline exhausted");
-          const prepared = await prepareMessage(currentPage, request.prompt, budget);
+          const prepared = await prepareMessage(currentPage, request.prompt, budget, !request.reportTurn);
           if (backendFailure) throw backendFailure;
           this.assertIdentity(request, currentPage, enforceScope);
           return {
@@ -450,7 +458,7 @@ export class ChatGptBrowserExecutor implements Executor {
       try {
         const observe = async () => {
           if (this.context?.pages?.().every(candidate => candidate.isClosed())) await this.close();
-          const context = await this.getContext(budget);
+          const context = await this.getContext(budget, !request.reportTurn);
           if (expired) throw new Error("Timeout: read-only recovery deadline exhausted");
           const page = await this.getWorkerPage(request, context);
           if (expired) throw new Error("Timeout: read-only recovery deadline exhausted");
@@ -499,17 +507,17 @@ export class ChatGptBrowserExecutor implements Executor {
     if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT redirected to a different conversation while resuming");
   }
 
-  private async getContext(timeout = 15_000): Promise<BrowserContext> {
+  private async getContext(timeout = 15_000, needsStream = true): Promise<BrowserContext> {
     if (this.context) return this.context;
     if (this.launching) return this.launching;
     if (this.ownedProcess) await this.close();
-    const launch = this.launchContext(timeout);
+    const launch = this.launchContext(timeout, needsStream);
     this.launching = launch;
     try { return await launch; }
     finally { if (this.launching === launch) this.launching = undefined; }
   }
 
-  private async launchContext(timeout: number): Promise<BrowserContext> {
+  private async launchContext(timeout: number, needsStream = true): Promise<BrowserContext> {
     await mkdir(this.config.profileDir, { recursive: true });
     debugLog("browser.context", {
       phase: "launch",
@@ -534,7 +542,7 @@ export class ChatGptBrowserExecutor implements Executor {
       if (this.context === context) { this.context = undefined; this.workerPages.clear(); }
     });
     try {
-      await context.addInitScript({ content: CHATGPT_RESPONSE_LOADER_SOURCE });
+      if (needsStream) await context.addInitScript({ content: CHATGPT_RESPONSE_LOADER_SOURCE });
     } catch (error) {
       await this.close();
       throw error;
@@ -546,32 +554,67 @@ export class ChatGptBrowserExecutor implements Executor {
     const workerId = request.workerId ?? "__default__";
     const existing = this.workerPages.get(workerId);
     if (existing && !existing.isClosed?.()) return existing;
-
-    // After a browser crash, rebuild all durable worker tabs before resuming work.
     const known = request.knownBrowserSessions ?? {};
-    for (const [id, session] of Object.entries(known)) {
+    // Reuse the initial about:blank page rather than spawning an extra window.
+    // Additional worker pages must be opened as browser tabs from a live page,
+    // not via Playwright context.newPage() (which can create Firefox windows).
+    const pickPage = async (): Promise<Page> => {
+      const used = new Set(this.workerPages.values());
+      const open = context.pages?.().filter(page => !page.isClosed?.()) ?? [];
+      const available = open.find(page => !used.has(page) && page.url() === "about:blank");
+      if (available) return available;
+      if (this.workerPages.size === 0) return open[0] ?? await context.newPage();
+      if (!open.length) throw new Error("Shared browser has no live tab to open a sibling tab");
+      return await openWorkerTabInSameWindow(context, open.find(page => used.has(page)) ?? open[0]!);
+    };
+
+    // First claim ALL currently open pages matching known saved sessions.
+    // Otherwise, a missing worker with earlier insertion order could steal a
+    // later worker's restored tab before that later worker is matched.
+    const sessions = Object.entries(known);
+    for (const [id, session] of sessions) {
+      if (this.workerPages.has(id) && !this.workerPages.get(id)!.isClosed?.()) continue;
+      const matching = context.pages?.().find(page =>
+        !page.isClosed?.() && ![...this.workerPages.values()].includes(page) &&
+        isSameChatGptConversation(session, page.url()),
+      );
+      if (matching) this.workerPages.set(id, matching);
+    }
+    for (const [id, session] of sessions) {
       const knownPage = this.workerPages.get(id);
       if (knownPage && !knownPage.isClosed?.()) continue;
-      const candidate = this.workerPages.size === 0
-        ? context.pages?.().find(page => !page.isClosed?.()) ?? await context.newPage()
-        : await context.newPage();
+      const candidate = await pickPage();
       this.workerPages.set(id, candidate);
       if (id !== workerId) {
         await candidate.goto(session, { waitUntil: "domcontentloaded", timeout: Math.min(this.timeoutMs, 15_000) });
-        if (!isSameChatGptConversation(session, candidate.url())) throw new Error(`Failed to reconstruct saved browser tab for worker ${id}`);
+        if (!isSameChatGptConversation(session, candidate.url()))
+          throw new Error("Failed to reconstruct saved browser tab for worker " + id);
       }
     }
 
     const reconstructed = this.workerPages.get(workerId);
     if (reconstructed && !reconstructed.isClosed?.()) return reconstructed;
-    const page = this.workerPages.size === 0
-      ? context.pages?.().find(candidate => !candidate.isClosed?.()) ?? await context.newPage()
-      : await context.newPage();
+    const page = await pickPage();
     this.workerPages.set(workerId, page);
     return page;
   }
-
 }
+
+/** Firefox/Camoufox: request an actual tab from the existing top-level page.
+ * Never silently fall back to context.newPage() and open another window. */
+export async function openWorkerTabInSameWindow(
+  context: BrowserContext, existingPage: Page, timeout = 8_000,
+): Promise<Page> {
+  await existingPage.bringToFront();
+  const pending = context.waitForEvent("page", { timeout });
+  const [, page] = await Promise.all([
+    existingPage.evaluate(() => window.open("about:blank", "_blank")),
+    pending,
+  ]);
+  if (page.context() !== context) throw new Error("New worker tab escaped its browser context");
+  return page;
+}
+
 
 export function isSameChatGptConversation(requestedUrl: string, actualUrl: string): boolean {
   try {
@@ -604,8 +647,11 @@ async function closeBeforeDeadline(close: () => Promise<void>, deadline: number)
 
 interface PreparedMessage { token: number; useButton: boolean }
 
-async function prepareMessage(page: Page, prompt: string, timeoutMs: number): Promise<PreparedMessage> {
+async function prepareMessage(
+  page: Page, prompt: string, timeoutMs: number, needsStream = true,
+): Promise<PreparedMessage> {
   await page.locator(COMPOSER).first().fill(prompt, { timeout: timeoutMs });
+  if (!needsStream) return { token: 0, useButton: await page.locator(SEND).first().isVisible() };
   const token = await page.evaluate(() => {
     const arm = (window as unknown as { __DEVOS_ARM_STREAM__?: (prompt: string) => number }).__DEVOS_ARM_STREAM__;
     if (!arm) throw new Error("ChatGPT response loader is not installed");
@@ -617,6 +663,19 @@ async function prepareMessage(page: Page, prompt: string, timeoutMs: number): Pr
 export function isTransientBrowserFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /Timeout|net::ERR_(?:CONNECTION_RESET|CONNECTION_CLOSED|TIMED_OUT|NETWORK_CHANGED|INTERNET_DISCONNECTED)|Execution context was destroyed|Cannot find context with specified id|Target (?:page|browser|context).*closed|(?:page|browser).*crashed|browser.*disconnected|Transient (?:navigation|backend) HTTP 5\d\d/i.test(message);
+}
+
+export async function submitOnly(
+  page: Page, prompt: string, timeoutMs: number,
+  beforeSubmit?: () => void, prepared?: PreparedMessage,
+): Promise<void> {
+  const message = prepared ?? await prepareMessage(page, prompt, timeoutMs);
+  beforeSubmit?.();
+  if (message.useButton) {
+    await page.locator(SEND).first().click({ timeout: Math.min(timeoutMs, 15_000) });
+  } else {
+    await page.locator(COMPOSER).first().press("Enter", { timeout: Math.min(timeoutMs, 15_000) });
+  }
 }
 
 export async function sendAndRead(
