@@ -43,6 +43,24 @@ test("tickets are bounded, one-use, password-checked and bound to approved chat"
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("chat password accepts 1 UTF-8 byte and rejects empty or over-limit values", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-chat-min-password-"));
+  try {
+    const registry = new ChatAccessRegistry(root, owner);
+    const fp = registry.fingerprint("short-password-client", "short-password-session");
+    const short = new ChatApprovalTickets(root, registry, "x");
+    const ticket = short.issue(fp).ticket as string;
+    assert.match(ticket, /^[A-Za-z0-9_-]+$/);
+    assert.equal(short.approve({ ticket, url, password: "x" }), true);
+    assert.equal(registry.isApproved(fp), true);
+    assert.deepEqual(new ChatApprovalTickets(root, registry, "").issue(fp),
+      { ready: false, reason: "password_not_configured" });
+    assert.throws(() => new ChatApprovalTickets(root, registry, "x".repeat(1025)),
+      /1–1024 UTF-8 bytes/);
+    assert.equal(typeof new ChatApprovalTickets(root, registry, "x".repeat(1024)).issue(fp).ticket, "string");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("approval widget contains only public HTTPS endpoint and direct fetch", () => {
   const html = chatApprovalWidget("https://devos.example");
   assert.ok(html.includes("https://devos.example/chat-access/approve"));

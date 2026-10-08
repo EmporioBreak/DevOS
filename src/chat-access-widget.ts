@@ -34,8 +34,8 @@ function ownerPassword(root: string, override?: string): string | undefined {
     }
   }
   if (value === undefined || value === "") return undefined;
-  if (Buffer.byteLength(value, "utf8") < 20 || Buffer.byteLength(value, "utf8") > 1024)
-    throw new Error("DEVOS_CHAT_ACCESS_PASSWORD must contain 20–1024 UTF-8 bytes");
+  if (Buffer.byteLength(value, "utf8") < 1 || Buffer.byteLength(value, "utf8") > 1024)
+    throw new Error("DEVOS_CHAT_ACCESS_PASSWORD must contain 1–1024 UTF-8 bytes");
   return value;
 }
 
