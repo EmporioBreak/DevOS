@@ -10,19 +10,34 @@ The main agent owns the user task and final judgment. DevOS owns coordination, n
 
 DevOS saves exact conversation URLs for browser-worker conversations it creates and resumes them through task-scoped session state. It does not attempt to identify or recover the URL of an arbitrary user-created ChatGPT conversation through MCP requests, markers, or ChatGPT UI traversal.
 
-## Mandatory main-agent chat authorization
+## MCP chat authorization: on demand, with worker isolation
 
-Before substantive main-agent DevOS work in a new conversation, invoke
-the side-effect-free `devos_noop` tool to check whether the current chat is
-approved. If not approved, invoke `devos_authorize_chat` to display the
-inline approval form. The owner enters the exact private chat URL and
+**Never request authorization just because a new ChatGPT conversation starts.**
+Ordinary chats that do not need DevOS or Desktop Commander must not call
+`devos_noop`, open a password form, or interrupt the user.
+
+Before a main-agent conversation actually uses DevOS/Desktop Commander MCP,
+call the side-effect-free `devos_noop` to check that conversation's approval.
+If not approved, invoke `devos_authorize_chat` only for this MCP workflow to
+show the inline approval form. The owner enters the exact private chat URL and
 the **separate chat-access password** into the widget; the password must
-never appear in the prompt, tool arguments, output or GitHub. An
-authenticated local `./devos connector access approve` command remains a
-fallback for clients without MCP Apps UI. Until the gateway confirms that
-the same session is authorized, do not create Issues, launch workers, or
-operate the Mac through MCP. A pasted URL alone is not authorization on
-a shared ChatGPT account. If the host omits usable session metadata, fail
+never appear in prompt text, tool arguments, model output, or GitHub.
+An authenticated local `./devos connector access approve` remains a fallback
+for clients without MCP Apps UI. Until the gateway confirms authorization
+for the same session, do not create Issues, launch workers, or operate the
+Mac through MCP. Declined or unavailable approval means no MCP side effects;
+do not repeatedly prompt unless the user retries the MCP operation.
+
+DevOS-created browser workers must not request the owner's chat-access password.
+Their MCP calls may be authorized without interaction **only after** the
+trusted local orchestrator and the gateway have proved and registered that
+specific active worker conversation's MCP identity. Self-declared worker
+roles, task IDs, Project membership, copied conversation URLs, and OAuth
+client identity alone never grant access. Until that worker authorization
+path is verified and implemented, deny rather than bypass the gate.
+
+A pasted URL alone is not authorization on a shared ChatGPT account. If
+usable host session metadata is missing, contradictory, or ambiguous, fail
 closed and explain the block. Do not use marker/sidebar UI traversal.
 
 ## Working model
