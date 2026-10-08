@@ -498,6 +498,8 @@ completion не записывается: `FINAL_REVIEW_REQUIRED` оставля
 
 Путь соединения: **ChatGPT / Codex / OpenCode → HTTPS ngrok → DevOS Streamable HTTP `/mcp` на `127.0.0.1` → локальный stdio Desktop Commander → Mac**. Выполнение файловых и терминальных инструментов остаётся на Mac. Localhost-only соединение отвергнуто: ChatGPT не может обратиться к нему напрямую. OpenAI Secure MCP Tunnel отвергнут из-за привязки транспорта к провайдеру; tunnel-client, tunnel ID и Platform runtime key больше не используются. Hosted Remote Desktop Commander тоже не участвует.
 
+DevOS добавляет собственные MCP-инструменты к оригинальному списку Desktop Commander на уровне gateway, не изменяя установленный upstream-пакет. Команды `devos_task_status` (текущее состояние без browser session URL) и `devos_worker_report` (идемпотентная запись отчёта текущего worker turn в `.devos/worker-reports/`) обрабатываются только внутри DevOS. Имена `devos_*` зарезервированы, остальные вызовы по-прежнему идут в Desktop Commander. Отчёт — вспомогательное свидетельство, **не** команда перехода: он не заменяет `DEVOS_RESULT` и финальную приёмку. Обновление оригинального `@wonderwhy-er/desktop-commander` выполняется как обновление обычной npm-зависимости с последующей проверкой совместимости и тестами; форк upstream не нужен. При падении Desktop Commander текущий gateway всё ещё перезапускается целиком, независимая доступность DevOS Tools при таком сбое не реализована.
+
 ```bash
 # Обычный lifecycle проекта:
 ./devos
