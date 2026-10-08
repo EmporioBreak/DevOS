@@ -608,12 +608,12 @@ export async function startGateway(options: {
             await Promise.all(writes);
 
             if (toolCall) {
-              void observeSuccessfulToolConversationIdentity(
+              await observeSuccessfulToolConversationIdentity(
                 options.root,
                 request,
                 result,
                 inboundMcpHeaders(),
-              ).catch(() => {});
+              ).catch(() => ({ status: "unresolved" as const }));
             }
 
             // ChatGPT imports remote MCP actions from tools/list and expects each
