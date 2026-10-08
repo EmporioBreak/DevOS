@@ -97,12 +97,14 @@ async function readOrCreateKey(root: string): Promise<Buffer> {
   try {
     const existingRegistry: unknown = JSON.parse(await readFile(registryPath, "utf8"));
     if (
-      existingRegistry &&
-      typeof existingRegistry === "object" &&
-      !Array.isArray(existingRegistry) &&
-      Array.isArray((existingRegistry as { conversations?: unknown }).conversations) &&
-      (existingRegistry as { conversations: unknown[] }).conversations.length > 0
+      !existingRegistry ||
+      typeof existingRegistry !== "object" ||
+      Array.isArray(existingRegistry) ||
+      !Array.isArray((existingRegistry as { conversations?: unknown }).conversations)
     ) {
+      throw new Error("Invalid conversation identity registry");
+    }
+    if ((existingRegistry as { conversations: unknown[] }).conversations.length > 0) {
       throw new Error("Conversation identity key missing for existing registry");
     }
   } catch (error) {
@@ -114,7 +116,7 @@ async function readOrCreateKey(root: string): Promise<Buffer> {
       // First use: no registry exists yet, so creating the key is safe.
     } else if (error instanceof SyntaxError) {
       throw new Error("Invalid conversation identity registry");
-    } else if (error instanceof Error && error.message === "Conversation identity key missing for existing registry") {
+    } else {
       throw error;
     }
   }
