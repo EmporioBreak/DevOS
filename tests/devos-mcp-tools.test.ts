@@ -32,6 +32,7 @@ test("local DevOS tools scope reports to active turns and preserve task state", 
     const report = { ...task, worker_id: "reviewer", turn: 2, status: "changes_requested", summary: "Regression found", turn_token: token };
     const first = await registry.call("devos_worker_report", report);
     assert.equal(unpack(first).recorded, true);
+    assert.equal(unpack(first).authoritative, true);
     assert.deepEqual(await registry.call("devos_worker_report", report), first);
     const file = join(root, ".devos", "worker-reports",
       `${encodeURIComponent(task.repo)}-issue-${task.issue}`, `turn-2-${active.tokenHash}.json`);
@@ -90,5 +91,40 @@ test("public MCP gateway merges DevOS tools with unchanged Desktop Commander", {
   } finally {
     await client.close();
     await gateway.close();
+  }
+});
+
+test("MCP completion observer waits for the correct active turn and cancels cleanly", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-mcp-observer-"));
+  const task = { repo: "Example/WorkerRepo", issue: 73 };
+  const token = randomBytes(32).toString("hex");
+  const active = { workerId: "reviewer", turn: 0, tokenHash: reportTokenHash(token) };
+  const registry = new DevosToolRegistry(root);
+  const abort = new AbortController();
+  try {
+    await new JsonStateStore(root, task).save({
+      currentWorkerId: "reviewer", completedRuns: 0,
+      sessions: {}, task, activeReport: active,
+    });
+    const pending = registry.waitForReport(task, active, abort.signal, 25);
+    const wrong = await registry.call("devos_worker_report", {
+      ...task, worker_id: "reviewer", turn: 0, status: "done",
+      turn_token: randomBytes(32).toString("hex"), summary: "Wrong token",
+    });
+    assert.equal(wrong.isError, true);
+    const valid = await registry.call("devos_worker_report", {
+      ...task, worker_id: "reviewer", turn: 0, status: "done",
+      turn_token: token, summary: "Complete",
+    });
+    assert.equal(valid.isError, undefined);
+    assert.equal(await pending, "done");
+    const aborted = new AbortController();
+    aborted.abort();
+    await assert.rejects(registry.waitForReport(task, {
+      ...active, tokenHash: reportTokenHash(randomBytes(32).toString("hex")),
+    }, aborted.signal), /observer stopped/);
+  } finally {
+    abort.abort();
+    await rm(root, { recursive: true, force: true });
   }
 });

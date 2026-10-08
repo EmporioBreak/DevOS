@@ -275,7 +275,10 @@ export class Orchestrator {
             ? {
                 knownBrowserSessions: knownBrowserSessions!,
                 browserTurnId: `${state.completedRuns}:${worker.id}`,
-                ...(workerReportToken ? { allowToolReportedStatus: true } : {}),
+                ...(workerReportToken ? {
+                  allowToolReportedStatus: true,
+                  reportTurn: { task: activeWorkflow.task, active: state.activeReport! },
+                } : {}),
               }
             : {}),
           ...(sessionId ? { sessionId } : {}),
@@ -530,9 +533,9 @@ export function buildWorkerPrompt(
       ? "This worker already runs on the local Codex executor. It must not return needs_local_worker; return failed for an unrecoverable local-executor failure."
       : "If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_local_worker instead of failed.",
     ...(report ? [
-      "If the devos_worker_report MCP tool is available, call it once with the final worker status before ending your answer.",
+      "The devos_worker_report MCP tool is the PRIMARY terminal status signal. Perform ALL required work and GitHub reporting BEFORE you call it. Call it once only when this worker's task is fully finished.",
       `Its arguments: repo=${JSON.stringify(workflow.task.repo)}, issue=${workflow.task.issue}, worker_id=${JSON.stringify(worker.id)}, turn=${report.turn}, turn_token=${report.token}; provide status and a short summary.`,
-      "Do not write the turn token in GitHub comments or your final answer. A tool acknowledgement records evidence, not final task approval.",
+      "Do not write the turn token in GitHub comments or your final answer. The report finalizes this worker turn for DevOS routing, but does not approve the overall task; main-agent review is still mandatory.",
       "Always finish with a short final text and, for redundancy, end with the legacy DEVOS_RESULT line when possible. If the tool is unavailable, the legacy line is mandatory. If both are present their statuses must match.",
     ] : [
       'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_local_worker|failed"}',

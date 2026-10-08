@@ -39,7 +39,7 @@ async function sendReport(registry: DevosToolRegistry, request: WorkerRequest, s
   });
   assert.equal(report.isError, undefined, report.content[0]?.text);
 }
-test("MCP reports route only after completed worker responses, through the predeclared graph", async () => {
+test("MCP reports route through the predeclared graph without a textual final marker", async () => {
   await fixture(async (root, registry, store) => {
     const expected: Array<{ worker: string; status: WorkerStatus }> = [
       { worker: "reviewer", status: "changes_requested" },

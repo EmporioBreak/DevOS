@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { WorkerReportTurn } from "../orchestrator.js";
 import type { TaskRef } from "../workflow.js";
 import { dirname, join } from "node:path";
@@ -61,7 +61,7 @@ export const DEVOS_TOOLS = [
   {
     name: "devos_worker_report",
     title: "Record DevOS worker report",
-    description: "Record the status of the currently active worker turn. DevOS checks the report only after the browser turn finishes; the tool alone never triggers routing or owner approval.",
+    description: "Final worker status report: after validation and durable recording, DevOS may finish the current browser worker turn immediately, without waiting for ChatGPT final SSE/text. Call ONLY after completing all work and posting required GitHub evidence. The main agent still owns final task approval.",
     inputSchema: {
       type: "object",
       properties: {
@@ -112,6 +112,25 @@ export class DevosToolRegistry {
     throw new Error("Recorded DevOS worker report identity or content mismatch");
   }
 
+  /** One report terminates browser waiting. Poll only for this authorized
+   * turn, stop immediately on AbortSignal, and never invent a status. */
+  async waitForReport(
+    task: TaskRef, active: WorkerReportTurn, signal: AbortSignal,
+    intervalMs = 100,
+  ): Promise<WorkerStatus> {
+    while (!signal.aborted) {
+      const status = await this.readReport(task, active);
+      if (status) return status;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(done, Math.max(25, intervalMs));
+        function done() { signal.removeEventListener("abort", done); clearTimeout(timer); resolve(); }
+        signal.addEventListener("abort", done, { once: true });
+        if (signal.aborted) done();
+      });
+    }
+    throw new Error("MCP report observer stopped");
+  }
+
   async call(name: string, argumentsValue: unknown): Promise<ToolResult> {
     if (!this.has(name)) throw new Error("Unknown DevOS tool");
     try {
@@ -153,15 +172,23 @@ export class DevosToolRegistry {
       const report = { task, worker_id: worker, turn, status, summary, token_hash: active.tokenHash };
       const path = reportPath(this.root, task, active);
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      // Publish by atomic hard-link: the observer must never read a partially
+      // written JSON file. Linking with EEXIST preserves idempotent first-write-wins.
+      const staging = path + "." + randomUUID() + ".tmp";
       try {
-        await writeFile(path, JSON.stringify(report) + "\n", { flag: "wx", mode: 0o600 });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        const previous = JSON.parse(await readFile(path, "utf8")) as unknown;
-        if (JSON.stringify(previous) !== JSON.stringify(report))
-          throw new Error("Conflicting report already recorded for this worker turn");
+        await writeFile(staging, JSON.stringify(report) + "\n", { flag: "wx", mode: 0o600 });
+        try {
+          await link(staging, path);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          const previous = JSON.parse(await readFile(path, "utf8")) as unknown;
+          if (JSON.stringify(previous) !== JSON.stringify(report))
+            throw new Error("Conflicting report already recorded for this worker turn");
+        }
+      } finally {
+        await rm(staging, { force: true });
       }
-      return textResult({ recorded: true, authoritative: false, task, worker_id: worker, turn });
+      return textResult({ recorded: true, authoritative: true, task, worker_id: worker, turn });
     } catch (error) {
       return { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "DevOS tool failed" }] };
     }
