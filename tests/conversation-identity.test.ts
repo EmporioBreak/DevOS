@@ -75,11 +75,9 @@ test("fingerprint is stable for one host session and isolated across conversatio
   assert.equal(
     same,
     conversationIdentityFingerprint({
-      ...base,
-      subject: undefined,
-      organization: undefined,
+      session: base.session,
       source: "header",
-    } as any, key),
+    }, key),
   );
   assert.notEqual(
     same,
