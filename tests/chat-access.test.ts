@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, symlink, writeFile, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCliArgs } from "../src/cli.js";
@@ -10,6 +10,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ChatAccessRegistry, canonicalPrivateChatUrl, chatSessionSignal } from "../src/chat-access.js";
 import { runChatAccessAdmin } from "../src/chat-access-admin.js";
+import { ChatWorkerGrantRegistry } from "../src/chat-worker-grants.js";
 import { startGateway } from "../src/connector-gateway.js";
 import { oauthToken } from "./connector-auth-fixture.js";
 
@@ -110,13 +111,18 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
     }) as Transport);
 
     const listed = (await client.listTools()).tools.map(t => t.name);
-    for (const name of ["devos_noop", "read_file", "get_config", "devos_task_status", "devos_worker_report"])
+    for (const name of ["devos_noop", "devos_worker_probe", "read_file", "get_config", "devos_task_status", "devos_worker_report"])
       assert.ok(listed.includes(name), "missing " + name);
     assert.equal(listed.length, new Set(listed).size);
     const noop = parse(await client.callTool({ name: "devos_noop", arguments: {} }));
     assert.equal(noop.status, "no_action");
     assert.equal(noop.approved, false);
     assert.match(noop.chat_reference, /^chat_[a-f0-9]{64}$/);
+    const safeProbe = parse(await client.callTool({ name: "devos_worker_probe", arguments: {} }));
+    assert.equal(safeProbe.status, "issued");
+    assert.match(safeProbe.nonce, /^[a-f0-9]{64}$/);
+    assert.equal((await client.callTool({ name: "get_config", arguments: {} })).isError, true,
+      "worker probe alone must not authorize operational MCP");
     const registry = new ChatAccessRegistry(root, secret);
     assert.equal(noop.chat_reference, registry.fingerprint(oauthClient.client_id, "test-session-A"));
     for (const name of ["get_config", "read_file", "devos_task_status", "devos_worker_report", "start_process"]) {
@@ -129,6 +135,27 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
       arguments: { command: "touch " + shouldNotExist, timeout_ms: 1000 } });
     assert.equal(processAttempt.isError, true);
     await assert.rejects(stat(shouldNotExist), { code: "ENOENT" });
+
+    // Trusted on-host worker binder claims only after independent provider-
+    // structured proof. This exercises actual gateway forwarding and revoke.
+    const workerStatePath = join(root, ".devos", "state", "EmporioBreak%2FDevOS-issue-99.json");
+    await mkdir(join(root, ".devos", "state"), { recursive: true });
+    await writeFile(workerStatePath, JSON.stringify({
+      currentWorkerId: "developer", completedRuns: 0,
+      activeReport: { workerId: "developer", turn: 0 },
+      sessions: { developer: url }, mainAgentReviewPending: false, completionApproved: false,
+    }));
+    const workerRegistry = new ChatWorkerGrantRegistry(root, secret);
+    assert.equal(workerRegistry.bindVerified(safeProbe.nonce,
+      { repo: "EmporioBreak/DevOS", issue: 99 }, "developer", 0, url), true);
+    assert.notEqual((await client.callTool({ name: "get_config", arguments: {} })).isError, true,
+      "verified active worker forwards to Desktop Commander without password");
+    assert.notEqual((await client.callTool({ name: "devos_task_status",
+      arguments: { repo: "Nobody/Nowhere", issue: 123456 } })).isError, true,
+      "verified active worker may call first-party DevOS tools");
+    workerRegistry.revoke({ repo: "EmporioBreak/DevOS", issue: 99 }, "developer");
+    assert.equal((await client.callTool({ name: "get_config", arguments: {} })).isError, true,
+      "revoked worker must immediately lose gateway forwarding");
 
     registry.approve(noop.chat_reference, url);
     assert.equal(parse(await client.callTool({ name: "devos_noop", arguments: {} })).approved, true);
@@ -148,6 +175,9 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
       requestInit: { headers: { ...authHeader, "x-openai-session": "test-session-B" } },
     }) as Transport);
     assert.notEqual(parse(await second.callTool({ name: "devos_noop", arguments: {} })).chat_reference, noop.chat_reference);
+    const otherProbe = parse(await second.callTool({ name: "devos_worker_probe", arguments: {} }));
+    assert.equal(otherProbe.status, "issued");
+    assert.notEqual(otherProbe.nonce, safeProbe.nonce);
     assert.equal((await second.callTool({ name: "get_config", arguments: {} })).isError, true);
 
     third = new Client({ name: "no-session", version: "1" }, { capabilities: {} });
@@ -155,6 +185,7 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
       requestInit: { headers: authHeader },
     }) as Transport);
     assert.deepEqual(parse(await third.callTool({ name: "devos_noop", arguments: {} })), { status: "no_action", approved: false });
+    assert.deepEqual(parse(await third.callTool({ name: "devos_worker_probe", arguments: {} })), { status: "unavailable" });
     assert.equal((await third.callTool({ name: "get_config", arguments: {} })).isError, true);
 
     const { tokens: otherTokens, client: otherOAuthClient } =

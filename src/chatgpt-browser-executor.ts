@@ -19,6 +19,8 @@ import {
 import { CHATGPT_RESPONSE_LOADER_SOURCE } from "./chatgpt-response-loader.js";
 import { readExactDomFinal } from "./chatgpt-dom-recovery.js";
 import { DevosToolRegistry } from "./mcp-tools/registry.js";
+import { observeWorkerAuthorization } from "./chat-worker-observer.js";
+import { localWorkerAuthorization } from "./chat-worker-grants.js";
 
 export class BrowserResumeUnavailableError extends Error {
   constructor(readonly sessionId: string, message: string) {
@@ -131,6 +133,21 @@ export class ChatGptBrowserExecutor implements Executor {
       durableSession = session;
       await request.onSession?.(session);
     };
+    // Local-only authorization observer: the Page's structured provider tool
+    // result is checked against the exact saved worker URL and active turn.
+    // It never enters model-visible context or grants based on prompt strings.
+    if (request.reportTurn && request.workerId && reportAbort) {
+      void observeWorkerAuthorization({
+        page, root: request.projectRoot, task: request.reportTurn.task,
+        workerId: request.workerId, turn: request.reportTurn.active.turn,
+        expectedConversation: () => durableSession,
+        expectedUserMessageId: () => submitted?.messageId,
+        exactSubmittedPrompt: request.prompt,
+        signal: reportAbort.signal,
+      }).catch(() => {
+        debugLog("browser.worker-access", { phase: "observer", decision: "unavailable" });
+      });
+    }
     const onOutgoingRequest = (outgoing: PlaywrightRequest) => {
       if (!mayHaveSubmitted) return;
       try {
@@ -289,6 +306,18 @@ export class ChatGptBrowserExecutor implements Executor {
       throw error;
     } finally {
       reportAbort?.abort();
+      // Revoke on normal completion, cancellation or a caught failure.
+      // Abrupt process loss is additionally bounded by the grant expiry and
+      // requires task state validation on every forwarded operation.
+      if (request.reportTurn && request.workerId) {
+        try {
+          localWorkerAuthorization(request.projectRoot)?.registry.revoke(
+            request.reportTurn.task, request.workerId,
+          );
+        } catch {
+          debugLog("browser.worker-access", { phase: "revoke", decision: "failed-closed-by-task-state" });
+        }
+      }
       detachBackendListener();
       // Keep only one request listener per active worker turn across repeated
       // use of the same tab, including MCP-finished turns.

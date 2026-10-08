@@ -20,6 +20,8 @@ import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./de
 import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { ChatAccessRegistry, CHAT_NOOP_TOOL, chatSessionSignal, noOpResult, deniedChatToolResult } from "./chat-access.js";
 import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_URI, chatApprovalWidget } from "./chat-access-widget.js";
+import { ChatWorkerProbeRegistry, CHAT_WORKER_PROBE_TOOL } from "./chat-worker-probe.js";
+import { ChatWorkerGrantRegistry } from "./chat-worker-grants.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
 
 export function publicIdentity(value: string): URL {
@@ -352,6 +354,8 @@ export async function startGateway(options: {
   const localTools = new DevosToolRegistry(options.root);
   const chatAccess = new ChatAccessRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
   const chatApproval = new ChatApprovalTickets(options.chatAccessRoot ?? options.root, chatAccess);
+  const workerProbe = new ChatWorkerProbeRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
+  const workerGrants = new ChatWorkerGrantRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
   const callOrigin = new AsyncLocalStorage<{ clientId: string; sessionHeader: unknown }>();
   let desktop: DesktopCommanderIntegration;
   desktop = new DesktopCommanderIntegration({
@@ -563,15 +567,21 @@ export async function startGateway(options: {
             const fingerprint = signal && origin
               ? chatAccess.fingerprint(origin.clientId, signal)
               : undefined;
+            const authorized = chatAccess.isApproved(fingerprint) || workerGrants.isGranted(fingerprint);
             if (request.method === "tools/call") {
               if (request.params?.name === CHAT_NOOP_TOOL.name)
-                return noOpResult(fingerprint, chatAccess.isApproved(fingerprint));
+                return noOpResult(fingerprint, authorized);
+              if (request.params?.name === CHAT_WORKER_PROBE_TOOL.name) {
+                const issued = workerProbe.issue(fingerprint);
+                return { content: [{ type: "text", text: JSON.stringify(issued) }], structuredContent: issued };
+              }
               if (request.params?.name === CHAT_APPROVAL_WIDGET_TOOL.name) {
+                if (authorized) return noOpResult(fingerprint, true);
                 const issued = chatApproval.issue(fingerprint);
                 return { content: [{ type: "text", text: JSON.stringify(issued) }],
                   structuredContent: issued };
               }
-              if (!chatAccess.isApproved(fingerprint))
+              if (!authorized)
                 return deniedChatToolResult();
             } else if (request.method === "resources/list") {
               return { resources: [{
@@ -598,7 +608,7 @@ export async function startGateway(options: {
                 },
               }] };
             } else if (request.method !== "tools/list" && request.method !== "ping" &&
-                       !chatAccess.isApproved(fingerprint)) {
+                       !authorized) {
               throw new Error("MCP request not authorized for this conversation");
             }
             const forwardedRequest = adaptChatGptToolCall(request) as typeof request;
@@ -712,6 +722,7 @@ export async function startGateway(options: {
               };
               const conflicting = listed.tools.find(tool =>
                 String(tool.name ?? "") === CHAT_NOOP_TOOL.name ||
+                String(tool.name ?? "") === CHAT_WORKER_PROBE_TOOL.name ||
                 String(tool.name ?? "") === CHAT_APPROVAL_WIDGET_TOOL.name ||
                 localTools.has(String(tool.name ?? "")) ||
                 String(tool.name ?? "").startsWith("devos_"));
@@ -785,7 +796,7 @@ export async function startGateway(options: {
                         ],
                       },
                     };
-                  }), ...localTools.list(), CHAT_NOOP_TOOL, CHAT_APPROVAL_WIDGET_TOOL],
+                  }), ...localTools.list(), CHAT_NOOP_TOOL, CHAT_APPROVAL_WIDGET_TOOL, CHAT_WORKER_PROBE_TOOL],
               };
             }
             return result;
@@ -796,7 +807,7 @@ export async function startGateway(options: {
             const fingerprint = signal && origin
               ? chatAccess.fingerprint(origin.clientId, signal)
               : undefined;
-            if (!chatAccess.isApproved(fingerprint)) return;
+            if (!chatAccess.isApproved(fingerprint) && !workerGrants.isGranted(fingerprint)) return;
             await desktop.notification(notification);
           };
           let newSession: PublicMcpSession | undefined;
