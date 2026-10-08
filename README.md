@@ -577,10 +577,10 @@ Main agent/пользователь после независимого review �
 
 Атрибуция: Desktop Commander — MIT, © 2024–2025 Eduard Ruzga and Desktop Commander Contributors ([upstream](https://github.com/wonderwhy-er/DesktopCommanderMCP)); MCP TypeScript SDK — MIT ([upstream](https://github.com/modelcontextprotocol/typescript-sdk)); ngrok — proprietary CLI ([условия](https://ngrok.com/terms-of-service)). Лицензии npm-пакетов остаются в установленных зависимостях. Актуальная оценка dependency debt и известных advisory ведётся в `docs/security/dependency-audit.md`; точный `npm audit` count подтверждается свежим локальным запуском перед merge, без `npm audit fix --force`.
 
-### ChatGPT conversation identity
+### ChatGPT current-conversation binding
 
-For ChatGPT MCP calls, DevOS uses the host-provided `_meta["openai/session"]` value as the canonical conversation-scoped identity. The raw host value is never written to disk: the connector stores only a project-local keyed fingerprint in `.devos/conversation-identities.json`. `x-openai-session` is accepted only as a transport compatibility fallback when request metadata is absent.
+For ChatGPT MCP calls, DevOS treats host-provided `_meta["openai/session"]` as a structured conversation-scoped correlation signal. `x-openai-session` is accepted only as a compatibility transport view. The raw host value is never written to disk: only a project-local keyed fingerprint may be stored in `.devos/conversation-identities.json`.
 
-This identity is intentionally separate from a ChatGPT browser URL. DevOS does not scrape the sidebar, scan transcript text, open batches of chats, or launch Camoufox merely to discover which conversation called the connector. Browser workers already persist the exact URLs of conversations they create or resume; an unrelated ChatGPT conversation may have a valid MCP identity while its public `/c/<conversation_id>` route remains unknown.
+That opaque signal does not complete binding by itself. A successful bind must additionally prove the exact ChatGPT `/c/<conversation_id>` for the conversation that issued the MCP call through a deterministic structured join to canonical ChatGPT conversation data. Exact request/turn/session identifiers are acceptable only when the same value is proven on both sides. Missing, conflicting, or ambiguous evidence returns `unresolved`.
 
-The older `./devos bind-chat` marker flow is retained only for diagnostics/compatibility and is not part of normal new-chat startup.
+The primary path does not scrape the sidebar, scan transcript text, open candidate chats one by one, create batches of tabs, or infer ownership from recency, timing, titles, tool arguments, or the active tab. The older `./devos bind-chat` marker flow is retained only for diagnostics/compatibility and is not part of normal new-chat startup.
