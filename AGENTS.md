@@ -6,9 +6,13 @@ This repository is operated through DevOS. New local Codex sessions should treat
 
 The main agent owns the user task and final judgment. DevOS owns coordination, never judgment.
 
-## Automatic current-chat binding
+## Automatic current-chat identity
 
-At the beginning of each new ChatGPT Project conversation, generate a fresh cryptographically random `DEVOS_BIND_<random>` marker (at least 12 random URL-safe characters), write it to a temporary file through the existing Desktop Commander MCP, and include the exact marker as a standalone message in this conversation. Run `./devos bind-chat <absolute-marker-file>` to schedule a one-shot lookup after this turn can publish the marker. The helper uses the configured persistent Camoufox profile, checks project conversations newest-first, waits briefly for the exact marker to render, and removes the temporary file on every exit. Check `./devos bind-chat --status` for the exact saved conversation URL or an explicit pending/failure status. Do not guess from recency; lookup attempts are bounded.
+ChatGPT conversation identity is established mechanically from host-provided MCP metadata on tool calls. DevOS uses `_meta["openai/session"]` as the canonical conversation-scoped identity, scoped by `openai/subject` and `openai/organization` when available, and persists only a keyed fingerprint of those opaque values.
+
+Do not generate binding markers, print binding tokens, traverse ChatGPT sidebars, or launch a browser merely to identify the calling conversation. A ChatGPT `/c/<conversation_id>` URL is a separate optional browser route and must only be stored when DevOS directly proves that route, such as for a browser conversation DevOS created or resumed itself. Missing host session metadata is `unresolved`; never infer identity from recency, timing, tool arguments, active tabs, or MCP transport-session ids.
+
+The legacy `bind-chat` command remains diagnostic compatibility only and is not part of normal new-chat startup.
 
 ## Working model
 
