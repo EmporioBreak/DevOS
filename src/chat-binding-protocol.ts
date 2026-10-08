@@ -58,8 +58,9 @@ export function stripChatBindingTokenFromCall(
   };
   if (call.method !== "tools/call") return request;
   const args = call.params?.arguments;
-  if (!args || args[CHAT_BINDING_ARGUMENT] !== expectedToken) {
-    throw new Error("bind_token_missing_or_mismatched");
+  if (!args || !(CHAT_BINDING_ARGUMENT in args)) return request;
+  if (args[CHAT_BINDING_ARGUMENT] !== expectedToken) {
+    throw new Error("bind_token_mismatched");
   }
   const forwarded = { ...args };
   delete forwarded[CHAT_BINDING_ARGUMENT];
