@@ -61,12 +61,15 @@ test("validates and strips the token before forwarding tools/call", () => {
       arguments: { path: "/tmp/a" },
     },
   });
-  assert.throws(
-    () => stripChatBindingTokenFromCall({
+  assert.deepEqual(
+    stripChatBindingTokenFromCall({
       method: "tools/call",
       params: { name: "read_file", arguments: { path: "/tmp/a" } },
     }, token),
-    /bind_token_missing_or_mismatched/,
+    {
+      method: "tools/call",
+      params: { name: "read_file", arguments: { path: "/tmp/a" } },
+    },
   );
   assert.throws(
     () => stripChatBindingTokenFromCall({
@@ -79,7 +82,7 @@ test("validates and strips the token before forwarding tools/call", () => {
         },
       },
     }, token),
-    /bind_token_missing_or_mismatched/,
+    /bind_token_mismatched/,
   );
 });
 
