@@ -17,6 +17,8 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ConnectorAuth } from "./connector-auth.js";
 import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./desktop-commander-integration.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
+import { extractHostConversationIdentity, recordHostConversationIdentity } from "./conversation-identity.js";
+import { inboundMcpHeaders, withInboundMcpHeaders } from "./mcp-inbound-context.js";
 
 export function publicIdentity(value: string): URL {
   try {
@@ -605,6 +607,24 @@ export async function startGateway(options: {
             }
             await Promise.all(writes);
 
+            if (
+              toolCall &&
+              result &&
+              typeof result === "object" &&
+              (result as { isError?: unknown }).isError !== true
+            ) {
+              const conversationIdentity = extractHostConversationIdentity(
+                request,
+                inboundMcpHeaders(),
+              );
+              if (conversationIdentity) {
+                void recordHostConversationIdentity(
+                  options.root,
+                  conversationIdentity,
+                ).catch(() => {});
+              }
+            }
+
             // ChatGPT imports remote MCP actions from tools/list and expects each
             // authenticated tool to advertise its OAuth policy explicitly. The
             // local Desktop Commander is a provider-neutral stdio server and has
@@ -727,7 +747,9 @@ export async function startGateway(options: {
         const isActiveSessionRequest = req.method === "POST";
         if (isActiveSessionRequest) trackedSession.activeRequestCount++;
         try {
-          await trackedSession.transport.handleRequest(req, res, req.body);
+          await withInboundMcpHeaders(req.headers, () =>
+            trackedSession.transport.handleRequest(req, res, req.body),
+          );
         } finally {
           if (isActiveSessionRequest) trackedSession.activeRequestCount--;
           trackedSession.lastActivityAt = Date.now();
