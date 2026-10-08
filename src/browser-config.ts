@@ -56,6 +56,14 @@ export interface ChatGptProjectScope {
   projectId: string;
 }
 
+/** ChatGPT may canonicalize a Project route by stripping its human-readable
+ * slug after the immutable g-p-<32-hex-id>. Never identify projects by slug
+ * alone or collapse unrelated/unknown project ID forms. */
+export function canonicalChatGptProjectId(value: string): string {
+  const match = /^g-p-([a-f0-9]{32})(?:-[a-z0-9][a-z0-9-]*)?$/i.exec(value);
+  return match ? "g-p-" + match[1]!.toLowerCase() : value;
+}
+
 export function getChatGptProjectScope(value: string): ChatGptProjectScope | null {
   const url = validateChatGptUrl(value);
   if (url.pathname === "/") return null;
@@ -66,7 +74,7 @@ export function getChatGptProjectScope(value: string): ChatGptProjectScope | nul
       "Invalid configured ChatGPT Project URL; expected a /g/<project-id>/ Project URL",
     );
   }
-  return { origin: url.origin, projectId: match[1] };
+  return { origin: url.origin, projectId: canonicalChatGptProjectId(match[1]) };
 }
 
 export function assertChatGptProjectScope(
@@ -84,7 +92,8 @@ export function assertChatGptProjectScope(
   const projectId = match?.[1];
   const conversationId = match?.[2];
 
-  if (candidate.origin !== scope.origin || projectId !== scope.projectId) {
+  if (candidate.origin !== scope.origin ||
+      !projectId || canonicalChatGptProjectId(projectId) !== scope.projectId) {
     throw new Error("ChatGPT browser escaped the configured Project");
   }
   if (requireConversation && !conversationId) {

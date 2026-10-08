@@ -78,3 +78,35 @@ test("stream bytes refresh activity independently of response completion", async
   controller.close();
   await response.text();
 });
+
+test("page-world submission ID is captured only for the armed exact user prompt", async () => {
+  const payload = { messages: [
+    { id: "tool", author: { role: "tool" }, content: { parts: ["different"] } },
+    { id: "user-actual", author: { role: "user" }, content: { parts: ["exact", " prompt"] } },
+  ], conversation_id: "saved" };
+  const content = event(finalMessage);
+  const encoder = new TextEncoder();
+  const run = async (expected: string) => {
+    const window = {
+      location: { origin: "https://chatgpt.com" },
+      fetch: async () => new Response(new ReadableStream({
+        start(c) { c.enqueue(encoder.encode(content)); c.close(); },
+      }), { headers: { "content-type": "text/event-stream" } }),
+    } as unknown as { fetch: typeof fetch; __DEVOS_ARM_STREAM__: (prompt: string) => number;
+      __DEVOS_STREAM_STATE__: { messageId: string | null; conversationId: string | null; text: string | null } };
+    runInNewContext(CHATGPT_RESPONSE_LOADER_SOURCE, { window, URL, TextDecoder });
+    window.__DEVOS_ARM_STREAM__(expected);
+    await window.fetch("https://chatgpt.com/backend-api/conversation", { method: "POST", body: JSON.stringify(payload) });
+    return { messageId: window.__DEVOS_STREAM_STATE__.messageId, conversationId: window.__DEVOS_STREAM_STATE__.conversationId };
+  };
+  assert.deepEqual(await run("exact prompt"), { messageId: "user-actual", conversationId: "saved" });
+  assert.deepEqual(await run("different prompt"), { messageId: null, conversationId: null });
+  payload.messages[1]!.content.parts = ["exact\r\n prompt  \n"];
+  assert.deepEqual(await run("exact\n prompt"), { messageId: "user-actual", conversationId: "saved" }, "editor-equivalent line endings and trailing whitespace match");
+  assert.deepEqual(await run("exact\n prompts"), { messageId: null, conversationId: null }, "different text remains rejected");
+  assert.deepEqual(await run("exact\n  prompt"), { messageId: null, conversationId: null }, "interior double spacing cannot be invented");
+  const nonce = "a".repeat(64);
+  payload.messages[1]!.content.parts = ["Composer changed formatting but retained proof: ", nonce];
+  assert.deepEqual(await run("Worker task\nDevOS browser attempt ID: " + nonce + "."), { messageId: "user-actual", conversationId: "saved" });
+  assert.deepEqual(await run("Worker task\nDevOS browser attempt ID: " + "b".repeat(64) + "."), { messageId: null, conversationId: null });
+});

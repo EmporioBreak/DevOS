@@ -1,5 +1,6 @@
 import {
   isBrowserPreSubmitFailureError,
+  isBrowserResumeUnavailableError,
 } from "./chatgpt-browser-executor.js";
 import { isCodexResumeUnavailableError } from "./codex-executor.js";
 import type { Executor } from "./executor.js";
@@ -174,6 +175,24 @@ export class Orchestrator {
       const executor = this.options.executors.get(worker.executor);
       if (!executor) throw new Error(`Missing executor: ${worker.executor}`);
 
+      // A previous process may have died after the MCP report was committed
+      // but before it advanced task state. Consume that exact durable report,
+      // never send the same prompt again. No report means unresolved delivery:
+      // fail closed unless an earlier attempt was proven pre-submit.
+      let recoveredReportStatus: WorkerStatus | null = null;
+      if (state.activeReport && !state.browserPreSubmitRetry?.includes(worker.id)) {
+        const active = state.activeReport;
+        if (worker.executor !== "chatgpt_browser" ||
+            active.workerId !== worker.id || active.turn !== state.completedRuns)
+          throw new Error("Previous DevOS worker report identity mismatched task state");
+        const reported = await new DevosToolRegistry(this.options.projectRoot)
+          .readReport(state.task ?? workflow.task, active);
+        if (!reported || !state.sessions[worker.id]) {
+          throw new Error(`Unresolved prior browser turn for ${worker.id}: no verified terminal MCP report and saved conversation; refusing prompt replay`);
+        }
+        recoveredReportStatus = reported;
+      }
+
       let sessionId = state.sessions[worker.id];
       if (
         worker.executor === "codex" &&
@@ -225,7 +244,7 @@ export class Orchestrator {
         await stateStore.save(state);
       }
 
-      await this.emit({
+      if (!recoveredReportStatus) await this.emit({
         type: "worker_started",
         workerId: worker.id,
         executor: worker.executor,
@@ -234,19 +253,25 @@ export class Orchestrator {
       const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
       // One capability per browser turn; only its hash is persisted and the
       // report cannot be replayed after a task restart or subsequent turn.
-      const workerReportToken = worker.executor === "chatgpt_browser" &&
-        this.options.enableWorkerReports ? randomBytes(32).toString("hex") : undefined;
-      if (workerReportToken) {
+      // Persist one opaque attempt identity for EVERY browser turn, even if
+      // MCP is disabled. Otherwise a lost no-MCP SSE result could be replayed
+      // on the next CLI run. Only disclose the token when reporting is enabled.
+      const browserTurnToken = worker.executor === "chatgpt_browser" &&
+        !recoveredReportStatus ? randomBytes(32).toString("hex") : undefined;
+      const workerReportToken = this.options.enableWorkerReports ? browserTurnToken : undefined;
+      if (browserTurnToken) {
         state = {
           ...state,
           activeReport: {
             workerId: worker.id,
             turn: state.completedRuns,
-            tokenHash: reportTokenHash(workerReportToken),
+            tokenHash: reportTokenHash(browserTurnToken),
           },
         };
         await stateStore.save(state);
       }
+      let notifySessionSaved!: () => void;
+      const sessionSaved = new Promise<void>(resolve => { notifySessionSaved = resolve; });
       const onSession = async (reportedSessionId: string) => {
         state = {
           ...state,
@@ -256,6 +281,7 @@ export class Orchestrator {
           ...(state.browserPreSubmitRetry ? { browserPreSubmitRetry: state.browserPreSubmitRetry.filter(id => id !== worker.id) } : {}),
         };
         await stateStore.save(state);
+        notifySessionSaved();
       };
       let output: WorkerOutput;
       try {
@@ -266,22 +292,44 @@ export class Orchestrator {
               ),
             )
           : undefined;
-        output = await executor.run({
+        if (recoveredReportStatus) {
+          output = { text: "", sessionId: state.sessions[worker.id]! };
+        } else {
+        const executing = executor.run({
           projectRoot: this.options.projectRoot,
           prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot,
-            workerReportToken ? { turn: state.completedRuns, token: workerReportToken } : undefined),
+            workerReportToken ? { turn: state.completedRuns, token: workerReportToken } : undefined) +
+            (browserTurnToken
+              ? "\n\nDevOS browser attempt ID: " + state.activeReport!.tokenHash + ". This is a non-secret correlation identifier; do not repeat it in your final answer or GitHub comments."
+              : ""),
           workerId: worker.id,
           ...(worker.executor === "chatgpt_browser"
             ? {
                 knownBrowserSessions: knownBrowserSessions!,
-                browserTurnId: `${state.completedRuns}:${worker.id}`,
-                ...(workerReportToken ? { allowToolReportedStatus: true } : {}),
+                browserTurnId: `${state.completedRuns}:${worker.id}${browserTurnToken ? ":" + state.activeReport!.tokenHash : ""}`,
+                ...(workerReportToken ? {
+                  allowToolReportedStatus: true,
+                  reportTurn: { task: activeWorkflow.task, active: state.activeReport! },
+                } : {}),
               }
             : {}),
           ...(sessionId ? { sessionId } : {}),
           ...(worker.executor === "chatgpt_browser" ? { enforceProjectScope: true } : {}),
           onSession,
         });
+        // The MCP report is a control-plane terminal event. Observe it in
+        // Orchestrator itself, independently of the browser process/SSE.
+        output = state.activeReport && workerReportToken
+          ? await awaitWorkerReportOrBrowser({
+              browser: executing,
+              registry: new DevosToolRegistry(this.options.projectRoot),
+              task: activeWorkflow.task,
+              active: state.activeReport,
+              getSession: () => state.sessions[worker.id],
+              sessionSaved,
+            })
+          : await executing;
+        }
       } catch (error) {
         if (worker.executor === "codex" && sessionId && isCodexResumeUnavailableError(error)) {
           const sessions = { ...state.sessions };
@@ -302,12 +350,24 @@ export class Orchestrator {
             onSession,
           });
         } else if (
+          worker.executor === "chatgpt_browser" && sessionId &&
+          isBrowserResumeUnavailableError(error)
+        ) {
+          // BrowserResumeUnavailableError is classified *before* any possible
+          // DOM submit. Preserve the previously validated conversation, but
+          // retire the unused one-turn capability so explicit retry is safe.
+          const { activeReport: _unusedCapability, ...safeState } = state;
+          state = safeState;
+          await stateStore.save(state);
+          throw error;
+        } else if (
           worker.executor === "chatgpt_browser" &&
           !sessionId &&
           isBrowserPreSubmitFailureError(error)
         ) {
+          const { activeReport: _abortedBeforeSubmit, ...safeState } = state;
           state = {
-            ...state,
+            ...safeState,
             browserPreSubmitRetry: [
               ...(state.browserPreSubmitRetry ?? []).filter(id => id !== worker.id),
               worker.id,
@@ -334,12 +394,15 @@ export class Orchestrator {
       if (output.sessionId !== undefined) await onSession(output.sessionId);
       const sessions = state.sessions;
       const sessionProjectRoots = state.sessionProjectRoots;
-      const reportedStatus = state.activeReport && workerReportToken
+      const reportedStatus = state.activeReport && (workerReportToken || recoveredReportStatus)
         ? await new DevosToolRegistry(this.options.projectRoot).readReport(activeWorkflow.task, state.activeReport)
         : null;
+      if (worker.executor === "chatgpt_browser" && this.options.enableWorkerReports &&
+          !reportedStatus) throw new Error("Browser worker missing required devos_worker_report; status cannot be inferred from text");
       let parsed: ReturnType<typeof parseDevosResult> | undefined;
       try {
-        parsed = parseDevosResult(output.text);
+        parsed = worker.executor === "chatgpt_browser" && this.options.enableWorkerReports
+          ? undefined : parseDevosResult(output.text);
       } catch (error) {
         // A present but invalid/malformed final marker must never be silently
         // overridden by a tool report. Only a missing marker may fall back.
@@ -505,6 +568,73 @@ export class Orchestrator {
 
 }
 
+/** MCP must be able to finish a worker turn even when browser IPC or SSE
+ * remains pending. A fresh worker still needs a durable conversation identity;
+ * accepting an unscoped/standalone conversation is never allowed. */
+export async function awaitWorkerReportOrBrowser(options: {
+  browser: Promise<WorkerOutput>;
+  registry: DevosToolRegistry;
+  task: TaskRef;
+  active: WorkerReportTurn;
+  getSession: () => string | undefined;
+  sessionSaved: Promise<void>;
+  reportTimeoutMs?: number;
+}): Promise<WorkerOutput> {
+  const stop = new AbortController();
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ kind: "timeout" }>(resolve => {
+    timeoutHandle = setTimeout(() => resolve({ kind: "timeout" }),
+      options.reportTimeoutMs ?? 60 * 60_000);
+  });
+  const browser = options.browser.then(
+    output => ({ kind: "browser" as const, output }),
+    error => ({ kind: "browser_error" as const, error }),
+  );
+  const reported = options.registry.waitForReport(options.task, options.active, stop.signal)
+    .then(status => ({ kind: "mcp" as const, status }));
+  try {
+    // A browser response is not a worker status. In particular, a stray
+    // DEVOS_RESULT string cannot bypass the authenticated MCP control plane.
+    let winner = await Promise.race([browser, reported, timeout]);
+    if (winner.kind === "browser") winner = await Promise.race([reported, timeout]);
+    if (winner.kind === "timeout")
+      throw new Error("Required devos_worker_report not received before worker deadline; refusing status guess and prompt replay");
+    if (winner.kind === "browser_error") {
+      // The browser may fail in the small interval between tool publication
+      // and observer wakeup; a validated report with a durable session wins.
+      const status = await options.registry.readReport(options.task, options.active);
+      const session = options.getSession();
+      if (status && session) return { text: "", sessionId: session };
+      throw winner.error;
+    }
+    let session = options.getSession();
+    if (!session) {
+      // A tool report proves the model acted, but cannot prove conversation
+      // Project membership by itself. Bound the wait for browser session save.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const next = await Promise.race([
+          options.sessionSaved.then(() => ({ kind: "saved" as const })),
+          browser,
+          new Promise<{ kind: "timeout" }>(resolve => {
+            timer = setTimeout(() => resolve({ kind: "timeout" }), 3 * 60_000);
+          }),
+        ]);
+        if (next.kind === "browser_error") throw next.error;
+        if (next.kind === "browser" && next.output.sessionId) return next.output;
+        session = options.getSession();
+        if (!session) throw new Error("MCP report received without a saved, validated ChatGPT conversation");
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    return { text: "", sessionId: session };
+  } finally {
+    stop.abort();
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
+
 export function buildWorkerPrompt(
   workflow: Workflow, worker: WorkerSpec, projectRoot?: string,
   report?: { turn: number; token: string },
@@ -530,10 +660,10 @@ export function buildWorkerPrompt(
       ? "This worker already runs on the local Codex executor. It must not return needs_local_worker; return failed for an unrecoverable local-executor failure."
       : "If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_local_worker instead of failed.",
     ...(report ? [
-      "If the devos_worker_report MCP tool is available, call it once with the final worker status before ending your answer.",
+      "The devos_worker_report MCP tool is the PRIMARY terminal status signal. Perform ALL required work and GitHub reporting BEFORE you call it. Call it once only when this worker's task is fully finished.",
       `Its arguments: repo=${JSON.stringify(workflow.task.repo)}, issue=${workflow.task.issue}, worker_id=${JSON.stringify(worker.id)}, turn=${report.turn}, turn_token=${report.token}; provide status and a short summary.`,
-      "Do not write the turn token in GitHub comments or your final answer. A tool acknowledgement records evidence, not final task approval.",
-      "Always finish with a short final text and, for redundancy, end with the legacy DEVOS_RESULT line when possible. If the tool is unavailable, the legacy line is mandatory. If both are present their statuses must match.",
+      "Do not write the turn token in GitHub comments or your final answer. The report finalizes this worker turn for DevOS routing, but does not approve the overall task; main-agent review is still mandatory.",
+      "The MCP report is REQUIRED and is the only terminal signal DevOS accepts for this browser worker. If the tool is unavailable, do not invent completion or attempt a textual fallback; explain the issue without falsely claiming success. You may send a short final text after the tool call, but DevOS does not parse it.",
     ] : [
       'End your final response with exactly one line: DEVOS_RESULT {"status":"done|approved|changes_requested|needs_local_worker|failed"}',
     ]),

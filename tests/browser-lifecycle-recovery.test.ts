@@ -1,4 +1,10 @@
 import { runInNewContext } from 'node:vm';
+import { randomBytes } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { JsonStateStore } from '../src/json-state-store.js';
+import { DevosToolRegistry, reportTokenHash } from '../src/mcp-tools/registry.js';
 import type { BrowserContext, Page } from 'playwright-core';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -41,6 +47,8 @@ function fixture(options: {
   pageGone?: boolean;
   fresh?: boolean;
   streamError?: string;
+  hangStream?: boolean;
+  pageWorldIdentity?: boolean;
 } = {}) {
   let sends = 0, newPages = 0, closed = 0, reads = 0, url = 'about:blank';
   const listeners = new Map<string, Function[]>();
@@ -89,6 +97,8 @@ function fixture(options: {
       };
     },
     async evaluate(fn: Function) {
+      if (options.pageWorldIdentity && fn.toString().includes('state?.request'))
+        return { messageId: 'u', conversationId: 'saved' };
       if (fn.toString().includes('document.body'))
         return '';
       if (fn.toString().includes('__DEVOS_ARM_STREAM__'))
@@ -98,6 +108,7 @@ function fixture(options: {
       };
     },
     async waitForFunction() {
+      if (options.hangStream) return await new Promise(() => {});
       if (options.failStream !== false)
         throw Error(options.streamError ?? 'Execution context was destroyed');
     },
@@ -421,4 +432,86 @@ test('a final whose nearest user ancestor differs cannot settle the captured tur
   await assert.rejects(f.executor.run({ projectRoot: '/project', prompt: 'Work', sessionId: saved }), /post-submit.*still-running/);
   assert.equal(f.sends(), 1);
   assert.equal(f.closed(), 0);
+});
+
+test('real browser accepts matching MCP status despite hanging SSE and missing request ID', { timeout: 10_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'devos-report-browser-'));
+  const task = { repo: 'Example/LiveMcp', issue: 8 };
+  const token = randomBytes(32).toString('hex');
+  const active = { workerId: 'reviewer', turn: 0, tokenHash: reportTokenHash(token) };
+  const f = fixture({ hangStream: true, missingId: true, failStream: false });
+  const registry = new DevosToolRegistry(root);
+  try {
+    await new JsonStateStore(root, task).save({
+      currentWorkerId: 'reviewer', completedRuns: 0, sessions: { reviewer: saved },
+      task, activeReport: active,
+    });
+    const outgoing = f.executor.run({
+      projectRoot: root, prompt: 'Work', workerId: 'reviewer', sessionId: saved,
+      reportTurn: { task, active }, allowToolReportedStatus: true,
+    });
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(f.sends(), 1);
+    const reported = await registry.call('devos_worker_report', {
+      ...task, worker_id: 'reviewer', turn: 0, turn_token: token, status: 'approved',
+      summary: 'All work and GitHub evidence finished',
+    });
+    assert.equal(reported.isError, undefined);
+    const result = await Promise.race([
+      outgoing,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('MCP never completed browser wait')), 2000)),
+    ]);
+    assert.equal(result.text, '');
+    assert.equal(result.sessionId, saved);
+    assert.equal(f.sends(), 1, 'MCP must not trigger a second DOM submission');
+    assert.equal(f.reads(), 0, 'no browser history recovery needed');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test('fresh project conversation is persisted before MCP completes with stalled SSE', { timeout: 10_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'devos-report-fresh-'));
+  const task = { repo: 'Example/LiveMcp', issue: 9 };
+  const token = randomBytes(32).toString('hex');
+  const active = { workerId: 'reviewer', turn: 0, tokenHash: reportTokenHash(token) };
+  const f = fixture({ fresh: true, hangStream: true, missingId: true, failStream: false });
+  const registry = new DevosToolRegistry(root);
+  const sessions: string[] = [];
+  try {
+    await new JsonStateStore(root, task).save({
+      currentWorkerId: 'reviewer', completedRuns: 0, sessions: {},
+      task, activeReport: active,
+    });
+    const outgoing = f.executor.run({
+      projectRoot: root, prompt: 'Work', workerId: 'reviewer',
+      reportTurn: { task, active }, allowToolReportedStatus: true,
+      enforceProjectScope: true, onSession: session => { sessions.push(session); },
+    });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(f.sends(), 1);
+    const report = await registry.call('devos_worker_report', {
+      ...task, worker_id: 'reviewer', turn: 0, turn_token: token,
+      status: 'done', summary: 'Completed and posted evidence',
+    });
+    assert.equal(report.isError, undefined);
+    const result = await Promise.race([
+      outgoing,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('stalled despite MCP')), 2000)),
+    ]);
+    assert.equal(result.sessionId, saved);
+    assert.deepEqual(sessions, [saved]);
+    assert.equal(f.sends(), 1);
+    assert.equal(f.reads(), 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("page-world identity recovers exact submitted user when Playwright POST observer missed it", async () => {
+  const f = fixture({ missingId: true, pageWorldIdentity: true, failStream: true });
+  const result = await f.executor.run({ projectRoot: "/project", prompt: "Work", sessionId: saved });
+  assert.equal(result.text, terminal);
+  assert.equal(result.sessionId, saved);
+  assert.equal(f.sends(), 1);
+  assert.equal(f.reads(), 1);
 });

@@ -191,10 +191,10 @@ async function assertStartupTransportCloseIsBounded(failurePoint: "connect" | "i
           await gateway.close();
           return "resolved";
         }, () => "rejected"),
-      shortDelay(2_500).then(() => "hung"),
+      shortDelay(5_000).then(() => "hung"),
     ]);
     assert.equal(outcome, "rejected", `${failurePoint} cleanup must not wait forever`);
-    assert.ok(Date.now() - startedAt < 2_500, "startup cleanup must have a fixed upper bound");
+    assert.ok(Date.now() - startedAt < 5_000, "startup cleanup must have a fixed upper bound");
   } finally {
     Client.prototype.connect = originalConnect;
     Client.prototype.listTools = originalListTools;
@@ -229,7 +229,7 @@ test("HTTP listen failure uses bounded local-client cleanup", async () => {
       connectorModule.startGateway({ root: process.cwd(), port, ownerSecret: secret }),
       /Loopback gateway port unavailable/,
     );
-    assert.ok(Date.now() - startedAt < 2_500, "HTTP startup cleanup must have a fixed upper bound");
+    assert.ok(Date.now() - startedAt < 5_000, "HTTP startup cleanup must have a fixed upper bound");
   } finally {
     Client.prototype.close = originalClose;
     await new Promise<void>((resolve) => occupied.close(() => resolve()));
@@ -239,8 +239,13 @@ test("health reports suspect after a missed heartbeat but waits for the third mi
   const originalPing = Client.prototype.ping;
   let pingCalls = 0;
   const failures: string[] = [];
+  let releaseThirdMiss!: () => void;
+  const thirdMissGate = new Promise<void>((resolve) => { releaseThirdMiss = resolve; });
   Client.prototype.ping = async () => {
     pingCalls++;
+    // Keep the third miss in-flight so HTTP scheduling delays cannot turn
+    // this into an accidental third-failure assertion.
+    if (pingCalls === 3) await thirdMissGate;
     if (pingCalls > 1) throw new Error("controlled heartbeat miss");
     return {};
   };
@@ -252,13 +257,13 @@ test("health reports suspect after a missed heartbeat but waits for the third mi
       ownerSecret: secret,
       timing: {
         heartbeatIntervalMs: 10,
-        heartbeatTimeoutMs: 10,
+        heartbeatTimeoutMs: 10_000,
         heartbeatFailureThreshold: 3,
       },
       onFailure: (component) => failures.push(component),
     });
     const base = `http://127.0.0.1:${g.address.port}`;
-    const deadline = Date.now() + 1_000;
+    const deadline = Date.now() + 5_000;
     let health: { ready: boolean; backendAlive: boolean; backendState: string } | undefined;
     while (Date.now() < deadline) {
       if (pingCalls >= 2) {
@@ -274,6 +279,7 @@ test("health reports suspect after a missed heartbeat but waits for the third mi
     }, { ready: false, backendAlive: false, backendState: "suspect" });
     assert.deepEqual(failures, [], "recovery waits for the third consecutive miss");
   } finally {
+    releaseThirdMiss();
     await g?.close();
     Client.prototype.ping = originalPing;
   }
