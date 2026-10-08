@@ -17,7 +17,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ConnectorAuth } from "./connector-auth.js";
 import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./desktop-commander-integration.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
-import { extractHostConversationIdentity, recordHostConversationIdentity } from "./conversation-identity.js";
+import { observeSuccessfulToolConversationIdentity } from "./conversation-identity.js";
 import { inboundMcpHeaders, withInboundMcpHeaders } from "./mcp-inbound-context.js";
 
 export function publicIdentity(value: string): URL {
@@ -607,22 +607,13 @@ export async function startGateway(options: {
             }
             await Promise.all(writes);
 
-            if (
-              toolCall &&
-              result &&
-              typeof result === "object" &&
-              (result as { isError?: unknown }).isError !== true
-            ) {
-              const conversationIdentity = extractHostConversationIdentity(
+            if (toolCall) {
+              void observeSuccessfulToolConversationIdentity(
+                options.root,
                 request,
+                result,
                 inboundMcpHeaders(),
-              );
-              if (conversationIdentity) {
-                void recordHostConversationIdentity(
-                  options.root,
-                  conversationIdentity,
-                ).catch(() => {});
-              }
+              ).catch(() => {});
             }
 
             // ChatGPT imports remote MCP actions from tools/list and expects each
