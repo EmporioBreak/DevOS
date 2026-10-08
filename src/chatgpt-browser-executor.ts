@@ -3,7 +3,7 @@ import { readCompletedTurn, type SubmittedTurn } from "./chatgpt-turn-recovery.j
 import { mkdir } from "node:fs/promises";
 import { Camoufox } from "@camoufox/camoufox";
 import { loadOrCreateCamoufoxIdentity, type CamoufoxIdentity } from "./camoufox-identity.js";
-import type { BrowserContext, Page } from "playwright-core";
+import type { BrowserContext, Page, Request as PlaywrightRequest } from "playwright-core";
 import type { Executor, WorkerRequest } from "./executor.js";
 import { debugLog } from "./debug-log.js";
 import type { WorkerOutput } from "./workflow.js";
@@ -16,6 +16,7 @@ import {
   type ChatGptBrowserConfig,
 } from "./browser-config.js";
 import { CHATGPT_RESPONSE_LOADER_SOURCE } from "./chatgpt-response-loader.js";
+import { DevosToolRegistry } from "./mcp-tools/registry.js";
 
 export class BrowserResumeUnavailableError extends Error {
   constructor(readonly sessionId: string, message: string) {
@@ -114,13 +115,16 @@ export class ChatGptBrowserExecutor implements Executor {
     let submitted: SubmittedTurn | undefined;
     let submissionAmbiguous = false;
     let durableSession = request.sessionId;
+    // The terminal MCP tool is the control plane: receipt of its authenticated,
+    // turn-scoped report can finish this run even if the SSE observer hangs.
+    const reportAbort = request.reportTurn ? new AbortController() : undefined;
     const rememberSession = async (session: string) => {
       if (durableSession && !isSameChatGptConversation(durableSession, session)) throw new Error("ChatGPT changed conversation identity");
       if (projectScope) assertChatGptProjectScope(this.config.projectUrl, session, true);
       durableSession = session;
       await request.onSession?.(session);
     };
-    page.on("request", outgoing => {
+    const onOutgoingRequest = (outgoing: PlaywrightRequest) => {
       if (!mayHaveSubmitted) return;
       try {
         const target = new URL(outgoing.url());
@@ -138,7 +142,8 @@ export class ChatGptBrowserExecutor implements Executor {
         };
         debugLog("browser.submission", { phase: "post-submit", captured: true, submittedMessageId: submitted.messageId, conversationId: submitted.conversationId });
       } catch { submissionAmbiguous = true; }
-    });
+    };
+    page.on("request", onOutgoingRequest);
     try {
       let submissionStarted!: () => void;
       const submission = new Promise<void>(resolve => { submissionStarted = resolve; });
@@ -156,10 +161,30 @@ export class ChatGptBrowserExecutor implements Executor {
           throw new BrowserPreSubmitFailureError(message);
         }
       };
-      const response = sendAndRead(page, request.prompt, this.timeoutMs, assertSubmissionScope, preparedMessage).then(
+      const streamResponse = sendAndRead(page, request.prompt, this.timeoutMs, assertSubmissionScope, preparedMessage).then(
         text => ({ text } as const),
         error => ({ error } as const),
       );
+      const response = request.reportTurn && reportAbort
+        ? Promise.race([
+            streamResponse,
+            new DevosToolRegistry(request.projectRoot).waitForReport(
+              request.reportTurn.task, request.reportTurn.active, reportAbort.signal,
+            ).then(status => {
+              debugLog("browser.report", { workerId: request.workerId, turn: request.reportTurn!.active.turn, status, decision: "mcp-terminal" });
+              // Settle the old Playwright waiter without altering the ChatGPT
+              // network request or UI. Guard by token so it cannot affect a
+              // newly armed turn on this same page.
+              void page.evaluate(({ token }) => {
+                const state = (window as unknown as {
+                  __DEVOS_STREAM_STATE__?: { request: number; text: string | null; failed: boolean };
+                }).__DEVOS_STREAM_STATE__;
+                if (state && state.request === token && state.text === null) state.failed = true;
+              }, { token: preparedMessage.token }).catch(() => undefined);
+              return { text: "" } as const;
+            }),
+          ])
+        : streamResponse;
 
       if (request.sessionId) {
         const outcome = await response;
@@ -209,6 +234,10 @@ export class ChatGptBrowserExecutor implements Executor {
       }
       throw error;
     } finally {
+      reportAbort?.abort();
+      // Keep only one request listener per active worker turn across repeated
+      // use of the same tab, including MCP-finished turns.
+      page.off?.("request", onOutgoingRequest);
       // Stable worker pages stay alive for the whole task. Cleanup is task-scoped.
     }
   }
