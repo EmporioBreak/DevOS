@@ -138,9 +138,9 @@ export async function runWorkflow(
   const commandRunner = new LocalCommandRunner();
   const codex = new CodexExecutor(commandRunner);
   const savedState = await stateStore.load();
-  // No worker can be dispatched during final owner review, or on a repeat
-  // finalization attempt after approval. Avoid starting a headless browser
-  // runtime only to close it immediately.
+  // Do not start a NEW browser on approval or an idle review check. The
+  // already-running task runtime remains open throughout owner review and is
+  // reused if changes are requested; only final approval closes it.
   const needsBrowser = hasBrowserWorker &&
     !savedState?.completionApproved &&
     !(savedState?.mainAgentReviewPending && mainAgentDecision !== "changes_requested");
@@ -169,12 +169,9 @@ export async function runWorkflow(
     resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
     onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
   }).run();
-  // A final owner handoff may last hours or days. All worker turns have
-  // finished: release the browser process now, preserving only saved session
-  // URLs. If changes are requested, the next run restores worker tabs.
-  if (hasBrowserWorker && state.mainAgentReviewPending) {
-    await cliBrowserRuntimeDeps.close(cwd, workflow.task);
-  }
+  // final_review_required is not task completion. Keep the shared Camoufox
+  // process and every worker tab alive for main-agent review / rework.
+  // finalizeTask closes them only after terminal approval.
   return state;
   } finally {
     await taskLock.release();
