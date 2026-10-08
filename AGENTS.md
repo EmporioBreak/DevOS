@@ -8,7 +8,7 @@ The main agent owns the user task and final judgment. DevOS owns coordination, n
 
 ## Automatic current-chat identity
 
-ChatGPT conversation identity is established mechanically from host-provided MCP metadata on tool calls. DevOS uses `_meta["openai/session"]` as the canonical conversation-scoped identity, scoped by `openai/subject` and `openai/organization` when available, and persists only a keyed fingerprint of those opaque values.
+ChatGPT conversation identity is established mechanically from host-provided MCP metadata on tool calls. DevOS uses `_meta["openai/session"]` as the canonical conversation-scoped identity and persists only a keyed fingerprint of that opaque session value. Optional subject/organization metadata is not part of the conversation key.
 
 Do not generate binding markers, print binding tokens, traverse ChatGPT sidebars, or launch a browser merely to identify the calling conversation. A ChatGPT `/c/<conversation_id>` URL is a separate optional browser route and must only be stored when DevOS directly proves that route, such as for a browser conversation DevOS created or resumed itself. Missing host session metadata is `unresolved`; never infer identity from recency, timing, tool arguments, active tabs, or MCP transport-session ids.
 
