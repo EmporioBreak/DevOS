@@ -340,3 +340,48 @@ test("pre-submit saved Project redirect retires token and allows explicit safe r
     assert.equal(calls, 1);
   });
 });
+
+test("no-MCP post-submit loss cannot replay the same browser turn after restart", async () => {
+  await fixture(async (root, _registry, store) => {
+    const session = "https://chatgpt.com/g/project/c/reviewer";
+    const uncertain: Executor = { kind: "chatgpt_browser", async run(request) {
+      await request.onSession?.(session);
+      assert.match(request.browserTurnId ?? "", /^0:reviewer:[a-f0-9]{64}$/);
+      assert.equal(request.reportTurn, undefined, "MCP reports are disabled");
+      throw new Error("Ambiguous post-submit SSE loss");
+    }};
+    const options = { projectRoot: root, workflow, stateStore: store, enableWorkerReports: false };
+    await assert.rejects(new Orchestrator({
+      ...options, executors: new Map([["chatgpt_browser", uncertain]]),
+    }).run(), /Ambiguous post-submit/);
+    const persisted = await store.load();
+    assert.equal(persisted?.completedRuns, 0);
+    assert.ok(persisted?.activeReport, "even without MCP, an opaque attempt is persisted");
+    let reruns = 0;
+    const unsafe: Executor = { kind: "chatgpt_browser", async run() {
+      reruns++; throw Error("Duplicate submission");
+    }};
+    await assert.rejects(new Orchestrator({
+      ...options, executors: new Map([["chatgpt_browser", unsafe]]),
+    }).run(), /Unresolved prior browser turn/);
+    assert.equal(reruns, 0);
+  });
+});
+
+test("no-MCP success accepts a single machine-valid final answer and releases attempt marker", async () => {
+  await fixture(async (root, _registry, store) => {
+    const executor: Executor = { kind: "chatgpt_browser", async run(request) {
+      assert.equal(request.reportTurn, undefined);
+      await request.onSession?.("https://chatgpt.com/g/project/c/reviewer");
+      return { text: 'Complete\nDEVOS_RESULT {"status":"approved"}' };
+    }};
+    const result = await new Orchestrator({
+      projectRoot: root, workflow, stateStore: store,
+      executors: new Map([["chatgpt_browser", executor]]),
+      enableWorkerReports: false,
+    }).run();
+    assert.equal(result.completedRuns, 1);
+    assert.equal(result.mainAgentReviewPending, true);
+    assert.equal(result.activeReport, undefined);
+  });
+});

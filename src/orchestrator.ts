@@ -253,16 +253,19 @@ export class Orchestrator {
       const activeWorkflow = { ...workflow, task: state.task ?? workflow.task };
       // One capability per browser turn; only its hash is persisted and the
       // report cannot be replayed after a task restart or subsequent turn.
-      const workerReportToken = worker.executor === "chatgpt_browser" &&
-        this.options.enableWorkerReports && !recoveredReportStatus
-          ? randomBytes(32).toString("hex") : undefined;
-      if (workerReportToken) {
+      // Persist one opaque attempt identity for EVERY browser turn, even if
+      // MCP is disabled. Otherwise a lost no-MCP SSE result could be replayed
+      // on the next CLI run. Only disclose the token when reporting is enabled.
+      const browserTurnToken = worker.executor === "chatgpt_browser" &&
+        !recoveredReportStatus ? randomBytes(32).toString("hex") : undefined;
+      const workerReportToken = this.options.enableWorkerReports ? browserTurnToken : undefined;
+      if (browserTurnToken) {
         state = {
           ...state,
           activeReport: {
             workerId: worker.id,
             turn: state.completedRuns,
-            tokenHash: reportTokenHash(workerReportToken),
+            tokenHash: reportTokenHash(browserTurnToken),
           },
         };
         await stateStore.save(state);
@@ -300,7 +303,7 @@ export class Orchestrator {
           ...(worker.executor === "chatgpt_browser"
             ? {
                 knownBrowserSessions: knownBrowserSessions!,
-                browserTurnId: `${state.completedRuns}:${worker.id}${workerReportToken ? ":" + state.activeReport!.tokenHash : ""}`,
+                browserTurnId: `${state.completedRuns}:${worker.id}${browserTurnToken ? ":" + state.activeReport!.tokenHash : ""}`,
                 ...(workerReportToken ? {
                   allowToolReportedStatus: true,
                   reportTurn: { task: activeWorkflow.task, active: state.activeReport! },
