@@ -173,6 +173,35 @@ test("gateway injects one per-session binding token and strips it before Desktop
   }
 });
 
+test("cached clients without the new binding field still execute but do not schedule binding", async () => {
+  const observed: string[] = [];
+  const g = await gateway({ onBindingTokenSeen: token => { observed.push(token); } });
+  let client: Client | undefined;
+  const file = join(tmpdir(), "devos-binding-cached-" + randomBytes(8).toString("hex"));
+  try {
+    const base = "http://127.0.0.1:" + g.address.port;
+    const { tokens } = await oauthToken(base, secret);
+    client = new Client({ name: "cached-binding-test", version: "1" }, { capabilities: {} });
+    const transport = new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
+      requestInit: { headers: { Authorization: "Bearer " + tokens.access_token } },
+    });
+    await client.connect(transport as Transport);
+    await client.listTools();
+    await writeFile(file, "cached-schema-still-works");
+    const result = await client.callTool({
+      name: "read_file",
+      arguments: { path: file },
+    });
+    assert.match(JSON.stringify(result), /cached-schema-still-works/);
+    await shortDelay(10);
+    assert.deepEqual(observed, []);
+  } finally {
+    await client?.close();
+    await g.close();
+    await rm(file, { force: true });
+  }
+});
+
 test("gateway does not listen if tools/list readiness fails", async () => {
   const probe = createServer();
   await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
