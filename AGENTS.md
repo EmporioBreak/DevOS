@@ -6,13 +6,17 @@ This repository is operated through DevOS. New local Codex sessions should treat
 
 The main agent owns the user task and final judgment. DevOS owns coordination, never judgment.
 
-## Automatic current-chat identity
+## Automatic current-chat binding
 
-ChatGPT conversation identity is established mechanically from host-provided MCP metadata on tool calls. DevOS uses `_meta["openai/session"]` as the canonical conversation-scoped identity and persists only a keyed fingerprint of that opaque session value. Optional subject/organization metadata is not part of the conversation key.
+Normal ChatGPT Project startup must not generate binding markers, print binding tokens, traverse ChatGPT sidebars, or infer the current conversation from recency, timing, tool arguments, active tabs, titles, or MCP transport-session ids.
 
-Do not generate binding markers, print binding tokens, traverse ChatGPT sidebars, or launch a browser merely to identify the calling conversation. A ChatGPT `/c/<conversation_id>` URL is a separate optional browser route and must only be stored when DevOS directly proves that route, such as for a browser conversation DevOS created or resumed itself. Missing host session metadata is `unresolved`; never infer identity from recency, timing, tool arguments, active tabs, or MCP transport-session ids.
+A successful current-chat binding requires both:
+- a stable structured correlation signal from the MCP call, preferably `_meta["openai/session"]` with `x-openai-session` only as a compatibility transport view; and
+- the exact proven ChatGPT route `/c/<conversation_id>` for the conversation that issued that call.
 
-The legacy `bind-chat` command remains diagnostic compatibility only and is not part of normal new-chat startup.
+The opaque host session value is only a correlation signal; it is not itself the public ChatGPT conversation id and must not be treated as a successful binding. DevOS may store only a keyed fingerprint of that opaque value. Any bridge to `conversation_id` must be deterministic and structured, for example an exact request/turn identifier proven on both MCP ingress and canonical ChatGPT conversation data. Missing, ambiguous, or contradictory evidence is `unresolved`; never guess.
+
+The legacy `bind-chat` marker/sidebar flow remains diagnostic compatibility only and is not part of normal new-chat startup.
 
 ## Working model
 
