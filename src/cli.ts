@@ -147,7 +147,14 @@ export async function runWorkflow(
     : undefined;
   const commandRunner = new LocalCommandRunner();
   const codex = new CodexExecutor(commandRunner);
-  const chatgpt = hasBrowserWorker
+  const savedState = await stateStore.load();
+  // Do not start a NEW browser on approval or an idle review check. The
+  // already-running task runtime remains open throughout owner review and is
+  // reused if changes are requested; only final approval closes it.
+  const needsBrowser = hasBrowserWorker &&
+    !savedState?.completionApproved &&
+    !(savedState?.mainAgentReviewPending && mainAgentDecision !== "changes_requested");
+  const chatgpt = needsBrowser
     ? await cliBrowserRuntimeDeps.ensure(
         cwd,
         workflow.task,
@@ -172,6 +179,9 @@ export async function runWorkflow(
     resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
     onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
   }).run();
+  // final_review_required is not task completion. Keep the shared Camoufox
+  // process and every worker tab alive for main-agent review / rework.
+  // finalizeTask closes them only after terminal approval.
   return state;
   } finally {
     await taskLock.release();
