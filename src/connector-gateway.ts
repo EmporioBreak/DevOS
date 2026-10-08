@@ -18,6 +18,7 @@ import { ConnectorAuth } from "./connector-auth.js";
 import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./desktop-commander-integration.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
 import {
+  CHAT_BINDING_ARGUMENT,
   addChatBindingTokenToTool,
   createChatBindingToken,
   stripChatBindingTokenFromCall,
@@ -533,13 +534,19 @@ export async function startGateway(options: {
                 | undefined
             )?.progressToken;
             const writes: Promise<void>[] = [];
+            const toolCall = request.method === "tools/call";
+            const bindingEvidence =
+              toolCall &&
+              !!bindingToken &&
+              request.params?.arguments &&
+              typeof request.params.arguments === "object" &&
+              (request.params.arguments as Record<string, unknown>)[CHAT_BINDING_ARGUMENT] === bindingToken;
             const bindingAwareRequest = bindingToken
               ? stripChatBindingTokenFromCall(request, bindingToken)
               : request;
             const forwardedRequest = adaptChatGptToolCall(bindingAwareRequest) as typeof request;
-            const toolCall = request.method === "tools/call";
             if (
-              toolCall &&
+              bindingEvidence &&
               bindingToken &&
               newSession &&
               !newSession.bindingScheduled
