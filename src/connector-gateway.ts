@@ -1,6 +1,7 @@
 import express from "express";
 import { rateLimit } from "express-rate-limit";
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -17,6 +18,10 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ConnectorAuth } from "./connector-auth.js";
 import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./desktop-commander-integration.js";
 import { DevosToolRegistry } from "./mcp-tools/registry.js";
+import { ChatAccessRegistry, CHAT_NOOP_TOOL, chatSessionSignal, noOpResult, deniedChatToolResult } from "./chat-access.js";
+import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_URI, chatApprovalWidget } from "./chat-access-widget.js";
+import { ChatWorkerProbeRegistry, CHAT_WORKER_PROBE_TOOL } from "./chat-worker-probe.js";
+import { ChatWorkerGrantRegistry } from "./chat-worker-grants.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
 
 export function publicIdentity(value: string): URL {
@@ -286,6 +291,8 @@ async function evictLeastRecentlyUsedIdleSession(
 
 export async function startGateway(options: {
   root: string;
+  /** Project owning the chat allowlist; may differ from the software checkout. */
+  chatAccessRoot?: string;
   port: number;
   ownerSecret: string;
   publicUrl?: string;
@@ -322,7 +329,8 @@ export async function startGateway(options: {
     if (
       identity &&
       req.headers.origin &&
-      req.headers.origin !== identity.origin
+      req.headers.origin !== identity.origin &&
+      req.path !== "/chat-access/approve"
     ) {
       res.status(403).json({ error: "forbidden_origin" });
       return;
@@ -344,6 +352,11 @@ export async function startGateway(options: {
     options.onFailure?.("desktop_commander");
   };
   const localTools = new DevosToolRegistry(options.root);
+  const chatAccess = new ChatAccessRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
+  const chatApproval = new ChatApprovalTickets(options.chatAccessRoot ?? options.root, chatAccess);
+  const workerProbe = new ChatWorkerProbeRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
+  const workerGrants = new ChatWorkerGrantRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
+  const callOrigin = new AsyncLocalStorage<{ clientId: string; sessionHeader: unknown }>();
   let desktop: DesktopCommanderIntegration;
   desktop = new DesktopCommanderIntegration({
     root: options.root,
@@ -442,6 +455,29 @@ export async function startGateway(options: {
     },
   );
 
+  // Public only for widget-to-gateway HTTPS fetch: a one-time ticket issued
+  // through authenticated MCP AND an independent high-entropy password are required.
+  // No cookies or ambient bearer credentials. Never log request body or password.
+  app.options("/chat-access/approve", (_req, res) => {
+    res.set({
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Max-Age": "600",
+    }).sendStatus(204);
+  });
+  app.post("/chat-access/approve",
+    (_req, res, next) => { res.set("Access-Control-Allow-Origin", "*"); next(); },
+    rateLimit({ windowMs: 15 * 60_000, limit: 15, standardHeaders: false, legacyHeaders: false }),
+    express.json({ limit: "4kb", type: "application/json" }),
+    (req, res) => {
+      res.set("Access-Control-Allow-Origin", "*");
+      const approved = chatApproval.approve(req.body);
+      res.status(approved ? 200 : 403).json(approved
+        ? { approved: true }
+        : { approved: false, error: "authorization_failed" });
+    },
+  );
   app.use((req, res, next) => {
     if (!authRouter) {
       res.status(503).json({ error: "connector_not_ready" });
@@ -509,7 +545,7 @@ export async function startGateway(options: {
               version: "0.2.52",
             },
             {
-              capabilities: localInfo.capabilities ?? {},
+              capabilities: { ...(localInfo.capabilities ?? {}), resources: {} },
               ...(localInfo.instructions
                 ? { instructions: localInfo.instructions }
                 : {}),
@@ -523,6 +559,58 @@ export async function startGateway(options: {
                 | undefined
             )?.progressToken;
             const writes: Promise<void>[] = [];
+            // Authorize before parsing tool arguments or accessing Desktop Commander.
+            // The HTTP context is bound to EACH request, not to the MCP session's
+            // initialization request; concurrent requests never borrow identities.
+            const origin = callOrigin.getStore();
+            const signal = chatSessionSignal(request, origin?.sessionHeader);
+            const fingerprint = signal && origin
+              ? chatAccess.fingerprint(origin.clientId, signal)
+              : undefined;
+            const authorized = chatAccess.isApproved(fingerprint) || workerGrants.isGranted(fingerprint);
+            if (request.method === "tools/call") {
+              if (request.params?.name === CHAT_NOOP_TOOL.name)
+                return noOpResult(fingerprint, authorized);
+              if (request.params?.name === CHAT_WORKER_PROBE_TOOL.name) {
+                const issued = workerProbe.issue(fingerprint);
+                return { content: [{ type: "text", text: JSON.stringify(issued) }], structuredContent: issued };
+              }
+              if (request.params?.name === CHAT_APPROVAL_WIDGET_TOOL.name) {
+                if (authorized) return noOpResult(fingerprint, true);
+                const issued = chatApproval.issue(fingerprint);
+                return { content: [{ type: "text", text: JSON.stringify(issued) }],
+                  structuredContent: issued };
+              }
+              if (!authorized)
+                return deniedChatToolResult();
+            } else if (request.method === "resources/list") {
+              return { resources: [{
+                name: "DevOS chat access approval form",
+                uri: CHAT_APPROVAL_WIDGET_URI,
+                mimeType: "text/html;profile=mcp-app",
+              }] };
+            } else if (request.method === "resources/read" &&
+                       request.params?.uri === CHAT_APPROVAL_WIDGET_URI) {
+              if (!identity) throw new Error("Connector public origin unavailable");
+              const html = chatApprovalWidget(identity.origin);
+              return { contents: [{
+                uri: CHAT_APPROVAL_WIDGET_URI,
+                mimeType: "text/html;profile=mcp-app",
+                text: html,
+                _meta: {
+                  ui: {
+                    csp: { connectDomains: [identity.origin], resourceDomains: [] },
+                    prefersBorder: true,
+                  },
+                  "openai/ui": { availableDisplayModes: ["inline"] },
+                  "openai/widgetCSP": { connect_domains: [identity.origin], resource_domains: [] },
+                  "openai/widgetPrefersBorder": true,
+                },
+              }] };
+            } else if (request.method !== "tools/list" && request.method !== "ping" &&
+                       !authorized) {
+              throw new Error("MCP request not authorized for this conversation");
+            }
             const forwardedRequest = adaptChatGptToolCall(request) as typeof request;
             const toolCall = request.method === "tools/call";
             const timeoutOptions = toolCall
@@ -633,6 +721,9 @@ export async function startGateway(options: {
                 [key: string]: unknown;
               };
               const conflicting = listed.tools.find(tool =>
+                String(tool.name ?? "") === CHAT_NOOP_TOOL.name ||
+                String(tool.name ?? "") === CHAT_WORKER_PROBE_TOOL.name ||
+                String(tool.name ?? "") === CHAT_APPROVAL_WIDGET_TOOL.name ||
                 localTools.has(String(tool.name ?? "")) ||
                 String(tool.name ?? "").startsWith("devos_"));
               if (conflicting) throw new Error("Desktop Commander tool conflicts with reserved DevOS namespace");
@@ -705,12 +796,18 @@ export async function startGateway(options: {
                         ],
                       },
                     };
-                  }), ...localTools.list()],
+                  }), ...localTools.list(), CHAT_NOOP_TOOL, CHAT_APPROVAL_WIDGET_TOOL, CHAT_WORKER_PROBE_TOOL],
               };
             }
             return result;
           };
           server.fallbackNotificationHandler = async (notification) => {
+            const origin = callOrigin.getStore();
+            const signal = chatSessionSignal(notification, origin?.sessionHeader);
+            const fingerprint = signal && origin
+              ? chatAccess.fingerprint(origin.clientId, signal)
+              : undefined;
+            if (!chatAccess.isApproved(fingerprint) && !workerGrants.isGranted(fingerprint)) return;
             await desktop.notification(notification);
           };
           let newSession: PublicMcpSession | undefined;
@@ -743,7 +840,10 @@ export async function startGateway(options: {
         const isActiveSessionRequest = req.method === "POST";
         if (isActiveSessionRequest) trackedSession.activeRequestCount++;
         try {
-          await trackedSession.transport.handleRequest(req, res, req.body);
+          await callOrigin.run({
+            clientId: req.auth!.clientId,
+            sessionHeader: req.headers["x-openai-session"],
+          }, () => trackedSession.transport.handleRequest(req, res, req.body));
         } finally {
           if (isActiveSessionRequest) trackedSession.activeRequestCount--;
           trackedSession.lastActivityAt = Date.now();

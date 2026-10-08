@@ -79,11 +79,14 @@ test("public MCP gateway merges DevOS tools with unchanged Desktop Commander", {
       assert.ok(names.includes(name), name + " missing");
     assert.equal(names.length, new Set(names).size, "no duplicate names");
     assert.equal(listed.tools.find(t => t.name === "devos_task_status")?.annotations?.readOnlyHint, true);
+    assert.ok(names.includes("devos_noop"), "safe no-op tool is always advertised");
+    const noop = await client.callTool({ name: "devos_noop", arguments: {} });
+    assert.deepEqual(unpack(noop), { status: "no_action", approved: false });
     const upstream = await client.callTool({ name: "get_config", arguments: {} });
-    assert.ok(!upstream.isError, "upstream tool forwarding remains intact");
+    assert.equal(upstream.isError, true, "unapproved chat cannot forward upstream tools");
     const response = await client.callTool({ name: "devos_task_status",
       arguments: { repo: "Nobody/Nowhere", issue: 987654321 } });
-    assert.deepEqual(unpack(response), { found: false, task: { repo: "Nobody/Nowhere", issue: 987654321 } });
+    assert.equal(response.isError, true, "unapproved chat cannot call first-party tools");
     const invalid = await client.callTool({ name: "devos_task_status",
       arguments: { repo: "../escape", issue: 1 } });
     assert.equal(invalid.isError, true);

@@ -11,6 +11,7 @@ import {
   type ProcessIdentity,
 } from "../src/process-identity.js";
 import { oauthToken } from "./connector-auth-fixture.js";
+import { ChatAccessRegistry } from "../src/chat-access.js";
 import {
   dead,
   directDesktopCommanderChild,
@@ -49,7 +50,7 @@ async function connectClient(base: string, accessToken: string) {
   await client.connect(
     new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
       requestInit: {
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: { "x-openai-session": "watchdog-test-chat", Authorization: `Bearer ${accessToken}` },
       },
     }) as Transport,
   );
@@ -198,11 +199,14 @@ test(
         await readFile(join(f.root, "child.pid"), "utf8"),
       );
 
-      const { tokens } = await oauthToken(
+      const { tokens, client: oauthClient } = await oauthToken(
         base,
         fixtureSecret,
         "https://controlled.ngrok.example/mcp",
       );
+      const chats = new ChatAccessRegistry(f.root, fixtureSecret);
+      chats.approve(chats.fingerprint(oauthClient.client_id, "watchdog-test-chat"),
+        "https://chatgpt.com/c/6ac799bd-7ffc-83eb-b2b0-15d6a2f558a0");
       client = await connectClient(base, tokens.access_token);
       const initialTools = await client.listTools();
       assert.ok(initialTools.tools.some((tool) => tool.name === "read_file"));
@@ -278,6 +282,12 @@ test(
 
       const configTool = recoveredTools.tools.find((tool) => tool.name === "get_config");
       assert.ok(configTool, "recovered public session exposes get_config");
+      const expectedChat = chats.fingerprint(oauthClient.client_id, "watchdog-test-chat");
+      assert.equal(chats.isApproved(expectedChat), true, "approved grant survives runtime restart");
+      const noop = JSON.parse(((await client.callTool({ name: "devos_noop", arguments: {} }))
+        .content as Array<{ text: string }>)[0]!.text);
+      assert.equal(noop.chat_reference, expectedChat, "recovered runtime uses the same OAuth-client and session fingerprint");
+      assert.equal(noop.approved, true, "recovered runtime loads the persisted chat grant");
       for (let i = 0; i < 100; i++) {
         const [tools, config] = await Promise.all([
           client.listTools(),

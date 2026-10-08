@@ -659,6 +659,11 @@ export function buildWorkerPrompt(
     worker.executor === "codex"
       ? "This worker already runs on the local Codex executor. It must not return needs_local_worker; return failed for an unrecoverable local-executor failure."
       : "If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_local_worker instead of failed.",
+    ...(worker.executor === "chatgpt_browser" && report ? [
+      "This is a DevOS-owned browser worker conversation. Before the FIRST operational Desktop Commander or first-party DevOS MCP call in this turn, call the safe devos_worker_probe tool exactly once, with no arguments. This does not itself authorize any operation; the trusted local browser owner verifies its provider-structured tool response in this exact worker chat.",
+      "Then check devos_noop for approved=true before using operational Mac/DevOS tools. A brief delay in local proof verification is possible; at most two bounded retries, no rapid polling. If unavailable/unapproved, do not operate the Mac; report the blocker accurately.",
+      "Do not request owner passwords, use devos_authorize_chat, supply your chat URL as proof, or reuse devos_worker_report turn tokens for authorization.",
+    ] : []),
     ...(report ? [
       "The devos_worker_report MCP tool is the PRIMARY terminal status signal. Perform ALL required work and GitHub reporting BEFORE you call it. Call it once only when this worker's task is fully finished.",
       `Its arguments: repo=${JSON.stringify(workflow.task.repo)}, issue=${workflow.task.issue}, worker_id=${JSON.stringify(worker.id)}, turn=${report.turn}, turn_token=${report.token}; provide status and a short summary.`,
