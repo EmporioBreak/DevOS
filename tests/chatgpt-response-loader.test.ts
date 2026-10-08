@@ -78,3 +78,27 @@ test("stream bytes refresh activity independently of response completion", async
   controller.close();
   await response.text();
 });
+
+test("page-world submission ID is captured only for the armed exact user prompt", async () => {
+  const payload = { messages: [
+    { id: "tool", author: { role: "tool" }, content: { parts: ["different"] } },
+    { id: "user-actual", author: { role: "user" }, content: { parts: ["exact", " prompt"] } },
+  ], conversation_id: "saved" };
+  const content = event(finalMessage);
+  const encoder = new TextEncoder();
+  const run = async (expected: string) => {
+    const window = {
+      location: { origin: "https://chatgpt.com" },
+      fetch: async () => new Response(new ReadableStream({
+        start(c) { c.enqueue(encoder.encode(content)); c.close(); },
+      }), { headers: { "content-type": "text/event-stream" } }),
+    } as unknown as { fetch: typeof fetch; __DEVOS_ARM_STREAM__: (prompt: string) => number;
+      __DEVOS_STREAM_STATE__: { messageId: string | null; conversationId: string | null; text: string | null } };
+    runInNewContext(CHATGPT_RESPONSE_LOADER_SOURCE, { window, URL, TextDecoder });
+    window.__DEVOS_ARM_STREAM__(expected);
+    await window.fetch("https://chatgpt.com/backend-api/conversation", { method: "POST", body: JSON.stringify(payload) });
+    return { messageId: window.__DEVOS_STREAM_STATE__.messageId, conversationId: window.__DEVOS_STREAM_STATE__.conversationId };
+  };
+  assert.deepEqual(await run("exact prompt"), { messageId: "user-actual", conversationId: "saved" });
+  assert.deepEqual(await run("different prompt"), { messageId: null, conversationId: null });
+});

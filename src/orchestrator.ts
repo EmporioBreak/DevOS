@@ -1,5 +1,6 @@
 import {
   isBrowserPreSubmitFailureError,
+  isBrowserResumeUnavailableError,
 } from "./chatgpt-browser-executor.js";
 import { isCodexResumeUnavailableError } from "./codex-executor.js";
 import type { Executor } from "./executor.js";
@@ -299,7 +300,7 @@ export class Orchestrator {
           ...(worker.executor === "chatgpt_browser"
             ? {
                 knownBrowserSessions: knownBrowserSessions!,
-                browserTurnId: `${state.completedRuns}:${worker.id}`,
+                browserTurnId: `${state.completedRuns}:${worker.id}${workerReportToken ? ":" + state.activeReport!.tokenHash : ""}`,
                 ...(workerReportToken ? {
                   allowToolReportedStatus: true,
                   reportTurn: { task: activeWorkflow.task, active: state.activeReport! },
@@ -342,6 +343,17 @@ export class Orchestrator {
             prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot),
             onSession,
           });
+        } else if (
+          worker.executor === "chatgpt_browser" && sessionId &&
+          isBrowserResumeUnavailableError(error)
+        ) {
+          // BrowserResumeUnavailableError is classified *before* any possible
+          // DOM submit. Preserve the previously validated conversation, but
+          // retire the unused one-turn capability so explicit retry is safe.
+          const { activeReport: _unusedCapability, ...safeState } = state;
+          state = safeState;
+          await stateStore.save(state);
+          throw error;
         } else if (
           worker.executor === "chatgpt_browser" &&
           !sessionId &&
@@ -586,7 +598,7 @@ export async function awaitWorkerReportOrBrowser(options: {
           options.sessionSaved.then(() => ({ kind: "saved" as const })),
           browser,
           new Promise<{ kind: "timeout" }>(resolve => {
-            timer = setTimeout(() => resolve({ kind: "timeout" }), 15_000);
+            timer = setTimeout(() => resolve({ kind: "timeout" }), 3 * 60_000);
           }),
         ]);
         if (next.kind === "browser_error") throw next.error;

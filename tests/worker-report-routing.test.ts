@@ -6,6 +6,7 @@ import test from "node:test";
 import { JsonStateStore } from "../src/json-state-store.js";
 import { DevosToolRegistry, reportTokenHash } from "../src/mcp-tools/registry.js";
 import { Orchestrator } from "../src/orchestrator.js";
+import { BrowserResumeUnavailableError } from "../src/chatgpt-browser-executor.js";
 import type { Executor, WorkerRequest } from "../src/executor.js";
 import type { Workflow, WorkerStatus } from "../src/workflow.js";
 
@@ -54,7 +55,7 @@ test("MCP reports route through the predeclared graph without a textual final ma
         const next = expected.shift();
         assert.equal(request.workerId, next?.worker);
         tokens.add(tokenFor(request));
-        assert.equal(request.browserTurnId, String(turnFor(request)) + ":" + next?.worker);
+        assert.match(request.browserTurnId ?? "", new RegExp("^" + turnFor(request) + ":" + next?.worker + ":[a-f0-9]{64}$"));
         const session = sessions[next!.worker] ??= "https://chatgpt.com/g/project/c/" + next!.worker;
         await request.onSession?.(session);
         await sendReport(registry, request, next!.status);
@@ -305,5 +306,37 @@ test("proven pre-submit failure permits a new tokenized turn on explicit retry",
     }).run();
     assert.equal(calls, 1);
     assert.equal(result.completedRuns, 1);
+  });
+});
+
+test("pre-submit saved Project redirect retires token and allows explicit safe retry", async () => {
+  await fixture(async (root, registry, store) => {
+    const session = "https://chatgpt.com/g/project/c/reviewer";
+    await store.save({ currentWorkerId: "reviewer", completedRuns: 0,
+      browserWorkersStarted: ["reviewer"], sessions: { reviewer: session }, task });
+    let firstToken = "";
+    const blocked: Executor = { kind: "chatgpt_browser", async run(request) {
+      firstToken = tokenFor(request);
+      throw new BrowserResumeUnavailableError(session, "Project route canonicalization failed before submission");
+    }};
+    const options = { projectRoot: root, workflow, stateStore: store, enableWorkerReports: true };
+    await assert.rejects(new Orchestrator({
+      ...options, executors: new Map([["chatgpt_browser", blocked]]),
+    }).run(), BrowserResumeUnavailableError);
+    assert.equal((await store.load())?.activeReport, undefined);
+    assert.equal((await store.load())?.sessions.reviewer, session);
+    let calls = 0;
+    const working: Executor = { kind: "chatgpt_browser", async run(request) {
+      calls++;
+      assert.notEqual(tokenFor(request), firstToken);
+      await sendReport(registry, request, "approved");
+      return { text: "", sessionId: session };
+    }};
+    const result = await new Orchestrator({
+      ...options, executors: new Map([["chatgpt_browser", working]]),
+    }).run();
+    assert.equal(result.completedRuns, 1);
+    assert.equal(result.mainAgentReviewPending, true);
+    assert.equal(calls, 1);
   });
 });

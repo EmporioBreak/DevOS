@@ -18,6 +18,7 @@ import {
   parseMainAgentDecision,
   prepareRunState,
   runWorkflow,
+  workerReportsEnabled,
 } from "../src/cli.js";
 import type { ReadyTask } from "../src/ready-tasks.js";
 import type { Workflow } from "../src/workflow.js";
@@ -343,4 +344,11 @@ test("browser cleanup failure preserves approved state and retries finalization 
   assert.equal(closes, 2);
   assert.equal(await isTaskCompleted(root, workflow.task.issue), true);
   assert.equal(await store.load(), null);
+});
+
+test("explicit MCP outage mode preserves legacy browser status fallback", () => {
+  assert.equal(workerReportsEnabled(undefined), true);
+  assert.equal(workerReportsEnabled("1"), true);
+  assert.equal(workerReportsEnabled("0"), false);
+  assert.throws(() => workerReportsEnabled("off"), /must be 0 or 1/);
 });

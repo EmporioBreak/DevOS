@@ -48,6 +48,7 @@ function fixture(options: {
   fresh?: boolean;
   streamError?: string;
   hangStream?: boolean;
+  pageWorldIdentity?: boolean;
 } = {}) {
   let sends = 0, newPages = 0, closed = 0, reads = 0, url = 'about:blank';
   const listeners = new Map<string, Function[]>();
@@ -96,6 +97,8 @@ function fixture(options: {
       };
     },
     async evaluate(fn: Function) {
+      if (options.pageWorldIdentity && fn.toString().includes('state?.request'))
+        return { messageId: 'u', conversationId: 'saved' };
       if (fn.toString().includes('document.body'))
         return '';
       if (fn.toString().includes('__DEVOS_ARM_STREAM__'))
@@ -502,4 +505,13 @@ test('fresh project conversation is persisted before MCP completes with stalled 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("page-world identity recovers exact submitted user when Playwright POST observer missed it", async () => {
+  const f = fixture({ missingId: true, pageWorldIdentity: true, failStream: true });
+  const result = await f.executor.run({ projectRoot: "/project", prompt: "Work", sessionId: saved });
+  assert.equal(result.text, terminal);
+  assert.equal(result.sessionId, saved);
+  assert.equal(f.sends(), 1);
+  assert.equal(f.reads(), 1);
 });

@@ -3,12 +3,13 @@ import { readCompletedTurn, type SubmittedTurn } from "./chatgpt-turn-recovery.j
 import { mkdir } from "node:fs/promises";
 import { Camoufox } from "@camoufox/camoufox";
 import { loadOrCreateCamoufoxIdentity, type CamoufoxIdentity } from "./camoufox-identity.js";
-import type { BrowserContext, Page, Request as PlaywrightRequest } from "playwright-core";
+import type { BrowserContext, Page, Request as PlaywrightRequest, Response as PlaywrightResponse } from "playwright-core";
 import type { Executor, WorkerRequest } from "./executor.js";
 import { debugLog } from "./debug-log.js";
 import type { WorkerOutput } from "./workflow.js";
 import {
   assertChatGptProjectScope,
+  canonicalChatGptProjectId,
   getChatGptProjectScope,
   isProvisionalChatGptConversationId,
   loadChatGptBrowserConfig,
@@ -16,6 +17,7 @@ import {
   type ChatGptBrowserConfig,
 } from "./browser-config.js";
 import { CHATGPT_RESPONSE_LOADER_SOURCE } from "./chatgpt-response-loader.js";
+import { readExactDomFinal } from "./chatgpt-dom-recovery.js";
 import { DevosToolRegistry } from "./mcp-tools/registry.js";
 
 export class BrowserResumeUnavailableError extends Error {
@@ -110,6 +112,7 @@ export class ChatGptBrowserExecutor implements Executor {
       page,
       prepared: preparedMessage,
       getBackendFailure,
+      detachBackendListener,
     } = await this.prepare(request, !!projectScope);
     let mayHaveSubmitted = false;
     let submitted: SubmittedTurn | undefined;
@@ -129,19 +132,26 @@ export class ChatGptBrowserExecutor implements Executor {
       try {
         const target = new URL(outgoing.url());
         if (target.origin !== new URL(url).origin || !/^\/backend-api\/(?:f\/)?conversation\/?$/.test(target.pathname) || outgoing.method() !== "POST") return;
-        const payload = outgoing.postDataJSON();
-        const user = payload?.messages?.length === 1 ? payload.messages[0] : undefined;
-        if (submitted || !user || user.author?.role !== "user" || typeof user.id !== "string" || !user.id || user.id.length > 200 || user.content?.parts?.join("") !== request.prompt) {
-          submissionAmbiguous = true; return;
+        const payload: unknown = outgoing.postDataJSON();
+        const candidate = extractSubmittedTurn(payload, request.prompt);
+        debugLog("browser.submission.shape", conversationRequestShape(payload));
+        if (!candidate || submitted) {
+          if (submitted) submissionAmbiguous = true;
+          // Missing/inaccessible identity in the network observer is not proof
+          // of a conflicting request: the exact-prompt page-world fetch
+          // interceptor can still independently supply the single ID.
+          debugLog("browser.submission", { phase: "post-submit", captured: false, reason: submitted ? "duplicate conversation POST" : "request identity unavailable" });
+          return;
         }
-        submitted = {
-          messageId: user.id,
-          ...(typeof payload.conversation_id === "string" ? { conversationId: payload.conversation_id } : {}),
-          ...(typeof (payload.request_id ?? user.metadata?.request_id) === "string" ? { requestId: payload.request_id ?? user.metadata.request_id } : {}),
-          ...(typeof (payload.turn_exchange_id ?? user.metadata?.turn_exchange_id) === "string" ? { turnExchangeId: payload.turn_exchange_id ?? user.metadata.turn_exchange_id } : {}),
-        };
-        debugLog("browser.submission", { phase: "post-submit", captured: true, submittedMessageId: submitted.messageId, conversationId: submitted.conversationId });
-      } catch { submissionAmbiguous = true; }
+        submitted = candidate;
+        // Log only whether identifiers are present; never persist prompt, IDs,
+        // OAuth headers or a raw request payload in diagnostics.
+        debugLog("browser.submission", { phase: "post-submit", captured: true, hasConversationId: !!submitted.conversationId, hasMessageId: true });
+      } catch {
+        // No known identity; conservative page-world capture may still supply
+        // exact-prompt proof. Never infer an ID from arbitrary final text.
+        debugLog("browser.submission", { phase: "post-submit", captured: false, reason: "request payload unavailable" });
+      }
     };
     page.on("request", onOutgoingRequest);
     try {
@@ -201,7 +211,10 @@ export class ChatGptBrowserExecutor implements Executor {
       // preserve a created session even when response loading has already failed.
       const prepared = await Promise.race([submission, response]);
       if (prepared && "error" in prepared) throw prepared.error;
-      const sessionId = await waitForConversationUrl(page, Math.min(this.timeoutMs, 45_000));
+      const sessionId = await waitForConversationUrl(
+        page, Math.min(this.timeoutMs, 5 * 60_000),
+        projectScope ? this.config.projectUrl : undefined,
+      );
 
       if (projectScope) assertChatGptProjectScope(this.config.projectUrl, sessionId, true);
       debugLog("browser.session.ready", { sessionId, actualUrl: page.url() });
@@ -216,6 +229,39 @@ export class ChatGptBrowserExecutor implements Executor {
     } catch (error) {
       const cause = error instanceof Error ? error.message.split("\n")[0]! : "Browser operation failed";
       if (mayHaveSubmitted) {
+        // Optional read-only DOM evidence: one exact submitted user turn and
+        // one stable assistant final bearing a machine-valid DEVOS_RESULT.
+        // This does not depend on outgoing network user IDs or extra MCP calls.
+        // Only evaluate it on the verified saved Project conversation.
+        if (durableSession && isSameChatGptConversation(durableSession, page.url())) {
+          const domFinal = await readExactDomFinal(page, request.prompt, Math.min(this.timeoutMs, 3_000));
+          if (domFinal) {
+            debugLog("browser.recovery", { phase: "post-submit", decision: "exact-dom-final" });
+            return { text: domFinal, sessionId: durableSession };
+          }
+        }
+        // A page-world Request/fetch interceptor may see the exact outgoing
+        // user identity even when the Playwright network observer misses it.
+        // It is still anchored to this armed turn and the exact prompt.
+        if (!submitted && !submissionAmbiguous) {
+          const captured = await page.evaluate(({ token }) => {
+            const state = (window as unknown as {
+              __DEVOS_STREAM_STATE__?: {
+                request: number; messageId: string | null; conversationId: string | null;
+              };
+            }).__DEVOS_STREAM_STATE__;
+            if (state?.request !== token) return null;
+            return { messageId: state.messageId, conversationId: state.conversationId };
+          }, { token: preparedMessage.token }).catch(() => null);
+          if (captured && typeof captured.messageId === "string" &&
+              captured.messageId.length > 0 && captured.messageId.length <= 200) {
+            submitted = {
+              messageId: captured.messageId,
+              ...(typeof captured.conversationId === "string" &&
+                captured.conversationId.length <= 200 ? { conversationId: captured.conversationId } : {}),
+            };
+          }
+        }
         debugLog("browser.recovery", { attempt: 1, phase: "post-submit", sessionId: durableSession, captured: !!submitted && !submissionAmbiguous, decision: "reload/read-only" });
         try {
           if (!submitted || submissionAmbiguous || !durableSession) throw new Error("submitted user/conversation identity absent or ambiguous");
@@ -235,6 +281,7 @@ export class ChatGptBrowserExecutor implements Executor {
       throw error;
     } finally {
       reportAbort?.abort();
+      detachBackendListener();
       // Keep only one request listener per active worker turn across repeated
       // use of the same tab, including MCP-finished turns.
       page.off?.("request", onOutgoingRequest);
@@ -269,6 +316,7 @@ export class ChatGptBrowserExecutor implements Executor {
     page: Page;
     prepared: PreparedMessage;
     getBackendFailure: () => Error | undefined;
+    detachBackendListener: () => void;
   }> {
     const url = request.sessionId ?? this.config.projectUrl;
     const deadline = Date.now() + Math.min(this.timeoutMs, 45_000);
@@ -277,6 +325,7 @@ export class ChatGptBrowserExecutor implements Executor {
       let phase = "context";
       let expired = false;
       let backendFailure: Error | undefined;
+      let detachBackendListener = () => {};
       const budget = Math.min(15_000, deadline - Date.now());
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -288,7 +337,7 @@ export class ChatGptBrowserExecutor implements Executor {
           page = await this.getWorkerPage(request, context);
           if (expired) { await page.close(); throw new Error("Timeout: preparation deadline exhausted"); }
           const currentPage = page;
-          currentPage.on("response", response => {
+          const onBackendResponse = (response: PlaywrightResponse) => {
             const target = new URL(response.url());
             const status = response.status();
             if (target.origin === new URL(url).origin && target.pathname.startsWith("/backend-api/") && status >= 500) backendFailure = new Error(`Transient backend HTTP ${status}`);
@@ -296,7 +345,9 @@ export class ChatGptBrowserExecutor implements Executor {
               const challenge = (response.headers()["content-type"] ?? "").includes("text/html");
               backendFailure = new Error(`ChatGPT ${challenge ? "authentication/challenge" : "authentication/access"} blocked backend (HTTP ${status})${status === 401 ? "; visible login/debug run needed (DEVOS_BROWSER_HEADLESS=0)" : ""}`);
             }
-          });
+          };
+          currentPage.on("response", onBackendResponse);
+          detachBackendListener = () => { currentPage.off?.("response", onBackendResponse); };
           phase = "navigation";
           const response = await currentPage.goto(url, { waitUntil: "domcontentloaded", timeout: budget });
           if (expired) throw new Error("Timeout: preparation deadline exhausted");
@@ -348,6 +399,7 @@ export class ChatGptBrowserExecutor implements Executor {
             page: currentPage,
             prepared,
             getBackendFailure: () => backendFailure,
+            detachBackendListener,
           };
         };
         const outcome = await Promise.race([
@@ -358,6 +410,7 @@ export class ChatGptBrowserExecutor implements Executor {
         return outcome;
       } catch (error) {
         expired = true;
+        detachBackendListener();
         const effectiveError = backendFailure ?? error;
         const cause = effectiveError instanceof Error ? effectiveError.message.split("\n")[0]! : "Browser operation failed";
         const transient = isTransientBrowserFailure(effectiveError);
@@ -524,9 +577,14 @@ export function isSameChatGptConversation(requestedUrl: string, actualUrl: strin
   try {
     const requested = validateChatGptUrl(requestedUrl);
     const actual = validateChatGptUrl(actualUrl);
-    const route = /^\/(?:g\/[^/]+\/)?c\/([^/]+)\/?$/;
-    const id = route.exec(requested.pathname)?.[1];
-    return !!id && !isProvisionalChatGptConversationId(id) && requested.origin === actual.origin && requested.pathname.replace(/\/$/, "") === actual.pathname.replace(/\/$/, "");
+    const route = /^\/(?:g\/([^/]+)\/)?c\/([^/]+)\/?$/;
+    const original = route.exec(requested.pathname);
+    const opened = route.exec(actual.pathname);
+    if (!original || !opened || isProvisionalChatGptConversationId(original[2])) return false;
+    const requestedProject = original[1] ? canonicalChatGptProjectId(original[1]) : null;
+    const openedProject = opened[1] ? canonicalChatGptProjectId(opened[1]) : null;
+    return requested.origin === actual.origin &&
+      requestedProject === openedProject && original[2] === opened[2];
   } catch { return false; }
 }
 
@@ -549,9 +607,9 @@ interface PreparedMessage { token: number; useButton: boolean }
 async function prepareMessage(page: Page, prompt: string, timeoutMs: number): Promise<PreparedMessage> {
   await page.locator(COMPOSER).first().fill(prompt, { timeout: timeoutMs });
   const token = await page.evaluate(() => {
-    const arm = (window as unknown as { __DEVOS_ARM_STREAM__?: () => number }).__DEVOS_ARM_STREAM__;
+    const arm = (window as unknown as { __DEVOS_ARM_STREAM__?: (prompt: string) => number }).__DEVOS_ARM_STREAM__;
     if (!arm) throw new Error("ChatGPT response loader is not installed");
-    return arm();
+    return arm(prompt);
   });
   return { token, useButton: await page.locator(SEND).first().isVisible() };
 }
@@ -580,6 +638,8 @@ export async function sendAndRead(
     await composer.press("Enter", { timeout: Math.min(timeoutMs, 15_000) });
   }
 
+  const domAbort = new AbortController();
+  const sseRead = (async () => {
   const startedAt = Date.now();
   await page.waitForFunction(
     ({ token, startedAt, idleMs }) => {
@@ -616,22 +676,99 @@ export async function sendAndRead(
   }
 
   return state.text;
+  })();
+  const domRead = readExactDomFinal(page, prompt, timeoutMs, domAbort.signal)
+    .then(text => text === null ? new Promise<never>(() => {}) : text);
+  try {
+    return await Promise.race([sseRead, domRead]);
+  } finally {
+    domAbort.abort();
+    // A rejected/late Playwright read is handled by its awaiting Promise.race
+    // handler; no extra DOM submission or network request is ever created.
+  }
 }
 
 export async function waitForConversationUrl(
-  page: Page,
-  timeoutMs: number,
+  page: Pick<Page, "url">, timeoutMs: number, projectUrl?: string,
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
-
   while (Date.now() < deadline) {
     const current = validateChatGptUrl(page.url());
     const conversation = /\/c\/([^/?#]+)/.exec(current.pathname)?.[1];
     if (conversation && !isProvisionalChatGptConversationId(conversation)) {
+      if (projectUrl) assertChatGptProjectScope(projectUrl, current.href, true);
       return current.href;
+    }
+    if (projectUrl) {
+      // Immediately reject navigation into a different Project/standalone
+      // conversation; only the expected Project home and provisional chat
+      // states can be polled while awaiting durable identity.
+      assertChatGptProjectScope(projectUrl, current.href, false);
     }
     await new Promise(resolve => setTimeout(resolve, 250));
   }
+  throw new Error("ChatGPT conversation URL did not appear before timeout; prompt not replayed");
+}
 
-  throw new Error("ChatGPT conversation URL did not appear before timeout");
+/** Safe, structural diagnostics; never log POST content, message IDs,
+ * bodies, auth headers, user text or conversation identifiers. */
+export function conversationRequestShape(payload: unknown): Record<string, unknown> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload))
+    return { format: "unknown" };
+  const body = payload as Record<string, unknown>;
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  return {
+    format: "object",
+    hasMessagesArray: Array.isArray(body.messages),
+    messageCount: messages.length,
+    authorRoles: messages.slice(0, 10).map(message => {
+      if (!message || typeof message !== "object" || Array.isArray(message)) return "unknown";
+      const value = (message as { author?: { role?: unknown } }).author?.role;
+      return ["user", "assistant", "tool", "system"].includes(String(value)) ? value : "unknown";
+    }),
+    hasMessageIds: messages.slice(0, 10).map(message =>
+      !!message && typeof message === "object" && typeof (message as { id?: unknown }).id === "string"),
+    partShapes: messages.slice(0, 10).map(message => {
+      const content = message && typeof message === "object"
+        ? (message as { content?: { parts?: unknown } }).content : null;
+      if (!content || !Array.isArray(content.parts)) return "none";
+      return content.parts.map(part => typeof part === "string" ? "text" : part && typeof part === "object" ? "object" : "other").slice(0, 10);
+    }),
+    hasConversationId: typeof body.conversation_id === "string",
+  };
+}
+
+export function extractSubmittedTurn(payload: unknown, prompt: string): SubmittedTurn | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const body = payload as Record<string, unknown>;
+  if (!Array.isArray(body.messages)) return null;
+  const candidates = body.messages.filter((entry: unknown) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const user = entry as Record<string, any>;
+    if (user.author?.role !== "user") return false;
+    const parts = user.content?.parts;
+    if (!Array.isArray(parts) || parts.length === 0) return false;
+    const text: string[] = [];
+    for (const part of parts) {
+      if (typeof part === "string") { text.push(part); continue; }
+      // Some ChatGPT request formats encode plain text as typed parts.
+      // Reject attachments, images, unsupported parts and mixed content:
+      // the outgoing user message must still match our full prompt exactly.
+      if (part && typeof part === "object" && !Array.isArray(part) &&
+          ["text", "input_text"].includes(part.type ?? part.content_type) &&
+          typeof part.text === "string") { text.push(part.text); continue; }
+      return false;
+    }
+    return text.join("") === prompt;
+  });
+  if (candidates.length !== 1) return null;
+  const user = candidates[0] as Record<string, any>;
+  if (typeof user.id !== "string" || !user.id || user.id.length > 200) return null;
+  const identifier = (value: unknown) => typeof value === "string" && value.length > 0 && value.length <= 200 ? value : undefined;
+  return {
+    messageId: user.id,
+    ...(identifier(body.conversation_id) ? { conversationId: identifier(body.conversation_id)! } : {}),
+    ...(identifier(body.request_id ?? user.metadata?.request_id) ? { requestId: identifier(body.request_id ?? user.metadata?.request_id)! } : {}),
+    ...(identifier(body.turn_exchange_id ?? user.metadata?.turn_exchange_id) ? { turnExchangeId: identifier(body.turn_exchange_id ?? user.metadata?.turn_exchange_id)! } : {}),
+  };
 }
