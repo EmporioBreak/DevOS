@@ -8,7 +8,11 @@ export const CHAT_NOOP_TOOL = {
   description: "Does nothing. When ChatGPT supplies a session identifier, returns its opaque approval reference and current approval status. Never runs shell commands or reads user files.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-  _meta: { securitySchemes: [{ type: "oauth2", scopes: ["mcp:tools"] }] },
+  _meta: {
+    ui: { resourceUri: "ui://devos/chat-approval-v1.html" },
+    "openai/outputTemplate": "ui://devos/chat-approval-v1.html",
+    securitySchemes: [{ type: "oauth2", scopes: ["mcp:tools"] }],
+  },
 } as const;
 
 type Binding = { fingerprint: string; url: string };
@@ -25,6 +29,19 @@ export function canonicalPrivateChatUrl(value: string): string {
       !(standalone || project))
     throw new Error("Expected an exact private ChatGPT /c/<conversation_id> URL");
   return u.origin + u.pathname.replace(/\/$/, "");
+}
+
+/** Public share links label only an owner-password-approved MCP session.
+ * They never prove ownership or identify a private /c conversation. */
+export function canonicalChatApprovalReference(value: string): string {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error("Invalid ChatGPT link"); }
+  if (url.protocol !== "https:" || url.hostname !== "chatgpt.com" ||
+      url.username || url.password || url.port || url.search || url.hash)
+    throw new Error("Expected a direct ChatGPT conversation/share link");
+  if (/^\/share\/[0-9a-f-]{16,}\/?$/i.test(url.pathname))
+    return url.origin + url.pathname.replace(/\/$/, "");
+  return canonicalPrivateChatUrl(value);
 }
 
 function fingerprintFormat(value: string): boolean {
@@ -86,7 +103,7 @@ export class ChatAccessRegistry {
         !/^[0-9a-f]{64}$/.test(data.mac) ||
         data.entries.some(b => !b || typeof b.fingerprint !== "string" ||
           !fingerprintFormat(b.fingerprint) || typeof b.url !== "string" ||
-          canonicalPrivateChatUrl(b.url) !== b.url) ||
+          canonicalChatApprovalReference(b.url) !== b.url) ||
         new Set(data.entries.map(b => b.fingerprint)).size !== data.entries.length)
       throw new Error("Invalid chat access registry");
     const actual = Buffer.from(data.mac, "hex");
@@ -120,7 +137,7 @@ export class ChatAccessRegistry {
 
   approve(fingerprint: string, url: string): void {
     if (!fingerprintFormat(fingerprint)) throw new Error("Invalid chat reference");
-    const canonical = canonicalPrivateChatUrl(url);
+    const canonical = canonicalChatApprovalReference(url);
     const entries = this.read();
     const prior = entries.find(b => b.fingerprint === fingerprint);
     if (prior && prior.url !== canonical)

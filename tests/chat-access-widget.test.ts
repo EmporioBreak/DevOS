@@ -69,7 +69,9 @@ test("approval widget contains only public HTTPS endpoint and direct fetch", () 
   assert.match(html, /method: "POST"/);
   assert.ok(!html.includes(owner) && !html.includes(password));
   assert.ok(!html.includes("callTool"));
-  assert.ok(!html.includes("sendFollowUpMessage"));
+  assert.ok(html.includes("sendFollowUpMessage"));
+  assert.ok(!html.includes("sendFollowUpMessage({ prompt: password"));
+  assert.match(html, /share\/…/);
 });
 
 test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, never through tool args",
@@ -89,6 +91,9 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
         requestInit: { headers: { ...auth, "x-openai-session": "widget-chat-session-A" } },
       }) as Transport);
       const tools = (await client.listTools()).tools;
+      const preflightTool = tools.find(t => t.name === "devos_noop");
+      assert.equal((preflightTool as any)?._meta?.ui?.resourceUri, CHAT_APPROVAL_WIDGET_URI,
+        "first MCP preflight should render the form directly");
       const descriptor = tools.find(t => t.name === "devos_authorize_chat");
       assert.ok(descriptor);
       assert.equal((descriptor as any)._meta?.ui?.resourceUri, CHAT_APPROVAL_WIDGET_URI);
@@ -104,8 +109,14 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
       assert.match(resource.text, /Пароль авторизации DevOS/);
       assert.ok(!resource.text.includes(password));
 
+      const initialPreflight = await client.callTool({ name: "devos_noop", arguments: {} });
+      assert.equal((initialPreflight as any).structuredContent?.ready, true,
+        "one safe MCP call must include widget ticket without a separate authorization tool");
       const blocked = await client.callTool({ name: "get_config", arguments: {} });
       assert.equal(blocked.isError, true);
+      assert.equal((blocked as any).structuredContent?.ready, true,
+        "a denied operational tool should also return an approval ticket");
+      assert.equal((blocked as any)._meta?.ui?.resourceUri, CHAT_APPROVAL_WIDGET_URI);
       const begin = await client.callTool({ name: "devos_authorize_chat", arguments: {} });
       assert.notEqual(begin.isError, true);
       const challenge = payload(begin) as { ready: boolean; ticket: string };
