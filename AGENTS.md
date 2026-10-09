@@ -20,6 +20,11 @@ Before a main-agent conversation actually uses DevOS/Desktop Commander MCP,
 call the side-effect-free `devos_noop` to check that conversation's approval;
 this first call can also display the approval form directly, without
 requiring the owner to ask for a separate `devos_authorize_chat` call.
+Mobile `/share/` URLs may be accepted as owner-password-entered labels
+but are public snapshots, not proof of a private conversation. The grant
+always binds the authenticated MCP session and OAuth client, not the share URL.
+On successful widget approval, auto-continuation is a client capability and
+may be unavailable on some ChatGPT clients; never replay side effects twice.
 Never use `devos_worker_probe` for a manually created main-agent chat: it
 cannot discover the private chat URL, and cannot replace the password/URL
 owner-approval flow. The worker probe is exclusively for DevOS-created workers.
