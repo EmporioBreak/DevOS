@@ -110,9 +110,9 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
   await symlink(join(process.cwd(), "node_modules"), join(root, "node_modules"), "dir");
   const gateway = await startGateway({ root, port: 0, ownerSecret: secret, publicUrl: issuer, oauthClientsPath: null });
   const base = "http://127.0.0.1:" + gateway.address.port;
-  const client = new Client({ name: "gate-test", version: "1" }, { capabilities: {} });
-  let second: Client | undefined;
-  let third: Client | undefined;
+  const client: any = new Client({ name: "gate-test", version: "1" }, { capabilities: {} });
+  let second: any;
+  let third: any;
   try {
     const { tokens, client: oauthClient } = await oauthToken(base, secret, issuer + "/mcp");
     const authHeader = { Authorization: "Bearer " + tokens.access_token };
@@ -120,30 +120,34 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
       requestInit: { headers: { ...authHeader, "x-openai-session": "test-session-A" } },
     }) as Transport);
 
-    const listed = (await client.listTools()).tools.map(t => t.name);
+    const listed = (await client.listTools()).tools.map((t: any) => t.name);
     for (const name of ["devos_noop", "devos_worker_probe", "read_file", "get_config", "devos_task_status", "devos_worker_report"])
       assert.ok(listed.includes(name), "missing " + name);
     assert.equal(listed.length, new Set(listed).size);
-    const noop = parse(await client.callTool({ name: "devos_noop", arguments: {} }));
-    assert.equal(noop.status, "no_action");
+    const noop = (await client.callTool({ name: "devos_noop", arguments: {} })).structuredContent as any;
+    assert.equal(noop.status, "authorization_required");
+    assert.equal(noop.operation_executed, false);
     assert.equal(noop.approved, false);
     assert.match(noop.chat_reference, /^chat_[a-f0-9]{64}$/);
     const safeProbe = parse(await client.callTool({ name: "devos_worker_probe", arguments: {} }));
     assert.equal(safeProbe.status, "issued");
     assert.match(safeProbe.nonce, /^[a-f0-9]{64}$/);
-    assert.equal((await client.callTool({ name: "get_config", arguments: {} })).isError, true,
-      "worker probe alone must not authorize operational MCP");
+    assert.equal((await client.callTool({ name: "get_config", arguments: {} })).structuredContent?.status,
+      "authorization_required", "worker probe alone must not authorize operational MCP");
     const registry = new ChatAccessRegistry(root, secret);
     assert.equal(noop.chat_reference, registry.fingerprint(oauthClient.client_id, "test-session-A"));
     for (const name of ["get_config", "read_file", "devos_task_status", "devos_worker_report", "start_process"]) {
       const r = await client.callTool({ name, arguments: {} });
-      assert.equal(r.isError, true, name + " must be blocked");
-      assert.match((r.content as any[])[0].text, /not authorized/);
+      assert.equal((r as any).structuredContent?.status, "authorization_required",
+        name + " must be blocked without showing a widget");
+      assert.equal((r as any).structuredContent?.operation_executed, false);
+      assert.equal((r as any)._meta?.ui, undefined);
+      assert.match((r.content as any[])[0].text, /devos_authorize_chat/);
     }
     const shouldNotExist = join(root, "unauthorized-side-effect.txt");
     const processAttempt = await client.callTool({ name: "start_process",
       arguments: { command: "touch " + shouldNotExist, timeout_ms: 1000 } });
-    assert.equal(processAttempt.isError, true);
+    assert.equal((processAttempt as any).structuredContent?.operation_executed, false);
     await assert.rejects(stat(shouldNotExist), { code: "ENOENT" });
 
     // Trusted on-host worker binder claims only after independent provider-
@@ -170,8 +174,8 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
       arguments: { repo: "Nobody/Nowhere", issue: 123456 } })).isError, true,
       "verified active worker may call first-party DevOS tools");
     workerRegistry.revoke({ repo: "EmporioBreak/DevOS", issue: 99 }, "developer");
-    assert.equal((await client.callTool({ name: "get_config", arguments: {} })).isError, true,
-      "revoked worker must immediately lose gateway forwarding");
+    assert.equal((await client.callTool({ name: "get_config", arguments: {} })).structuredContent?.status,
+      "authorization_required", "revoked worker must immediately lose gateway forwarding");
 
     registry.approve(noop.chat_reference, url);
     assert.equal(parse(await client.callTool({ name: "devos_noop", arguments: {} })).approved, true);
@@ -190,37 +194,37 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
     await second.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
       requestInit: { headers: { ...authHeader, "x-openai-session": "test-session-B" } },
     }) as Transport);
-    assert.notEqual(parse(await second.callTool({ name: "devos_noop", arguments: {} })).chat_reference, noop.chat_reference);
+    assert.notEqual((await second.callTool({ name: "devos_noop", arguments: {} })).structuredContent?.chat_reference, noop.chat_reference);
     const otherProbe = parse(await second.callTool({ name: "devos_worker_probe", arguments: {} }));
     assert.equal(otherProbe.status, "issued");
     assert.notEqual(otherProbe.nonce, safeProbe.nonce);
-    assert.equal((await second.callTool({ name: "get_config", arguments: {} })).isError, true);
+    assert.equal((await second.callTool({ name: "get_config", arguments: {} })).structuredContent?.status, "authorization_required");
 
     third = new Client({ name: "no-session", version: "1" }, { capabilities: {} });
     await third.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
       requestInit: { headers: authHeader },
     }) as Transport);
-    assert.deepEqual(parse(await third.callTool({ name: "devos_noop", arguments: {} })), { status: "no_action", approved: false });
+    assert.equal((await third.callTool({ name: "devos_noop", arguments: {} })).structuredContent?.status, "missing_session");
     assert.deepEqual(parse(await third.callTool({ name: "devos_worker_probe", arguments: {} })), { status: "unavailable" });
     assert.equal((await third.callTool({ name: "get_config", arguments: {} })).isError, true);
 
     const { tokens: otherTokens, client: otherOAuthClient } =
       await oauthToken(base, secret, issuer + "/mcp");
-    const clientFromDifferentOAuth = new Client({ name: "other-oauth", version: "1" }, { capabilities: {} });
+    const clientFromDifferentOAuth: any = new Client({ name: "other-oauth", version: "1" }, { capabilities: {} });
     try {
       await clientFromDifferentOAuth.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
         requestInit: { headers: { Authorization: "Bearer " + otherTokens.access_token,
           "x-openai-session": "test-session-A" } },
       }) as Transport);
       assert.notEqual(otherOAuthClient.client_id, oauthClient.client_id);
-      assert.equal((await clientFromDifferentOAuth.callTool({ name: "get_config", arguments: {} })).isError,
-        true, "same session with another OAuth client must not inherit authorization");
+      assert.equal((await clientFromDifferentOAuth.callTool({ name: "get_config", arguments: {} })).structuredContent?.status,
+        "authorization_required", "same session with another OAuth client must not inherit authorization");
     } finally { await clientFromDifferentOAuth.close(); }
 
     registry.revoke(noop.chat_reference);
-    assert.equal(parse(await client.callTool({ name: "devos_noop", arguments: {} })).approved, false);
-    assert.equal((await client.callTool({ name: "get_config", arguments: {} })).isError, true);
-    assert.equal((await client.callTool({ name: "devos_task_status", arguments: {} })).isError, true);
+    assert.equal((await client.callTool({ name: "devos_noop", arguments: {} })).structuredContent?.approved, false);
+    assert.equal((await client.callTool({ name: "get_config", arguments: {} })).structuredContent?.status, "authorization_required");
+    assert.equal((await client.callTool({ name: "devos_task_status", arguments: {} })).structuredContent?.status, "authorization_required");
   } finally {
     await Promise.allSettled([client.close(), second?.close(), third?.close()]);
     await gateway.close();

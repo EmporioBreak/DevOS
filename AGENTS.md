@@ -17,11 +17,14 @@ Ordinary chats that do not need DevOS or Desktop Commander must not call
 `devos_noop`, open a password form, or interrupt the user.
 
 Before a main-agent conversation actually uses DevOS/Desktop Commander MCP,
-call the side-effect-free `devos_noop` to check that conversation's approval;
-this first call can also display the approval form directly, without
-requiring the owner to ask for a separate `devos_authorize_chat` call.
+call the side-effect-free `devos_noop` to check that conversation's approval.
+If it returns `authorization_required`, call `devos_authorize_chat` with
+empty arguments **immediately in the same assistant turn** to show the only
+inline approval form. Never ask the owner to send an extra message.
 When a normal DevOS/Desktop Commander tool returns `authorization_required`,
-the requested operation has not run. Its inline form must be displayed directly;
+the requested operation has not run: call `devos_authorize_chat` in the same
+turn. Ordinary tools MUST NOT own the approval MCP App template because
+ChatGPT iOS renders empty black cards on every later tool result;
 do not send the user to plugin settings, do not claim the app is disconnected,
 and do not tell them to type another message. The widget sends exactly ONE auto-continuation request to ChatGPT after
 successful approval: standard MCP Apps `ui/message` when negotiated, or the
@@ -31,9 +34,11 @@ requests continuation. Only if the widget explicitly says the client did
 not confirm the continuation may the user need to retry the original task.
 This continuation is a client capability, not a server guarantee; never
 automatically replay an unapproved, state-changing MCP operation.
-If the client fails to render inline MCP Apps, present the exact
-`approval_url` returned by the denied tool or `devos_noop` as a clickable
-HTTPS link: it opens the standalone DevOS password form in Safari.
+If the client fails to render the inline form from
+`devos_authorize_chat`, present the exact `approval_url` returned by
+THAT authorization tool as a clickable HTTPS link for Safari. Ordinary
+tools and `devos_noop` intentionally do not issue approval tickets or
+return an attached widget.
 Do not redirect users to ChatGPT plugin settings or collect their password
 in chat. If no valid URL is returned, call `devos_authorize_chat` with
 empty arguments to obtain one. The URL contains a five-minute one-use

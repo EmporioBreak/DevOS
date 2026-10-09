@@ -4,12 +4,13 @@ import { join } from "node:path";
 import { ChatAccessRegistry } from "./chat-access.js";
 import { parseEnvFile } from "./connector-env.js";
 
-export const CHAT_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v3.html";
+export const CHAT_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v4.html";
 export const CHAT_PREVIOUS_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v2.html";
+export const CHAT_CACHED_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v3.html";
 export const CHAT_APPROVAL_WIDGET_TOOL = {
   name: "devos_authorize_chat",
   title: "Authorize this ChatGPT chat",
-  description: "Show an inline password and private chat URL form. The password is submitted directly by the widget to DevOS over HTTPS; NEVER place a password into tool arguments or conversation text.",
+  description: "The ONLY DevOS tool that shows the chat-access inline password form. Call immediately when an ordinary DevOS tool or devos_noop reports authorization_required, in the SAME user turn. The password and mobile /share or /c URL are entered only in the HTTPS form, never in chat or tool arguments.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   _meta: {
@@ -134,7 +135,8 @@ export function chatApprovalWidget(origin: string): string {
 <html lang="ru">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-body{font:14px system-ui,sans-serif;margin:0;padding:16px;color:inherit}
+:root{color-scheme:light dark}
+body{font:14px system-ui,sans-serif;margin:0;padding:16px;color:CanvasText;background:Canvas}
 h3{font-size:16px;margin:0 0 10px}
 label{display:block;margin:12px 0 4px}
 input{width:100%;box-sizing:border-box;font:inherit;padding:10px;border:1px solid #888;border-radius:9px;background:transparent;color:inherit}
@@ -143,10 +145,10 @@ button{font:inherit;font-weight:600;padding:10px 14px;margin-top:14px;border:1px
 small{color:inherit;opacity:.75}
 </style></head>
 <body>
-<main id="approval-panel" hidden>
+<main id="approval-panel">
 <h3>DevOS — разрешить этот чат</h3>
 <small>Принимаются ссылки /c/ и /share/ из мобильного ChatGPT. Ссылка /share/ публичная: доступ к Mac определяется паролем и MCP-сессией, а не владением этой ссылкой. Пароль отправляется напрямую в DevOS.</small>
-<form id="auth">
+<form id="auth" hidden>
 <label for="chaturl">Ссылка на чат из ChatGPT</label>
 <input id="chaturl" type="url" inputmode="url" autocomplete="off" spellcheck="false"
   required placeholder="https://chatgpt.com/share/… или /c/…" />
@@ -154,13 +156,15 @@ small{color:inherit;opacity:.75}
 <input id="password" type="password" autocomplete="off" required />
 <button id="go" type="submit">Разрешить и продолжить</button>
 </form>
-<div id="message" role="status" aria-live="polite"></div>
+<div id="message" role="status" aria-live="polite">Ожидание данных авторизации от ChatGPT… Если форма не появляется, открой ссылку Safari из ответа ассистента. Пароль в чат не отправляй.</div>
+<a id="approval-fallback" hidden target="_blank" rel="noopener noreferrer">Открыть форму в Safari</a>
 </main>
 <script>
 "use strict";
 const endpoint = ${endpoint};
 const statusEndpoint = ${statusEndpoint};
 const out = document.getElementById("message");
+const fallback = document.getElementById("approval-fallback");
 const panel = document.getElementById("approval-panel");
 const form = document.getElementById("auth");
 form.hidden = true;
@@ -204,6 +208,7 @@ function schedulePendingRecheck(ticket) {
 // Negotiate before the user submits; never try BOTH transports for one grant.
 const pendingBridge = new Map();
 let bridgeReady = false;
+let bridgeCanMessage = false;
 let standardToolOutput = null;
 let bridgeRequestId = 0;
 window.addEventListener("message", event => {
@@ -218,7 +223,8 @@ window.addEventListener("message", event => {
   const pending = pendingBridge.get(message.id);
   pendingBridge.delete(message.id);
   clearTimeout(pending.timer);
-  if (message.error) pending.reject(new Error("Host rejected MCP Apps request"));
+  if (message.error || message.result?.isError === true)
+    pending.reject(new Error("Host rejected MCP Apps request"));
   else pending.resolve(message.result);
 });
 function bridgeRequest(method, params, timeoutMs) {
@@ -237,8 +243,12 @@ void bridgeRequest("ui/initialize", {
   protocolVersion: "2026-01-26",
   appInfo: { name: "devos-chat-approval", version: "2.0.0" },
   appCapabilities: { availableDisplayModes: ["inline"] }
-}, 2500).then(() => {
+}, 2500).then(result => {
   bridgeReady = true;
+  // Initialization only proves that the bridge exists. Message delivery
+  // must be advertised separately by the host.
+  bridgeCanMessage = result?.hostCapabilities?.message !== undefined &&
+    result.hostCapabilities.message !== false;
   window.parent.postMessage({
     jsonrpc: "2.0", method: "ui/notifications/initialized"
   }, "*");
@@ -253,7 +263,7 @@ function readToolOutput() {
   if (payload.content?.[0]?.text) {
     try { return JSON.parse(payload.content[0].text); } catch {}
   }
-  if (payload.ticket || payload.reason) return payload;
+  if (payload.ticket || payload.reason || payload.status === "already_authorized") return payload;
   return null;
 }
 async function refresh() {
@@ -264,9 +274,20 @@ async function refresh() {
   activeTicket = null;
   form.hidden = true;
   panel.hidden = true;
-  // A cached approval template can be attached to successful read_file calls.
-  // Never render it without a live, unconsumed challenge for this conversation.
-  if (!result || result.approved === true || result.reason === "already_authorized")
+  fallback.hidden = true;
+  // iOS may render the MCP App without delivering toolOutput. Never show
+  // an empty iframe or expose an unbound password form in that case.
+  if (!result) {
+    panel.hidden = false;
+    out.textContent = "ChatGPT не передал форме данные авторизации. Открой ссылку Safari из ответа ассистента. Пароль в чат не отправляй.";
+    return;
+  }
+  if (result?.status === "already_authorized") {
+    panel.hidden = false;
+    out.textContent = "Доступ к Mac уже разрешён для этого чата.";
+    return;
+  }
+  if (result.approved === true || result.reason === "already_authorized")
     return;
   const ticket = result.ticket;
   if (result.ready === true && typeof ticket === "string" &&
@@ -279,19 +300,41 @@ async function refresh() {
         body: JSON.stringify({ ticket })
       });
       const status = response.ok ? await response.json() : null;
-      if (epoch !== refreshEpoch || !status?.pending) return;
+      if (epoch !== refreshEpoch) return;
+      if (!status) {
+        panel.hidden = false;
+        out.textContent = "Сервер не смог проверить запрос. Используй ссылку Safari из ответа инструмента.";
+        return;
+      }
+      if (!status.pending) return; // Consumed or expired ticket: hide stale card.
       activeTicket = ticket;
       panel.hidden = false;
       form.hidden = false;
       schedulePendingRecheck(ticket);
       out.textContent = "Готово к подтверждению. Запрос действует 5 минут.";
     } catch {
-      if (epoch === refreshEpoch)
-        out.textContent = "Не удалось проверить запрос. Повтори вызов DevOS.";
+      if (epoch === refreshEpoch) {
+        panel.hidden = false;
+        out.textContent = "Не удалось проверить запрос. Используй ссылку Safari из ответа инструмента или повтори запрос.";
+      }
+    }
+    return;
+  }
+  if (result.reason === "approval_pending") {
+    // A second explicit call must not look like a broken, empty form.
+    panel.hidden = false;
+    out.textContent = "Подтверждение уже ожидается в предыдущей форме. Можно также открыть Safari.";
+    const link = result.approval_url;
+    const prefix = endpoint.replace("/chat-access/approve", "/chat-access/form#");
+    if (typeof link === "string" && link.startsWith(prefix) &&
+        /^[A-Za-z0-9_-]{32}$/.test(link.slice(prefix.length))) {
+      fallback.href = link;
+      fallback.hidden = false;
     }
     return;
   }
   if (["missing_session", "password_not_configured", "capacity"].includes(result.reason)) {
+    panel.hidden = false;
     out.textContent = result.reason === "missing_session"
       ? "ChatGPT не передал идентификатор этой беседы. Доступ закрыт."
       : result.reason === "password_not_configured"
@@ -337,13 +380,13 @@ form.addEventListener("submit", async function(event) {
     // Never forward a password, a ticket or a conversation URL to the model.
     const resumePrompt = "Доступ DevOS к этому чату успешно подтверждён. Без дополнительных вопросов продолжи последнее запрошенное мной действие с DevOS/Desktop Commander. Не повторяй авторизацию.";
     try {
-      if (bridgeReady) {
+      if (bridgeReady && bridgeCanMessage) {
         // Standard MCP Apps request provides explicit success/error response.
         await bridgeRequest("ui/message", {
           role: "user", content: [{ type: "text", text: resumePrompt }]
         }, 5000);
       } else if (typeof window.openai?.sendFollowUpMessage === "function") {
-        // Use compatibility path only if the standard handshake did NOT work.
+        // Use compatibility only when the host does not advertise ui/message.
         await window.openai.sendFollowUpMessage({
           prompt: resumePrompt, scrollToBottom: true
         });

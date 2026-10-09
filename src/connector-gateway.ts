@@ -19,9 +19,10 @@ import { ConnectorAuth } from "./connector-auth.js";
 import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./desktop-commander-integration.js";
 import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { ChatAccessRegistry, CHAT_NOOP_TOOL, chatSessionSignal, noOpResult, deniedChatToolResult } from "./chat-access.js";
-import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_URI, chatApprovalWidget, externalChatApprovalForm, CHAT_PREVIOUS_APPROVAL_WIDGET_URI } from "./chat-access-widget.js";
+import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_URI, chatApprovalWidget, externalChatApprovalForm, CHAT_PREVIOUS_APPROVAL_WIDGET_URI, CHAT_CACHED_APPROVAL_WIDGET_URI } from "./chat-access-widget.js";
 import { ChatWorkerProbeRegistry, CHAT_WORKER_PROBE_TOOL } from "./chat-worker-probe.js";
 import { ChatWorkerGrantRegistry } from "./chat-worker-grants.js";
+import { watchChatAccessRevocation } from "./chat-authorization-watch.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
 
 export function publicIdentity(value: string): URL {
@@ -324,6 +325,10 @@ export async function startGateway(options: {
     ? publicIdentity(options.publicUrl)
     : undefined;
   const app = express();
+  // The public ngrok ingress terminates on loopback. Distinguish remote
+  // clients by the forwarding chain rather than rate-limiting every
+  // approval attempt under the same 127.0.0.1 address.
+  app.set("trust proxy", "loopback");
   app.disable("x-powered-by");
   // Do not trust forwarded host/proto/header values as an OAuth issuer.
   app.use((req, res, next) => {
@@ -475,10 +480,21 @@ export async function startGateway(options: {
 
   // Read-only active-challenge check. Prevent old or duplicate inline cards
   // from reappearing after another card already authorized the same chat.
+  // Invalid-ticket floods cannot exhaust a valid ticket's polling budget,
+  // even if ngrok does not forward the remote IP.
+  const invalidCheckLimit = rateLimit({ windowMs: 15 * 60_000,
+    limit: 1200, standardHeaders: false, legacyHeaders: false });
+  const validCheckLimit = rateLimit({ windowMs: 15 * 60_000,
+    limit: 1200, standardHeaders: false, legacyHeaders: false,
+    keyGenerator: req => String(req.body.ticket) });
   app.post("/chat-access/check",
     (_req, res, next) => { res.set("Access-Control-Allow-Origin", "*"); next(); },
-    rateLimit({ windowMs: 15 * 60_000, limit: 1200, standardHeaders: false, legacyHeaders: false }),
     express.json({ limit: "1kb", type: "application/json" }),
+    (req, res, next) => {
+      const ticket = req.body?.ticket;
+      if (chatApproval.isPending(ticket)) void validCheckLimit(req, res, next);
+      else void invalidCheckLimit(req, res, next);
+    },
     (req, res) => {
       const body = req.body;
       const ticket = body && typeof body === "object" && !Array.isArray(body) &&
@@ -503,10 +519,22 @@ export async function startGateway(options: {
       "Access-Control-Max-Age": "600",
     }).sendStatus(204);
   });
+  // Invalid anonymous requests consume only the source-IP abuse budget.
+  // A valid one-shot ticket gets an independent quota: no anonymous flood
+  // can lock out the owner merely by sharing a proxy or NAT address.
+  const invalidApprovalLimit = rateLimit({ windowMs: 15 * 60_000,
+    limit: 15, standardHeaders: false, legacyHeaders: false });
+  const validApprovalLimit = rateLimit({ windowMs: 5 * 60_000,
+    limit: 15, standardHeaders: false, legacyHeaders: false,
+    keyGenerator: req => String(req.body.ticket) });
   app.post("/chat-access/approve",
     (_req, res, next) => { res.set("Access-Control-Allow-Origin", "*"); next(); },
-    rateLimit({ windowMs: 15 * 60_000, limit: 15, standardHeaders: false, legacyHeaders: false }),
     express.json({ limit: "4kb", type: "application/json" }),
+    (req, res, next) => {
+      const ticket = req.body?.ticket;
+      if (chatApproval.isPending(ticket)) void validApprovalLimit(req, res, next);
+      else void invalidApprovalLimit(req, res, next);
+    },
     (req, res) => {
       res.set("Access-Control-Allow-Origin", "*");
       const approved = chatApproval.approve(req.body);
@@ -615,21 +643,13 @@ export async function startGateway(options: {
                     ready: false, reason: "already_authorized",
                     ...(fingerprint ? { chat_reference: fingerprint } : {}) },
                 };
-                const issued = chatApproval.issue(fingerprint);
                 return {
-                  ...noOpResult(fingerprint, false),
-                  ...((issued.ready || issued.reason === "approval_pending") && identity ? { content: [{
-                    type: "text", text: JSON.stringify({
-                      status: "no_action", approved: false, chat_reference: fingerprint,
-                      authorization_required: true,
-                      approval_url: new URL("/chat-access/form", identity).href + "#" + issued.ticket,
-                    }),
-                  }] } : {}),
-                  structuredContent: { status: "no_action", approved: false,
-                    ...(fingerprint ? { chat_reference: fingerprint } : {}), ...issued,
-                    ...((issued.ready || issued.reason === "approval_pending") && identity ? {
-                      approval_url: new URL("/chat-access/form", identity).href + "#" + issued.ticket,
-                    } : {}) },
+                  content: [{ type: "text", text: fingerprint
+                    ? "Authorization required. Call devos_authorize_chat with no arguments now in this same turn to open the approval form."
+                    : "ChatGPT did not provide a trusted session. Mac access is denied." }],
+                  structuredContent: { status: fingerprint ? "authorization_required" : "missing_session",
+                    approved: false, operation_executed: false,
+                    ...(fingerprint ? { chat_reference: fingerprint } : {}) },
                 };
               }
               if (request.params?.name === CHAT_WORKER_PROBE_TOOL.name) {
@@ -637,7 +657,11 @@ export async function startGateway(options: {
                 return { content: [{ type: "text", text: JSON.stringify(issued) }], structuredContent: issued };
               }
               if (request.params?.name === CHAT_APPROVAL_WIDGET_TOOL.name) {
-                if (authorized) return noOpResult(fingerprint, true);
+                if (authorized) {
+                  const result = { status: "already_authorized", approved: true };
+                  return { content: [{ type: "text", text: JSON.stringify(result) }],
+                    structuredContent: result };
+                }
                 const issued = chatApproval.issue(fingerprint);
                 const link = (issued.ready || issued.reason === "approval_pending") && identity
                   ? new URL("/chat-access/form", identity).href + "#" + issued.ticket
@@ -647,50 +671,19 @@ export async function startGateway(options: {
                   structuredContent: { ...issued, ...(link ? { approval_url: link } : {}) } };
               }
               if (!authorized) {
-                const issued = chatApproval.issue(fingerprint);
-                // On iOS a tool result marked isError is not rendered as an
-                // MCP App, even with a UI template. Report a *successful*
-                // protocol response describing a denied operation instead.
-                // The requested command is NEVER forwarded on this path.
-                if (issued.ready) {
-                  const result = {
-                    status: "authorization_required",
-                    operation_executed: false,
-                    ...issued,
-                    ...(identity ? {
-                      approval_url: new URL("/chat-access/form", identity).href + "#" + issued.ticket,
-                    } : {}),
-                  };
-                  return {
-                    content: [{ type: "text", text:
-                      "Authorization required; the requested DevOS operation was NOT executed. " +
-                      "Open the attached inline approval form. On successful approval it asks ChatGPT to continue the original task automatically; do not tell the user to write 'Готово'. If the mobile app does not show the form, use this DevOS Safari link: " +
-                      (identity ? new URL("/chat-access/form", identity).href + "#" + issued.ticket : "") +
-                      " . The operation was NOT executed; never put a password into chat or plugin settings." }],
-                    structuredContent: result,
-                    _meta: { ui: { resourceUri: CHAT_APPROVAL_WIDGET_URI },
-                      "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI },
-                  };
-                }
-                if (issued.reason === "approval_pending") {
-                  // Another tool already displayed this chat's only form.
-                  // Do not mark as an error or attach another MCP App widget.
-                  const link = identity
-                    ? new URL("/chat-access/form", identity).href + "#" + issued.ticket
-                    : undefined;
-                  const result = {
-                    status: "authorization_pending", operation_executed: false,
-                    ...issued, ...(link ? { approval_url: link } : {}),
-                  };
-                  return {
-                    content: [{ type: "text", text:
-                      "DevOS authorization is already awaiting confirmation in the first form. " +
-                      "This Mac operation was not executed. Do not open another form or request another password." +
-                      (link ? " Safari fallback: " + link : "") }],
-                    structuredContent: result,
-                  };
-                }
-                return deniedChatToolResult();
+                // Ordinary tools never own a widget. The assistant invokes
+                // devos_authorize_chat as the next tool call in this user turn.
+                // No file, shell or task operation is executed while denied.
+                if (!fingerprint) return deniedChatToolResult();
+                return {
+                  content: [{ type: "text", text:
+                    "Mac operation blocked: this ChatGPT chat requires DevOS approval. " +
+                    "Call devos_authorize_chat with empty arguments NOW in this same turn " +
+                    "to show the approval form; do not ask the user for another message. " +
+                    "No Mac operation was performed." }],
+                  structuredContent: { status: "authorization_required",
+                    operation_executed: false, approval_tool: CHAT_APPROVAL_WIDGET_TOOL.name },
+                };
               }
             } else if (request.method === "resources/list") {
               return { resources: [{
@@ -700,7 +693,8 @@ export async function startGateway(options: {
               }] };
             } else if (request.method === "resources/read" &&
                        (request.params?.uri === CHAT_APPROVAL_WIDGET_URI ||
-                        request.params?.uri === CHAT_PREVIOUS_APPROVAL_WIDGET_URI)) {
+                        request.params?.uri === CHAT_PREVIOUS_APPROVAL_WIDGET_URI ||
+                        request.params?.uri === CHAT_CACHED_APPROVAL_WIDGET_URI)) {
               if (!identity) throw new Error("Connector public origin unavailable");
               const html = chatApprovalWidget(identity.origin);
               return { contents: [{
@@ -743,6 +737,11 @@ export async function startGateway(options: {
                 };
             let result: any;
             const requestController = new AbortController();
+            const accessStillValid = () =>
+              chatAccess.isApproved(fingerprint) || workerGrants.isGranted(fingerprint);
+            const stopRevocationWatch = toolCall && fingerprint
+              ? watchChatAccessRevocation(accessStillValid, requestController)
+              : undefined;
             const abortFromClient = () =>
               requestController.abort(extra.signal.reason);
             if (extra.signal.aborted) abortFromClient();
@@ -750,6 +749,10 @@ export async function startGateway(options: {
             activeRequests.add(requestController);
             let forwardedRequestPromise: Promise<any> | undefined;
             try {
+              // Recheck immediately before forwarding, closing the gap
+              // between initial authorization and upstream dispatch.
+              if (toolCall && !accessStillValid())
+                throw new Error("Chat authorization revoked before dispatch");
               const forwardOptions = {
                 signal: requestController.signal,
                 ...timeoutOptions,
@@ -804,10 +807,15 @@ export async function startGateway(options: {
               }
               forwardedRequests.add(forwardedRequestPromise);
               result = await forwardedRequestPromise;
+              // Do not release sensitive tool output after a concurrent revoke,
+              // even if the upstream process ignored the abort signal.
+              if (toolCall && (!accessStillValid() || requestController.signal.aborted))
+                throw new Error("Chat authorization was revoked during tool execution");
             } catch (error) {
               void Promise.allSettled(writes);
               throw error;
             } finally {
+              stopRevocationWatch?.();
               activeRequests.delete(requestController);
               extra.signal.removeEventListener("abort", abortFromClient);
               if (forwardedRequestPromise)
@@ -897,15 +905,12 @@ export async function startGateway(options: {
                             ? annotations.openWorldHint
                             : !readOnly,
                       },
-                      // For an unapproved ChatGPT conversation, the first
-                      // requested operation itself has an approval UI. Host
-                      // clients choose widgets from tools/list metadata, not
-                      // from an error response's metadata alone.
+                      // NEVER attach an approval MCP App to ordinary tools.
+                      // ChatGPT iOS caches tools/list and renders a black
+                      // iframe on *every* later successful tool result even
+                      // if this chat has since been approved. Only the
+                      // dedicated devos_authorize_chat tool owns the form.
                       _meta: {
-                        ...(!authorized ? {
-                          ui: { resourceUri: CHAT_APPROVAL_WIDGET_URI },
-                          "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI,
-                        } : {}),
                         securitySchemes: [
                           { type: "oauth2", scopes: ["mcp:tools"] },
                         ],
@@ -913,24 +918,15 @@ export async function startGateway(options: {
                     };
                   }), ...localTools.list().map(tool => ({
                     ...tool,
-                    ...(!authorized ? {
-                      _meta: {
-                        ...(tool._meta ?? {}),
-                        ui: { resourceUri: CHAT_APPROVAL_WIDGET_URI },
-                        "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI,
-                      },
-                    } : {}),
+                    _meta: { securitySchemes: [
+                      { type: "oauth2", scopes: ["mcp:tools"] },
+                    ] },
                   })),
-                  ...(authorized
-                    ? [CHAT_NOOP_TOOL, CHAT_APPROVAL_WIDGET_TOOL].map(tool => ({
-                        ...tool,
-                        // Once approved, even safe helper tools must not
-                        // advertise another password card.
-                        _meta: { securitySchemes: [
-                          { type: "oauth2", scopes: ["mcp:tools"] },
-                        ] },
-                      }))
-                    : [CHAT_NOOP_TOOL, CHAT_APPROVAL_WIDGET_TOOL]),
+                  CHAT_NOOP_TOOL,
+                  // Keep the helper descriptor stable after local revocation:
+                  // already cached tool lists must still be able to reopen
+                  // the form. Ordinary tools never own a widget.
+                  CHAT_APPROVAL_WIDGET_TOOL,
                   CHAT_WORKER_PROBE_TOOL],
               };
             }
