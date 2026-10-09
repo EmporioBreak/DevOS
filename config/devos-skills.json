@@ -477,6 +477,34 @@
         "role",
         "task"
       ]
+    },
+    {
+      "id": "devos-brainstorming",
+      "name": "DevOS / brainstorming",
+      "description": "Predevelopment-only Superpowers brainstorming adapted to Main Agent approval gates and canonical Spec Kit artifacts; no new executors or repeated worker approvals.",
+      "version": "1.0.0",
+      "source": {
+        "kind": "adapted",
+        "directory": "skills/devos-brainstorming",
+        "sourceUrl": "https://github.com/EmporioBreak/DevOS/tree/devos2/brainstorming/skills/devos-brainstorming",
+        "license": "MIT",
+        "derivedFrom": "superpowers-brainstorming@6.4.2"
+      },
+      "entrypoint": "SKILL.md",
+      "files": {
+        "SKILL.md": "dc9706351496cffe93783a4e97c92d7c148b9cf9ff9f19b117e8e26d54cce6ed",
+        "SOURCE.md": "67ddc8a6ff7ddb5a60090f2ff5e0ed313c531086b75959aa5fd0c3c84daa83f7"
+      },
+      "requires": [],
+      "conflicts": [
+        "superpowers-brainstorming"
+      ],
+      "scopes": [
+        "global",
+        "project",
+        "role",
+        "task"
+      ]
     }
   ]
 }

@@ -25,9 +25,9 @@ const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 
 test("catalog contains all 15 original Superpowers skills with SHA-pinned resources", async () => {
   const verified = parseSkillLibrary(catalog);
-  assert.equal(verified.skills.length, 16);
+  assert.equal(verified.skills.length, 17);
   const entries = await listSkillAvailability(verified, roots);
-  assert.equal(entries.filter(x => x.status === "installed").length, 16);
+  assert.equal(entries.filter(x => x.status === "installed").length, 17);
   const originals = verified.skills.filter(x => x.source.kind === "upstream");
   assert.equal(originals.length, 15);
   for (const skill of originals) {
@@ -179,7 +179,7 @@ test("independent adapted bytes do not affect immutable upstream hashes", async 
     await writeFile(join(directory, "references.md"),
       "# One canonical original Spec Kit plan\n");
     const adapted: SkillDefinition = {
-      ...structuredClone(source), id: "devos-brainstorming", version: "1.0.0",
+      ...structuredClone(source), id: "devos-brainstorming-fixture", version: "1.0.0",
       source: {
         kind: "adapted", directory: "skills/devos-brainstorming",
         derivedFrom: "superpowers-brainstorming@6.4.2",
@@ -192,7 +192,7 @@ test("independent adapted bytes do not affect immutable upstream hashes", async 
     await verifySkillFiles(source, roots);
     assert.notEqual(adapted.files["SKILL.md"], source.files["SKILL.md"]);
     const combined = registerSkill(catalog, adapted);
-    assert.equal(combined.skills.length, 17);
+    assert.equal(combined.skills.length, 18);
     assert.equal(combined.skills.find(x => x.id === source.id)?.files["SKILL.md"],
       source.files["SKILL.md"]);
     await writeFile(join(directory, "references.md"), "tampered");

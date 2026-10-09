@@ -18,7 +18,7 @@ test("original and devos-writing-plans have separate trusted provenance and hash
     JSON.parse(await readFile("config/devos-skills.json", "utf8")));
   const vendor = registry.skills.find(s => s.id === "superpowers-writing-plans")!;
   const adapted = registry.skills.find(s => s.id === "devos-writing-plans")!;
-  assert.equal(registry.skills.length, 16);
+  assert.equal(registry.skills.length, 17);
   assert.equal(vendor.source.kind, "upstream");
   assert.equal(vendor.source.commit, originalRevision);
   assert.equal(adapted.source.kind, "adapted");
