@@ -19,7 +19,7 @@ import { ConnectorAuth } from "./connector-auth.js";
 import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./desktop-commander-integration.js";
 import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { ChatAccessRegistry, CHAT_NOOP_TOOL, chatSessionSignal, noOpResult, deniedChatToolResult } from "./chat-access.js";
-import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_URI, chatApprovalWidget } from "./chat-access-widget.js";
+import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_URI, chatApprovalWidget, externalChatApprovalForm } from "./chat-access-widget.js";
 import { ChatWorkerProbeRegistry, CHAT_WORKER_PROBE_TOOL } from "./chat-worker-probe.js";
 import { ChatWorkerGrantRegistry } from "./chat-worker-grants.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
@@ -330,7 +330,7 @@ export async function startGateway(options: {
       identity &&
       req.headers.origin &&
       req.headers.origin !== identity.origin &&
-      req.path !== "/chat-access/approve"
+      req.path !== "/chat-access/approve" && req.path !== "/chat-access/form"
     ) {
       res.status(403).json({ error: "forbidden_origin" });
       return;
@@ -454,6 +454,13 @@ export async function startGateway(options: {
       });
     },
   );
+
+  // Browser fallback for native clients that cannot render MCP Apps.
+  // The fragment-only ticket never reaches this GET request.
+  app.get("/chat-access/form", (_req, res) => {
+    res.set({ "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'", "X-Content-Type-Options": "nosniff" });
+    res.type("html").send(externalChatApprovalForm());
+  });
 
   // Public only for widget-to-gateway HTTPS fetch: a one-time ticket issued
   // through authenticated MCP AND an independent high-entropy password are required.
@@ -579,8 +586,18 @@ export async function startGateway(options: {
                 const issued = chatApproval.issue(fingerprint);
                 return {
                   ...noOpResult(fingerprint, false),
+                  ...(issued.ready && identity ? { content: [{
+                    type: "text", text: JSON.stringify({
+                      status: "no_action", approved: false, chat_reference: fingerprint,
+                      authorization_required: true,
+                      approval_url: new URL("/chat-access/form", identity).href + "#" + issued.ticket,
+                    }),
+                  }] } : {}),
                   structuredContent: { status: "no_action", approved: false,
-                    ...(fingerprint ? { chat_reference: fingerprint } : {}), ...issued },
+                    ...(fingerprint ? { chat_reference: fingerprint } : {}), ...issued,
+                    ...(issued.ready && identity ? {
+                      approval_url: new URL("/chat-access/form", identity).href + "#" + issued.ticket,
+                    } : {}) },
                 };
               }
               if (request.params?.name === CHAT_WORKER_PROBE_TOOL.name) {
@@ -590,8 +607,12 @@ export async function startGateway(options: {
               if (request.params?.name === CHAT_APPROVAL_WIDGET_TOOL.name) {
                 if (authorized) return noOpResult(fingerprint, true);
                 const issued = chatApproval.issue(fingerprint);
-                return { content: [{ type: "text", text: JSON.stringify(issued) }],
-                  structuredContent: issued };
+                const link = issued.ready && identity
+                  ? new URL("/chat-access/form", identity).href + "#" + issued.ticket
+                  : undefined;
+                return { content: [{ type: "text", text: JSON.stringify(issued) +
+                  (link ? "\\nЕсли форма не отображается в ChatGPT для iOS, открой через Safari: " + link : "") }],
+                  structuredContent: { ...issued, ...(link ? { approval_url: link } : {}) } };
               }
               if (!authorized) {
                 const issued = chatApproval.issue(fingerprint);
@@ -604,12 +625,16 @@ export async function startGateway(options: {
                     status: "authorization_required",
                     operation_executed: false,
                     ...issued,
+                    ...(identity ? {
+                      approval_url: new URL("/chat-access/form", identity).href + "#" + issued.ticket,
+                    } : {}),
                   };
                   return {
                     content: [{ type: "text", text:
                       "Authorization required; the requested DevOS operation was NOT executed. " +
-                      "Complete the attached inline approval form to continue; " +
-                      "never send a password in chat or visit plugin settings." }],
+                      "Open the attached inline approval form. If the ChatGPT mobile app does not show it, open this secure DevOS form in Safari: " +
+                      (identity ? new URL("/chat-access/form", identity).href + "#" + issued.ticket : "") +
+                      " . The operation was NOT executed; never put a password into chat or plugin settings." }],
                     structuredContent: result,
                     _meta: { ui: { resourceUri: CHAT_APPROVAL_WIDGET_URI },
                       "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI },

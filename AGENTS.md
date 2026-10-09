@@ -25,8 +25,15 @@ the requested operation has not run. Its inline form must be displayed directly;
 do not send the user to plugin settings, do not claim the app is disconnected,
 and do not tell them to type another message. The widget may continue the
 original request after successful approval, if the host supports it.
-If the client fails to render inline MCP Apps, call `devos_authorize_chat`
-with empty arguments as the explicit fallback.
+If the client fails to render inline MCP Apps, present the exact
+`approval_url` returned by the denied tool or `devos_noop` as a clickable
+HTTPS link: it opens the standalone DevOS password form in Safari.
+Do not redirect users to ChatGPT plugin settings or collect their password
+in chat. If no valid URL is returned, call `devos_authorize_chat` with
+empty arguments to obtain one. The URL contains a five-minute one-use
+challenge in its fragment; never invent or reuse another chat's link.
+After owner approval in Safari, ask ChatGPT to retry the original action;
+the original denied operation was not performed or queued.
 Mobile `/share/` URLs may be accepted as owner-password-entered labels
 but are public snapshots, not proof of a private conversation. The grant
 always binds the authenticated MCP session and OAuth client, not the share URL.
