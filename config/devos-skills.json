@@ -449,6 +449,34 @@
         "role",
         "task"
       ]
+    },
+    {
+      "id": "devos-writing-plans",
+      "name": "DevOS / writing-plans",
+      "description": "Enrich original Spec Kit plan.md/tasks.md using Superpowers exact interfaces, test-first tasks, verification and self-review without duplicate planners or executors.",
+      "version": "1.0.0",
+      "source": {
+        "kind": "adapted",
+        "directory": "skills/devos-writing-plans",
+        "sourceUrl": "https://github.com/EmporioBreak/DevOS/tree/devos2/writing-plans/skills/devos-writing-plans",
+        "license": "MIT",
+        "derivedFrom": "superpowers-writing-plans@6.4.2"
+      },
+      "entrypoint": "SKILL.md",
+      "files": {
+        "SKILL.md": "e91c682261a348726d10e5b55eeb98e6084f4609873b50924f2c932e0d6645fd",
+        "SOURCE.md": "82e7d2e93ac05d1f7e4d612631176a7173a5df826ed755cd487cbb0ab559944a"
+      },
+      "requires": [],
+      "conflicts": [
+        "superpowers-writing-plans"
+      ],
+      "scopes": [
+        "global",
+        "project",
+        "role",
+        "task"
+      ]
     }
   ]
 }
