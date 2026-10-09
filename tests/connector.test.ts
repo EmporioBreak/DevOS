@@ -496,6 +496,9 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
     assert.match(data.fingerprint,/^[0-9a-f]{64}$/);
     assert.equal(data.skills.length,17);
     assert.doesNotMatch(JSON.stringify(policy), /authorization_required|approval_pending/);
+    const ownerNotWorker=await client.callTool({name:"devos_skill_manifest",arguments:{}});
+    assert.equal(ownerNotWorker.isError,true);
+    assert.match(JSON.stringify(ownerNotWorker),/server-verified active DevOS worker grant/);
     const policyUpdate = await client.callTool({
       name:"devos_skill_policy_set",
       arguments:{skill_id:"superpowers-test-driven-development",
@@ -531,6 +534,47 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
       const refused = await otherClient.callTool({name:"devos_skill_policy_get",arguments:{}});
       assert.match(JSON.stringify(refused),/authorization_required|missing_session/);
       assert.doesNotMatch(JSON.stringify(refused),/"skills":\[/);
+      // Cached tool schemas are public metadata, NOT a grant. A chat
+      // sharing the approved owner's OAuth client still cannot read files,
+      // update Git-backed skill settings or access any task-scoped skill.
+      const privateFile=join(root,"unapproved-session-must-not-write.txt");
+      for(const request of [
+        {name:"read_file",arguments:{path:join(root,"config","devos-skills.json")}},
+        {name:"write_file",arguments:{path:privateFile,content:"BAD_SIDE_EFFECT"}},
+        {name:"devos_skill_policy_set",arguments:{
+          skill_id:"superpowers-test-driven-development",mode:"off",scope:"global",
+          expected_fingerprint:data.fingerprint,
+        }},
+        {name:"devos_skill_update_preview",arguments:{
+          skill_id:"superpowers-writing-plans",candidate_json:"{}",
+        }},
+        {name:"devos_skill_manifest",arguments:{}},
+        {name:"devos_skill_search",arguments:{query:"test-driven"}},
+        {name:"devos_skill_read",arguments:{
+          skill_id:"superpowers-test-driven-development",resource:"SKILL.md",
+        }},
+        {name:"devos_task_status",arguments:{issue:4321}},
+      ]) {
+        const denied=await otherClient.callTool(request);
+        assert.match(JSON.stringify(denied),
+          /authorization_required|missing_session/,
+          request.name+" must be denied in an unapproved chat");
+        assert.doesNotMatch(JSON.stringify(denied),
+          /BAD_SIDE_EFFECT|root-cause-tracing|SKILL.md\".*content|\"skills\":\[/);
+        assert.doesNotMatch(JSON.stringify(denied),
+          /openai\/outputTemplate|ui:\/\/devos\/skill-policy/,
+          "ordinary denied tools must not repeat native auth forms");
+      }
+      await assert.rejects(readFile(privateFile,"utf8"),/ENOENT/);
+      assert.equal((await readFile(join(root,"config","devos-skill-policy.json"),"utf8"))
+        .includes('"mode": "off"'),false);
+      const ordinary=otherTools.tools.filter(t=>[
+        "read_file","write_file","devos_skill_manifest","devos_skill_read",
+        "devos_skill_update_preview"].includes(t.name)) as any[];
+      for(const item of ordinary){
+        assert.equal(item._meta?.["openai/outputTemplate"],undefined);
+        assert.equal(item._meta?.ui,undefined);
+      }
     } finally {
       await otherClient.close();
     }
