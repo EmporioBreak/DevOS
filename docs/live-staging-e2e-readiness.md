@@ -45,3 +45,9 @@ The runner's existing safe no-replay, task state and browser submit identity rul
 - Staging OAuth plugin Web/iPhone acceptance (#151) and stress/recovery (#152)
 
 Until those are demonstrated, keep #150 and Epic #121 **open**; no Production release (#154).
+
+## QA contract defect found after the blocked attempt
+
+The original first-turn probe asked ChatGPT to return only a bare marker. The browser executor's *conservative DOM fallback* only accepts a stable exact user message followed by a terminal assistant message ending with `DEVOS_RESULT {"status":"done"}`. Therefore the original QA prompt **could not use that recovery path**, even if ChatGPT had answered with its exact bare marker. The SSE path might still have worked, so this mismatch is a **proven test-design defect**, **not proof of the root cause of the actual deadline**.
+
+The corrected future QA contract (separate helper in `tests/qa-transport-contract.ts`) asks for two exact lines: the unique test marker and the machine-valid final `DEVOS_RESULT`. Its standalone unit test checks valid and invalid responses without opening a browser or submitting a prompt. The old real attempt's one-shot sentinel remains untouched; this correction is **not license to replay the previous may-have-submitted message**. New genuinely independent QA scenarios must use unique identifiers and their own atomic intent record before any irreversible UI submit.

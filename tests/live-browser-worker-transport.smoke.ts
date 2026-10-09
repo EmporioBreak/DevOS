@@ -7,6 +7,7 @@ import {homedir} from "node:os";
 import {join} from "node:path";
 import {ChatGptBrowserExecutor} from "../src/chatgpt-browser-executor.js";
 import {assertChatGptProjectScope} from "../src/browser-config.js";
+import {stagingQaPrompt,verifyStagingQaAnswer} from "./qa-transport-contract.js";
 
 const root=process.env.DEVOS_STAGING_ROOT;
 if(!root || !root.endsWith("/DevOS-staging"))
@@ -33,7 +34,7 @@ const executor=new ChatGptBrowserExecutor({
 },100_000);
 let saved:string|undefined;
 let attemptedTurns=0,completedTurns=0;
-const prompt=(phrase:string)=>`Staging transport diagnostic only. Do NOT invoke any MCP tool, change files, browse websites, or act on other user data. Reply with exactly: ${phrase}`;
+const prompt=stagingQaPrompt;
 try{
  const first="DEVOS_STAGING_QA_ROUNDTRIP_ONE";
  attemptedTurns++;
@@ -43,12 +44,17 @@ try{
    onSession:async (url)=>{
      assertChatGptProjectScope(config.chatgptProjectUrl,url,true);saved=url;
      // Private local state, never a public GitHub report or stdout.
-     await writeFile(join(qaDir,"live-transport-saved-chat.url"),url+"\n",
-       {flag:"wx",mode:0o600});
+     const savedFile=join(qaDir,"live-transport-saved-chat.url");
+     try {await writeFile(savedFile,url+"\n",{flag:"wx",mode:0o600});}
+     catch(error){
+       if((error as NodeJS.ErrnoException).code!=="EEXIST" ||
+          (await readFile(savedFile,"utf8"))!==url+"\n")
+         throw new Error("Persisted Staging QA conversation differs from current turn");
+     }
    },
  });
  completedTurns++;
- if(!saved || result.sessionId!==saved || !result.text.includes(first))
+ if(!saved || result.sessionId!==saved || !verifyStagingQaAnswer(result.text,first))
    throw new Error("First ChatGPT project worker roundtrip could not be verified");
  const second="DEVOS_STAGING_QA_ROUNDTRIP_TWO";
  attemptedTurns++;
@@ -60,7 +66,7 @@ try{
    },
  });
  completedTurns++;
- if(continued.sessionId!==saved || !continued.text.includes(second))
+ if(continued.sessionId!==saved || !verifyStagingQaAnswer(continued.text,second))
    throw new Error("Resumed Project chat roundtrip could not be verified");
  console.log(JSON.stringify({realCamoufox:true,stagingProfileOnly:true,
    projectChatCreated:true,sameExactChatOnResume:true,
