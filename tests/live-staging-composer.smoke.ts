@@ -2,7 +2,7 @@
 import {readFile} from "node:fs/promises";
 import {homedir} from "node:os";
 import {join} from "node:path";
-import {launchVisibleStagingCamoufox} from "./staging-headed-launch.js";
+import {launchStagingCamoufox} from "./staging-headed-launch.js";
 const root=process.env.DEVOS_STAGING_ROOT;
 if(!root||!root.endsWith("/DevOS-staging"))
  throw new Error("Explicit isolated DevOS-staging root required");
@@ -13,7 +13,7 @@ if(typeof url!=="string"||!/^https:\/\/chatgpt\.com\/g\//.test(url))
 const profile=join(homedir(),".devos-staging","camoufox-profile");
 let context;
 try{
- context=await launchVisibleStagingCamoufox(profile,20000);
+ context=await launchStagingCamoufox(profile,20000);
  const page=context.pages()[0]??await context.newPage();
  await page.goto(url,{waitUntil:"domcontentloaded",timeout:25000});
  await page.waitForTimeout(6000);

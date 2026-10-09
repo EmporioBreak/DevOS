@@ -2,7 +2,7 @@
 import {readFile} from "node:fs/promises";
 import {homedir} from "node:os";
 import {join} from "node:path";
-import {launchVisibleStagingCamoufox} from "./staging-headed-launch.js";
+import {launchStagingCamoufox} from "./staging-headed-launch.js";
 import {assertChatGptProjectScope} from "../src/browser-config.js";
 import {readExactDomFinal} from "../src/chatgpt-dom-recovery.js";
 import {isSameChatGptConversation} from "../src/chatgpt-browser-executor.js";
@@ -17,7 +17,7 @@ assertChatGptProjectScope(config.chatgptProjectUrl,url,true);
 const prompt=stagingQaPrompt("DEVOS_STAGING_QA_ROUNDTRIP_THREE");
 let context;
 try {
- context=await launchVisibleStagingCamoufox(
+ context=await launchStagingCamoufox(
    join(homedir(),".devos-staging","camoufox-profile"),20000);
  const page=context.pages()[0]??await context.newPage();
  const response=await page.goto(url,{waitUntil:"domcontentloaded",timeout:30000});

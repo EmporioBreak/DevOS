@@ -1,16 +1,21 @@
-/** Staging QA browser mode must match the working DevOS v1 headed
- * persistent Camoufox launcher (including its saved fingerprint).
- * This helper creates no process until explicitly called by a smoke.
+/** Staging QA uses the normal DevOS browser option: headed by default,
+ * optional headless via DEVOS_BROWSER_HEADLESS=1. Never rotate fingerprint.
+ * This helper creates no process until invoked by a live smoke.
  */
 import {mkdir} from "node:fs/promises";
 import {chatGptBrowserDeps} from "../src/chatgpt-browser-executor.js";
+import {loadChatGptBrowserConfig} from "../src/browser-config.js";
 
-export const STAGING_QA_HEADLESS=false as const;
+export function stagingQaHeadless(env:Record<string,string|undefined>=process.env):boolean{
+ return loadChatGptBrowserConfig(env).headless;
+}
 
-export async function launchVisibleStagingCamoufox(profileDir:string,timeout=20_000){
+export async function launchStagingCamoufox(
+ profileDir:string,timeout=20_000,env:Record<string,string|undefined>=process.env,
+){
  await mkdir(profileDir,{recursive:true});
  const identity=await chatGptBrowserDeps.loadIdentity(profileDir);
  return chatGptBrowserDeps.launchPersistentContext(profileDir,{
-   headless:STAGING_QA_HEADLESS,timeout,identity,
+   headless:stagingQaHeadless(env),timeout,identity,
  });
 }

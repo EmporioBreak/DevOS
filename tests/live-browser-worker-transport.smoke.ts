@@ -8,7 +8,7 @@ import {join} from "node:path";
 import {ChatGptBrowserExecutor} from "../src/chatgpt-browser-executor.js";
 import {assertChatGptProjectScope} from "../src/browser-config.js";
 import {stagingQaPrompt,verifyStagingQaAnswer} from "./qa-transport-contract.js";
-import {STAGING_QA_HEADLESS} from "./staging-headed-launch.js";
+import {stagingQaHeadless} from "./staging-headed-launch.js";
 
 const root=process.env.DEVOS_STAGING_ROOT;
 if(!root || !root.endsWith("/DevOS-staging"))
@@ -31,7 +31,7 @@ try {
 const config=JSON.parse(await readFile(join(root,".devos","config.json"),"utf8"));
 const profileDir=join(homedir(),".devos-staging","camoufox-profile");
 const executor=new ChatGptBrowserExecutor({
- projectUrl:config.chatgptProjectUrl,profileDir,headless:STAGING_QA_HEADLESS,
+ projectUrl:config.chatgptProjectUrl,profileDir,headless:stagingQaHeadless(),
 },100_000);
 let saved:string|undefined;
 let attemptedTurns=0,completedTurns=0;
