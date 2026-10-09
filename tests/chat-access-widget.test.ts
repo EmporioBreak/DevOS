@@ -71,6 +71,9 @@ test("approval widget contains only public HTTPS endpoint and direct fetch", () 
   assert.ok(!html.includes(owner) && !html.includes(password));
   assert.ok(!html.includes("callTool"));
   assert.ok(html.includes("sendFollowUpMessage"));
+  assert.ok(html.includes('"ui/message"'));
+  assert.ok(html.includes('"ui/initialize"'));
+  assert.equal(CHAT_APPROVAL_WIDGET_URI, "ui://devos/chat-approval-v2.html");
   assert.ok(!html.includes("sendFollowUpMessage({ prompt: password"));
   assert.match(html, /share\/…/);
 });
