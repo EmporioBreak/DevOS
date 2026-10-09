@@ -11,6 +11,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ChatAccessRegistry, canonicalPrivateChatUrl, chatSessionSignal } from "../src/chat-access.js";
 import { runChatAccessAdmin } from "../src/chat-access-admin.js";
 import { ChatWorkerGrantRegistry } from "../src/chat-worker-grants.js";
+import { ChatWorkerProbeRegistry } from "../src/chat-worker-probe.js";
 import { captureProcessIdentity } from "../src/process-identity.js";
 import { startGateway } from "../src/connector-gateway.js";
 import { oauthToken } from "./connector-auth-fixture.js";
@@ -166,8 +167,16 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
     await writeFile(lockPath,JSON.stringify({repo:"EmporioBreak/DevOS",issue:99,pid:process.pid,
       identity,runId:"test-active-task",startedAt:new Date().toISOString()}),{mode:0o600});
     const workerRegistry = new ChatWorkerGrantRegistry(root, secret);
+    // A probe response arrives before the trusted browser history verifier
+    // can confirm it. The SAME MCP noop call may wait briefly for that proof,
+    // but must NEVER authorize from the probe alone.
+    const pendingNoop = client.callTool({ name: "devos_noop", arguments: {} });
+    await new Promise(resolve => setTimeout(resolve, 150));
     assert.equal(workerRegistry.bindVerified(safeProbe.nonce,
       { repo: "EmporioBreak/DevOS", issue: 99 }, "developer", 0, url), true);
+    const resumedNoop = (await pendingNoop).structuredContent as any;
+    assert.equal(resumedNoop.approved, true,
+      "one bounded noop call observes a separately verified worker grant");
     assert.notEqual((await client.callTool({ name: "get_config", arguments: {} })).isError, true,
       "verified active worker forwards to Desktop Commander without password");
     assert.notEqual((await client.callTool({ name: "devos_task_status",
@@ -176,6 +185,16 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
     workerRegistry.revoke({ repo: "EmporioBreak/DevOS", issue: 99 }, "developer");
     assert.equal((await client.callTool({ name: "get_config", arguments: {} })).structuredContent?.status,
       "authorization_required", "revoked worker must immediately lose gateway forwarding");
+    // Even after a valid signed probe disappears on expiry, the waiting
+    // worker gets a blocker, NEVER an owner's password form or Mac access.
+    const nearExpiry = new ChatWorkerProbeRegistry(root, secret)
+      .issue(noop.chat_reference, Date.now() - 119_000);
+    assert.equal(nearExpiry.status, "issued");
+    const pendingDenied = await client.callTool({ name: "devos_noop", arguments: {} });
+    assert.equal(pendingDenied.structuredContent?.status, "worker_proof_pending");
+    assert.equal(pendingDenied.structuredContent?.approved, false);
+    assert.doesNotMatch(String((pendingDenied.content as any[])[0]?.text),
+      /devos_authorize_chat/, "worker must not be directed to owner password widget");
 
     registry.approve(noop.chat_reference, url);
     assert.equal(parse(await client.callTool({ name: "devos_noop", arguments: {} })).approved, true);

@@ -688,7 +688,7 @@ export function buildWorkerPrompt(
       : "If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_local_worker instead of failed.",
     ...(worker.executor === "chatgpt_browser" && report ? [
       "This is a DevOS-owned browser worker conversation. Before the FIRST operational Desktop Commander or first-party DevOS MCP call in this turn, call the safe devos_worker_probe tool exactly once, with no arguments. This does not itself authorize any operation; the trusted local browser owner verifies its provider-structured tool response in this exact worker chat.",
-      "Then check devos_noop for approved=true before using operational Mac/DevOS tools. A brief delay in local proof verification is possible; at most two bounded retries, no rapid polling. If unavailable/unapproved, do not operate the Mac; report the blocker accurately.",
+      "After devos_worker_probe returns status=issued, call devos_noop exactly once with no arguments and await its result. The gateway may briefly wait for independent, signed, exact-chat proof; the probe alone NEVER grants permission. Only approved=true permits operational Mac/DevOS tools or devos_worker_report. If denied/worker_proof_pending, do not request owner authorization, use Mac tools, fabricate an MCP report, repeat the probe or replay this turn; explain the blocker in text.",
       "Do not request owner passwords, use devos_authorize_chat, supply your chat URL as proof, or reuse devos_worker_report turn tokens for authorization.",
     ] : []),
     ...(report ? [

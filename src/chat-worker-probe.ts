@@ -63,6 +63,32 @@ export class ChatWorkerProbeRegistry {
     writeFileSync(this.path(nonce), JSON.stringify({ ...row, mac: this.signed(row) }), { flag: "wx", mode: 0o600 });
     return { status: "issued" as const, nonce, expires_in_seconds: TTL_MS / 1000 };
   }
+  /** Checks only a signed, unexpired challenge for this exact session. This
+   * NEVER authorizes access; it only permits bounded noop waiting while a
+   * separate trusted browser verifier attempts to register the real grant. */
+  hasPendingFor(fingerprint: string | undefined, now = Date.now()): boolean {
+    if (!fingerprint || !FINGERPRINT.test(fingerprint) || !existsSync(this.dir)) return false;
+    try {
+      const entries = readdirSync(this.dir).filter(f => /^[a-f0-9]{64}\.json$/.test(f));
+      if (entries.length > MAX_PENDING) return false;
+      for (const file of entries) {
+        const path = join(this.dir, file);
+        const st = lstatSync(path);
+        if (!st.isFile() || (st.mode & 0o077) !== 0) continue;
+        const row = JSON.parse(readFileSync(path, "utf8")) as Pending;
+        if (row.version !== 1 || row.fingerprint !== fingerprint ||
+            !Number.isSafeInteger(row.issuedAt) || !Number.isSafeInteger(row.expiresAt) ||
+            row.expiresAt - row.issuedAt !== TTL_MS ||
+            now < row.issuedAt || now >= row.expiresAt ||
+            typeof row.mac !== "string" || !/^[a-f0-9]{64}$/.test(row.mac)) continue;
+        const unsigned = { version: 1 as const, fingerprint: row.fingerprint,
+          issuedAt: row.issuedAt, expiresAt: row.expiresAt };
+        if (timingSafeEqual(Buffer.from(row.mac, "hex"),
+            Buffer.from(this.signed(unsigned), "hex"))) return true;
+      }
+    } catch { /* unreadable or tampered evidence cannot even start a wait */ }
+    return false;
+  }
   /** Local trusted executor only; NEVER expose through MCP or an HTTP route.
    * An untrusted model cannot reach this API; the caller must first prove a
    * provider-authored exact-chat tool result, not text or arguments. */

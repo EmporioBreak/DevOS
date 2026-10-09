@@ -373,6 +373,28 @@ export async function startGateway(options: {
   );
   const workerProbe = new ChatWorkerProbeRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
   const workerGrants = new ChatWorkerGrantRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
+  // Only a signed probe for this actual host/OAuth session can initiate a
+  // short, bounded wait. The waiting call NEVER grants access by itself.
+  let pendingWorkerNoopWaits = 0;
+  const awaitVerifiedWorkerGrant = async (fingerprint: string | undefined) => {
+    if (!fingerprint || !workerProbe.hasPendingFor(fingerprint) ||
+        pendingWorkerNoopWaits >= 8) return false;
+    pendingWorkerNoopWaits++;
+    try {
+      const deadline = Date.now() + 25_000;
+      while (Date.now() < deadline && !closing) {
+        if (workerGrants.isGranted(fingerprint)) return true;
+        if (!workerProbe.hasPendingFor(fingerprint)) {
+          // An issued probe might have just been claimed by the trusted
+          // verifier; give it one short commit grace, never assume a grant.
+          await new Promise(resolve => setTimeout(resolve, 250));
+          return workerGrants.isGranted(fingerprint);
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      return workerGrants.isGranted(fingerprint);
+    } finally { pendingWorkerNoopWaits--; }
+  };
   const callOrigin = new AsyncLocalStorage<{ clientId: string; sessionHeader: unknown }>();
   let desktop: DesktopCommanderIntegration;
   desktop = new DesktopCommanderIntegration({
@@ -638,17 +660,26 @@ export async function startGateway(options: {
             const authorized = chatAccess.isApproved(fingerprint) || workerGrants.isGranted(fingerprint);
             if (request.method === "tools/call") {
               if (request.params?.name === CHAT_NOOP_TOOL.name) {
-                if (authorized) return {
+                // Keep this request's signed pending-worker classification even
+                // if the local verifier consumes the nonce before responding.
+                const pendingWorker = !authorized && workerProbe.hasPendingFor(fingerprint);
+                const verified = authorized ||
+                  (pendingWorker && await awaitVerifiedWorkerGrant(fingerprint));
+                if (verified) return {
                   ...noOpResult(fingerprint, true),
                   structuredContent: { status: "no_action", approved: true,
                     ready: false, reason: "already_authorized",
                     ...(fingerprint ? { chat_reference: fingerprint } : {}) },
                 };
+                const unverifiedWorker = pendingWorker || workerProbe.hasPendingFor(fingerprint);
                 return {
-                  content: [{ type: "text", text: fingerprint
+                  content: [{ type: "text", text: unverifiedWorker
+                    ? "DevOS worker proof is not verified. No Mac access was granted; do not request the owner's password or use operational tools."
+                    : fingerprint
                     ? "Authorization required. Call devos_authorize_chat with no arguments now in this same turn to open the approval form."
                     : "ChatGPT did not provide a trusted session. Mac access is denied." }],
-                  structuredContent: { status: fingerprint ? "authorization_required" : "missing_session",
+                  structuredContent: { status: unverifiedWorker ? "worker_proof_pending" :
+                      fingerprint ? "authorization_required" : "missing_session",
                     approved: false, operation_executed: false,
                     ...(fingerprint ? { chat_reference: fingerprint } : {}) },
                 };

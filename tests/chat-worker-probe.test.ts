@@ -88,3 +88,25 @@ test("only exact provider tool result can establish browser evidence", () => {
   assert.equal(exactWorkerProbeResult("DEVOS worker probe " + nonce, uri), null);
   assert.equal(exactWorkerProbeResult(proper, ""), null);
 });
+
+test("pending-check is session-pinned, signed, unexpired and never a grant", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-pending-proof-"));
+  try {
+    const reg = new ChatWorkerProbeRegistry(root, secret);
+    assert.equal(reg.hasPendingFor(fingerprintA), false);
+    const challenge = reg.issue(fingerprintA, 10_000_000);
+    assert.equal(challenge.status, "issued");
+    if (challenge.status !== "issued") return;
+    assert.equal(reg.hasPendingFor(fingerprintA, 10_000_001), true);
+    assert.equal(reg.hasPendingFor(fingerprintB, 10_000_001), false);
+    assert.equal(reg.hasPendingFor(fingerprintA, 10_120_000), false);
+    const dir = join(root, ".devos", "connector", "worker-probes");
+    const file = join(dir, (await readdir(dir))[0]!);
+    const tampered = JSON.parse(await readFile(file, "utf8"));
+    tampered.expiresAt += 20_000;
+    await writeFile(file, JSON.stringify(tampered));
+    assert.equal(reg.hasPendingFor(fingerprintA, 10_000_002), false,
+      "unsigned extension of a pending worker challenge is not trusted");
+    assert.equal(reg.claim(challenge.nonce, 10_000_003), null);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
