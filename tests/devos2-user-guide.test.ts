@@ -50,3 +50,18 @@ test("all relative reference documents from the new user guide resolve in Stagin
  assert.ok(links.length>=6);
  for(const link of links)assert.ok((await stat(resolve(dirname(guideFile),link))).isFile(),link);
 });
+
+test("worker authorization runbook preserves live blocker and fail-closed operator contract",async()=>{
+ const guide=await read("docs/devos2-user-guide.md");
+ const runbook=await read("docs/worker-authorization-live-runbook.md");
+ assert.match(guide,/worker-authorization-live-runbook\.md/);
+ for(const invariant of ["qa_report","activeReport","devos_worker_probe",
+   "devos_noop","devos_worker_report","worker_proof_pending",
+   "GET HTTP 200","401/404","POST","Production","Staging",
+   "scripts/staging-public-mcp.smoke.ts","scripts/staging-safe-chaos.smoke.ts"])
+   assert.ok(runbook.includes(invariant),invariant);
+ assert.match(runbook,/НЕ|не воспроизводить/);
+ assert.match(runbook,/не.*пароль владельца/i);
+ assert.match(runbook,/preflight.*blocked|вернуть `blocked`/i);
+ assert.match(runbook,/не подтверждает завершение E2E/);
+});
