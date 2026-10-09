@@ -35,6 +35,9 @@ import { resolveTaskReference } from "./task-reference.js";
 import { acquireTaskLock } from "./task-lock.js";
 import type { Workflow } from "./workflow.js";
 import { loadWorkflow } from "./workflow-loader.js";
+import { verifyRunnerSkillGraph } from "./runner-skill-graph.js";
+import { parseEnvFile } from "./connector-env.js";
+import { readFile } from "node:fs/promises";
 import {
   closeSharedBrowserRuntime,
   ensureSharedBrowserRuntime,
@@ -114,6 +117,18 @@ export async function runWorkflow(
   if (config) assertWorkflowMatchesProject(workflow, config);
   const taskLock = await acquireTaskLock(cwd, workflow.task);
   try {
+  let strictSecret: string | undefined;
+  if(workflow.skillsMode==="strict") {
+    strictSecret=process.env.DEVOS_CONNECTOR_OWNER_SECRET;
+    if(!strictSecret) {
+      const vars=parseEnvFile(await readFile(join(cwd,".env"),"utf8"));
+      strictSecret=vars.DEVOS_CONNECTOR_OWNER_SECRET;
+    }
+    if(!strictSecret || Buffer.byteLength(strictSecret)<32)
+      throw new Error("Strict Runner requires strong local owner key");
+    // Before state, Camoufox or any other worker process starts.
+    await verifyRunnerSkillGraph(cwd,workflow,strictSecret);
+  }
   if (process.env.DEVOS_DEBUG === "1") {
     process.env.DEVOS_DEBUG_FILE = join(
       cwd,
@@ -173,6 +188,12 @@ export async function runWorkflow(
       ...(chatgpt ? [["chatgpt_browser", chatgpt] as const] : []),
     ]),
     stateStore,
+    ...(strictSecret?{verifyAssignedWorkerSkills:async (workerId:string)=>{
+      const exact=await verifyRunnerSkillGraph(cwd,workflow,strictSecret);
+      const assigned=exact.workers.find(w=>w.workerId===workerId);
+      if(!assigned)throw new Error("Undeclared DevOS Runner worker");
+      return {stage:assigned.stage,manifestSha256:assigned.manifestSha256};
+    }}:{}),
     enableWorkerReports: hasBrowserWorker && workerReportsEnabled(process.env.DEVOS_WORKER_MCP_REPORTS),
     ...(mainAgentDecision ? { mainAgentDecision } : {}),
     finalizeTask: async state => {

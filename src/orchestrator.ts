@@ -77,6 +77,10 @@ export interface OrchestratorOptions {
   mainAgentDecision?: "approved" | "changes_requested";
   finalizeTask?: (state: RunState) => Promise<void>;
   resolveTask?: (task: TaskRef) => Promise<TaskRef>;
+  /** Mandatory for v2: reverify signed per-worker graph before every dispatch. */
+  verifyAssignedWorkerSkills?: (workerId:string) => Promise<{
+    stage:string|null;manifestSha256:string;
+  }>;
   onEvent?: (event: OrchestrationEvent) => void | Promise<void>;
   enableWorkerReports?: boolean;
   maxWorkerRuns?: number;
@@ -171,6 +175,14 @@ export class Orchestrator {
       await this.assertBudgets(state);
       const worker = workers.get(state.currentWorkerId);
       if (!worker) throw new Error(`Unknown worker: ${state.currentWorkerId}`);
+      let skillAssignment: {stage:string|null;manifestSha256:string}|undefined;
+      if(workflow.skillsMode==="strict") {
+        if(!this.options.verifyAssignedWorkerSkills)
+          throw new Error("Strict Runner requires verified frozen worker assignments");
+        skillAssignment=await this.options.verifyAssignedWorkerSkills(worker.id);
+        if(!skillAssignment || !/^[a-f0-9]{64}$/.test(skillAssignment.manifestSha256))
+          throw new Error("Missing verified Runner worker stage/skills");
+      }
 
       const executor = this.options.executors.get(worker.executor);
       if (!executor) throw new Error(`Missing executor: ${worker.executor}`);
@@ -299,13 +311,21 @@ export class Orchestrator {
           projectRoot: this.options.projectRoot,
           prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot,
             workerReportToken ? { turn: state.completedRuns, token: workerReportToken } : undefined) +
+            (skillAssignment ? (
+              "\n\nDevOS 2 STRICT assigned skill manifest SHA-256: "+
+              skillAssignment.manifestSha256+
+              ". Original Spec Kit stage: "+(skillAssignment.stage??"none")+
+              ". Read your exact assigned skills via devos_skill_manifest and "+
+              "devos_skill_read in this already verified worker chat before executing "+
+              "the task. Do not invent, override or dispatch additional workers."
+            ) : "") +
             (browserTurnToken
               ? "\n\nDevOS browser attempt ID: " + state.activeReport!.tokenHash + ". This is a non-secret correlation identifier; do not repeat it in your final answer or GitHub comments."
               : ""),
           workerId: worker.id,
           ...(worker.executor === "codex" ? {
             codexSkills: { task: activeWorkflow.task, workerId: worker.id,
-              mandatory: false /* #144 enables required prelaunch manifests */ },
+              mandatory: workflow.skillsMode === "strict" },
           } : {}),
           ...(worker.executor === "chatgpt_browser"
             ? {
@@ -353,7 +373,7 @@ export class Orchestrator {
             prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot),
             workerId: worker.id,
             codexSkills: { task: activeWorkflow.task, workerId: worker.id,
-              mandatory: false /* #144 enables required prelaunch manifests */ },
+              mandatory: workflow.skillsMode === "strict" },
             onSession,
           });
         } else if (

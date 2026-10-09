@@ -28,6 +28,8 @@ export interface Workflow {
   version: 1;
   task: TaskRef;
   owner?: TaskOwner;
+  /** DevOS 2 requires signed frozen stages and skill manifests. Legacy omitted. */
+  skillsMode?: "strict";
   start: string;
   workers: WorkerSpec[];
 }
