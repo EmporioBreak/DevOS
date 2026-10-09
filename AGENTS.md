@@ -34,9 +34,11 @@ requests continuation. Only if the widget explicitly says the client did
 not confirm the continuation may the user need to retry the original task.
 This continuation is a client capability, not a server guarantee; never
 automatically replay an unapproved, state-changing MCP operation.
-If the client fails to render inline MCP Apps, present the exact
-`approval_url` returned by the denied tool or `devos_noop` as a clickable
-HTTPS link: it opens the standalone DevOS password form in Safari.
+If the client fails to render the inline form from
+`devos_authorize_chat`, present the exact `approval_url` returned by
+THAT authorization tool as a clickable HTTPS link for Safari. Ordinary
+tools and `devos_noop` intentionally do not issue approval tickets or
+return an attached widget.
 Do not redirect users to ChatGPT plugin settings or collect their password
 in chat. If no valid URL is returned, call `devos_authorize_chat` with
 empty arguments to obtain one. The URL contains a five-minute one-use
