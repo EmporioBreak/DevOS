@@ -8,7 +8,7 @@ import type { Page } from "playwright-core";
 import { captureProcessIdentity } from "../src/process-identity.js";
 import { ChatWorkerProbeRegistry } from "../src/chat-worker-probe.js";
 import { ChatWorkerGrantRegistry } from "../src/chat-worker-grants.js";
-import { observeWorkerAuthorization } from "../src/chat-worker-observer.js";
+import { isExactWorkerHistoryResponse, observeWorkerAuthorization } from "../src/chat-worker-observer.js";
 
 const repo = "EmporioBreak/DevOS";
 const task = { repo, issue: 99 };
@@ -102,4 +102,21 @@ test("browser observer never touches a URL different from the predeclared worker
     assert.equal(browser.stats.pagesCreated, 0);
     assert.equal(new ChatWorkerGrantRegistry(root, secret).isGranted(fp), false);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("browser verifier pins exact provider origin, path, identity and success", () => {
+  const id = url.split("/c/")[1]!;
+  const official = "https://chatgpt.com/backend-api/conversations/" + id;
+  assert.equal(isExactWorkerHistoryResponse(official + "?num_turns=100", 200, url), true);
+  for (const fake of [
+    "https://attacker.example/backend-api/conversations/" + id,
+    "https://chatgpt.com.attacker.example/backend-api/conversations/" + id,
+    "http://chatgpt.com/backend-api/conversations/" + id,
+    "https://chatgpt.com/backend-api/conversations/other-chat",
+    "https://chatgpt.com/backend-api/conversation/" + id,
+    "not a URL",
+  ]) assert.equal(isExactWorkerHistoryResponse(fake, 200, url), false, fake);
+  assert.equal(isExactWorkerHistoryResponse(official, 401, url), false);
+  assert.equal(isExactWorkerHistoryResponse(official, 404, url), false);
+  assert.equal(isExactWorkerHistoryResponse(official, 200, "http://chatgpt.com/c/" + id), false);
 });

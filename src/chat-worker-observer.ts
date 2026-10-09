@@ -8,6 +8,22 @@ const MAX_WINDOW_MS = 2 * 60_000;
 const HISTORY_INTERVAL_MS = 7_000;
 const MAX_HISTORY_CHECKS = 12;
 
+/** A path alone is not provider provenance: unrelated origins can emit the
+ * same URL path. Only a successful HTTPS response from the saved ChatGPT
+ * conversation's exact origin can feed the privileged worker verifier. */
+export function isExactWorkerHistoryResponse(
+  responseUrl: string, status: number, exactChatUrl: string,
+): boolean {
+  try {
+    const expected = new URL(exactChatUrl);
+    const candidate = new URL(responseUrl);
+    const id = /\/c\/([^/?#]+)$/.exec(expected.pathname)?.[1];
+    return expected.protocol === "https:" && !!id && status === 200 &&
+      candidate.origin === expected.origin &&
+      candidate.pathname === "/backend-api/conversations/" + id;
+  } catch { return false; }
+}
+
 /** Read the provider's structured response for ONE exact saved worker chat.
  * A separate temporary page avoids reloading/resubmitting the worker turn.
  * Never search arbitrary chats, the sidebar, assistant text, or tool arguments. */
@@ -24,14 +40,9 @@ async function readExactHistory(
   try {
     verifier = await workerPage.context().newPage();
     await workerPage.bringToFront().catch(() => {});
-    const id = /\/c\/([^/?#]+)$/.exec(new URL(url).pathname)?.[1];
-    if (!id) return null;
-    const responseWait = verifier.waitForResponse(response => {
-      try {
-        return new URL(response.url()).pathname === "/backend-api/conversations/" + id &&
-          response.status() === 200;
-      } catch { return false; }
-    }, { timeout: 14_000 });
+    const responseWait = verifier.waitForResponse(response =>
+      isExactWorkerHistoryResponse(response.url(), response.status(), url),
+      { timeout: 14_000 });
     void responseWait.catch(() => {});
     await verifier.goto(url, { waitUntil: "domcontentloaded", timeout: 14_000 });
     if (signal.aborted || verifier.url() !== url || workerPage.url() !== url) return null;
