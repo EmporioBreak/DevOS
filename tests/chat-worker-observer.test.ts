@@ -52,7 +52,7 @@ function providerHistory(nonce: string, originUrl = url) {
       content: { content_type: "code", text: JSON.stringify({ status: "issued", nonce }) } },
   ] };
 }
-function browserFake(history: unknown, exactUrl = url, status = 200, origin = "https://chatgpt.com") {
+function browserFake(history: unknown, exactUrl = url, status = 200, origin = "https://chatgpt.com", method = "GET") {
   let pagesCreated = 0;
   let closed = false;
   const verifier = {
@@ -61,6 +61,7 @@ function browserFake(history: unknown, exactUrl = url, status = 200, origin = "h
       const response = {
         url: () => origin + "/backend-api/conversations/" + exactUrl.split("/c/")[1],
         status: () => status,
+        request: () => ({ method: () => method }),
         json: async () => history,
       };
       return predicate(response) ? Promise.resolve(response) :
@@ -145,6 +146,20 @@ test("observer rejects identical conversation path from another HTTPS origin", a
   const timer = setTimeout(() => abort.abort(), 80);
   try {
     const fake = browserFake(providerHistory(nonce), url, 200, "https://attacker.example");
+    assert.equal(await observeWorkerAuthorization({
+      page: fake.page, root, task, workerId: "developer", turn: 1,
+      expectedConversation: () => url, exactSubmittedPrompt: prompt, signal: abort.signal,
+    }), false);
+    assert.equal(new ChatWorkerGrantRegistry(root, secret).isGranted(fp), false);
+  } finally { clearTimeout(timer); await rm(root, { recursive: true, force: true }); }
+});
+
+test("worker observer rejects a same-origin POST response posing as history", async () => {
+  const { root, nonce } = await temp();
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 100);
+  try {
+    const fake = browserFake(providerHistory(nonce), url, 200, "https://chatgpt.com", "POST");
     assert.equal(await observeWorkerAuthorization({
       page: fake.page, root, task, workerId: "developer", turn: 1,
       expectedConversation: () => url, exactSubmittedPrompt: prompt, signal: abort.signal,

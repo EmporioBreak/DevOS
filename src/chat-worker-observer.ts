@@ -49,6 +49,9 @@ async function readExactHistory(
     // diagnostics can distinguish HTTP 401/404 from an absent response.
     // Neither denial nor a different-origin response can grant access.
     const responseWait = verifier.waitForResponse(response =>
+      // A same-origin POST or other non-history response must never prove
+      // worker identity, even when its path and JSON resemble a history read.
+      response.request().method() === "GET" &&
       isExactWorkerHistoryEndpoint(response.url(), url),
       { timeout: 14_000 });
     void responseWait.catch(() => {});
