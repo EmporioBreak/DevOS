@@ -8,7 +8,7 @@ import type { Page } from "playwright-core";
 import { captureProcessIdentity } from "../src/process-identity.js";
 import { ChatWorkerProbeRegistry } from "../src/chat-worker-probe.js";
 import { ChatWorkerGrantRegistry } from "../src/chat-worker-grants.js";
-import { isExactWorkerHistoryResponse, observeWorkerAuthorization } from "../src/chat-worker-observer.js";
+import { isExactWorkerHistoryEndpoint, isExactWorkerHistoryResponse, observeWorkerAuthorization } from "../src/chat-worker-observer.js";
 
 const repo = "EmporioBreak/DevOS";
 const task = { repo, issue: 99 };
@@ -52,16 +52,20 @@ function providerHistory(nonce: string, originUrl = url) {
       content: { content_type: "code", text: JSON.stringify({ status: "issued", nonce }) } },
   ] };
 }
-function browserFake(history: unknown, exactUrl = url) {
+function browserFake(history: unknown, exactUrl = url, status = 200, origin = "https://chatgpt.com") {
   let pagesCreated = 0;
   let closed = false;
   const verifier = {
     url: () => exactUrl,
-    waitForResponse: () => Promise.resolve({
-      url: () => "https://chatgpt.com/backend-api/conversations/" + exactUrl.split("/c/")[1],
-      status: () => 200,
-      json: async () => history,
-    }),
+    waitForResponse: (predicate: (response: any) => boolean) => {
+      const response = {
+        url: () => origin + "/backend-api/conversations/" + exactUrl.split("/c/")[1],
+        status: () => status,
+        json: async () => history,
+      };
+      return predicate(response) ? Promise.resolve(response) :
+        Promise.reject(new Error("response not from exact provider endpoint"));
+    },
     goto: async () => ({ status: () => 200 }),
     close: async () => { closed = true; },
   };
@@ -107,6 +111,7 @@ test("browser observer never touches a URL different from the predeclared worker
 test("browser verifier pins exact provider origin, path, identity and success", () => {
   const id = url.split("/c/")[1]!;
   const official = "https://chatgpt.com/backend-api/conversations/" + id;
+  assert.equal(isExactWorkerHistoryEndpoint(official, url), true);
   assert.equal(isExactWorkerHistoryResponse(official + "?num_turns=100", 200, url), true);
   for (const fake of [
     "https://attacker.example/backend-api/conversations/" + id,
@@ -119,4 +124,31 @@ test("browser verifier pins exact provider origin, path, identity and success", 
   assert.equal(isExactWorkerHistoryResponse(official, 401, url), false);
   assert.equal(isExactWorkerHistoryResponse(official, 404, url), false);
   assert.equal(isExactWorkerHistoryResponse(official, 200, "http://chatgpt.com/c/" + id), false);
+});
+
+test("observer rejects a genuine provider HTTP 401 even if the body looks like a valid nonce", async () => {
+  const { root, nonce } = await temp();
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 80);
+  try {
+    const fake = browserFake(providerHistory(nonce), url, 401);
+    assert.equal(await observeWorkerAuthorization({
+      page: fake.page, root, task, workerId: "developer", turn: 1,
+      expectedConversation: () => url, exactSubmittedPrompt: prompt, signal: abort.signal,
+    }), false);
+    assert.equal(new ChatWorkerGrantRegistry(root, secret).isGranted(fp), false);
+  } finally { clearTimeout(timer); await rm(root, { recursive: true, force: true }); }
+});
+test("observer rejects identical conversation path from another HTTPS origin", async () => {
+  const { root, nonce } = await temp();
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 80);
+  try {
+    const fake = browserFake(providerHistory(nonce), url, 200, "https://attacker.example");
+    assert.equal(await observeWorkerAuthorization({
+      page: fake.page, root, task, workerId: "developer", turn: 1,
+      expectedConversation: () => url, exactSubmittedPrompt: prompt, signal: abort.signal,
+    }), false);
+    assert.equal(new ChatWorkerGrantRegistry(root, secret).isGranted(fp), false);
+  } finally { clearTimeout(timer); await rm(root, { recursive: true, force: true }); }
 });
