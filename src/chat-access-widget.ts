@@ -213,3 +213,56 @@ form.addEventListener("submit", async function(event) {
 });
 </script></body></html>`;
 }
+
+/** Browser fallback for native ChatGPT clients that skip MCP Apps resources/read.
+ * The one-time ticket lives in the URL fragment, not the HTTPS request path,
+ * query string, Referer or server logs. No OAuth token or cookie is involved. */
+export function externalChatApprovalForm(): string {
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Разрешить DevOS для этого чата</title>
+<style>body{font:16px system-ui,sans-serif;max-width:420px;margin:32px auto;padding:0 20px}
+label{display:block;margin-top:16px}input{font:inherit;width:100%;box-sizing:border-box;padding:12px}
+button{font:inherit;padding:12px;margin-top:20px}p{line-height:1.5}</style></head>
+<body><h2>Разрешить DevOS для этого чата</h2>
+<p>Форма открыта на сервере DevOS. Пароль отправляется только в DevOS;
+публичная ссылка /share/ — лишь метка. Доступ привязан к MCP-сессии
+чата, в котором ты вызвал инструмент.</p>
+<form id="auth"><label>Ссылка на чат (/c/ или /share/)
+<input type="url" id="url" autocomplete="off" required placeholder="https://chatgpt.com/share/…"></label>
+<label>Пароль DevOS<input type="password" id="password" autocomplete="off" required></label>
+<button id="submit" type="submit">Разрешить этот чат</button></form>
+<p id="status" role="status" aria-live="polite"></p>
+<script>
+"use strict";
+const ticket = location.hash.slice(1);
+history.replaceState(null, "", location.pathname);
+const form = document.getElementById("auth");
+const status = document.getElementById("status");
+if (!/^[a-zA-Z0-9_-]{32}$/.test(ticket)) {
+  form.hidden = true;
+  status.textContent = "Недействительный запрос. Повтори действие в ChatGPT.";
+}
+form.addEventListener("submit", async event => {
+  event.preventDefault();
+  const passwordInput = document.getElementById("password");
+  const password = passwordInput.value;
+  passwordInput.value = "";
+  const url = document.getElementById("url").value.trim();
+  const btn = document.getElementById("submit");
+  btn.disabled = true;
+  try {
+    const response = await fetch("/chat-access/approve", {
+      method:"POST", credentials:"omit", cache:"no-store", referrerPolicy:"no-referrer",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ticket,password,url})
+    });
+    if (!response.ok) { status.textContent="Доступ не разрешён. Проверь пароль и ссылку."; return; }
+    form.hidden = true;
+    status.textContent="Доступ разрешён! Вернись в ChatGPT и повтори исходный запрос. Встроенная форма ChatGPT на iOS может не поддерживаться.";
+  } catch {
+    status.textContent="Не удалось связаться с DevOS. Повтори попытку.";
+  } finally { btn.disabled=false; }
+});
+</script></body></html>`;
+}

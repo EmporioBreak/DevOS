@@ -117,13 +117,29 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
       assert.match(resource.text, /Пароль авторизации DevOS/);
       assert.ok(!resource.text.includes(password));
 
+      // The iPhone app may skip MCP Apps resources/read. Verify that a plain
+      // HTTPS page is available independently and never embeds a password,
+      // private session signal, ticket or OAuth credential in HTML.
+      const external = await fetch(base + "/chat-access/form");
+      assert.equal(external.status, 200);
+      assert.match(external.headers.get("content-type") || "", /text\/html/);
+      assert.match(external.headers.get("content-security-policy") || "", /frame-ancestors 'none'/);
+      const externalHtml = await external.text();
+      assert.match(externalHtml, /Ссылка на чат/);
+      assert.match(externalHtml, /location.hash.slice\(1\)/);
+      assert.ok(!externalHtml.includes(password));
       const initialPreflight = await client.callTool({ name: "devos_noop", arguments: {} });
       assert.equal((initialPreflight as any).structuredContent?.ready, true,
         "one safe MCP call must include widget ticket without a separate authorization tool");
+      assert.match((initialPreflight.content as any[])[0].text,
+        /"approval_url":"https:\/\/widget\.devos\.example\/chat-access\/form#[A-Za-z0-9_-]{32}"/);
       const blocked = await client.callTool({ name: "get_config", arguments: {} });
       assert.notEqual(blocked.isError, true, "iOS must render the approval widget instead of an MCP error");
       assert.equal((blocked as any).structuredContent?.status, "authorization_required");
       assert.equal((blocked as any).structuredContent?.operation_executed, false);
+      const fallbackLink = (blocked.content as any[])[0].text;
+      assert.match(fallbackLink, /https:\/\/widget\.devos\.example\/chat-access\/form#[A-Za-z0-9_-]{32}/);
+      assert.ok(!fallbackLink.includes(password), "no password in tool response");
       assert.equal((blocked as any).structuredContent?.ready, true,
         "a denied operational tool should also return an approval ticket");
       assert.equal((blocked as any)._meta?.ui?.resourceUri, CHAT_APPROVAL_WIDGET_URI);
