@@ -275,3 +275,66 @@ test("strict ambiguous browser result cannot replay an already submitted turn",a
     assert.equal(sends,1,"may-have-submitted must NOT replay unsafe browser operation");
   }finally{await rm(f.root,{recursive:true,force:true})}
 });
+
+test("strict Main Agent handoff survives restarts and accepts corrections in the same PR/sessions",async()=>{
+  const f=await fixture();
+  try {
+    await sealRunnerSkillGraph(f.root,f.w,secret,async()=>true,upstreamRoot);
+    const store=new FakeStore();
+    const requests:WorkerRequest[]=[];
+    const browser:Executor={kind:"chatgpt_browser",async run(request){
+      requests.push(request);
+      const url="https://chatgpt.com/g/project/c/"+request.workerId+"-744";
+      await request.onSession?.(url);
+      return {text:request.workerId==="reviewer"?
+        'DEVOS_RESULT {"status":"approved"}':'DEVOS_RESULT {"status":"done"}',
+        sessionId:url};
+    }};
+    let finalized=0;
+    const verification=async (workerId:string)=>{
+      const graph=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
+      const assigned=graph.workers.find(w=>w.workerId===workerId);
+      assert.ok(assigned);
+      return {stage:assigned.stage,manifestSha256:assigned.manifestSha256};
+    };
+    const make=(decision?:"approved"|"changes_requested")=>new Orchestrator({
+      projectRoot:f.root,workflow:f.w,
+      executors:new Map([["chatgpt_browser",browser]]),
+      stateStore:store,verifyAssignedWorkerSkills:verification,
+      ...(decision?{mainAgentDecision:decision}:{}),
+      finalizeTask:async()=>{finalized++;},
+    });
+    await assert.rejects(make("approved").run(),/requires an existing task waiting/);
+    assert.equal(requests.length,0);
+    const first=await make().run();
+    assert.equal(first.mainAgentReviewPending,true);
+    assert.equal(first.completionApproved,undefined);
+    assert.equal(finalized,0);
+    assert.deepEqual(requests.map(x=>x.workerId),["developer","reviewer"]);
+    assert.equal(first.task?.pr,917);
+    const waiting=await make().run();
+    assert.equal(waiting.mainAgentReviewPending,true);
+    assert.equal(requests.length,2,"resume without owner decision cannot dispatch");
+    assert.equal(finalized,0);
+    const revised=await make("changes_requested").run();
+    assert.equal(revised.mainAgentReviewPending,true);
+    assert.equal(revised.completedRuns,4);
+    assert.equal(revised.task?.pr,917);
+    assert.deepEqual(requests.map(x=>x.workerId),
+      ["developer","reviewer","developer","reviewer"]);
+    assert.equal(requests[0]?.sessionId,undefined);
+    assert.equal(requests[1]?.sessionId,undefined);
+    assert.equal(requests[2]?.sessionId,
+      "https://chatgpt.com/g/project/c/developer-744");
+    assert.equal(requests[3]?.sessionId,
+      "https://chatgpt.com/g/project/c/reviewer-744");
+    assert.equal(finalized,0,"reviewer approval cannot complete an owned Issue");
+    const approved=await make("approved").run();
+    assert.equal(approved.mainAgentReviewPending,false);
+    assert.equal(approved.completionApproved,true);
+    assert.equal(approved.task?.pr,917);
+    assert.equal(requests.length,4,"final owner acceptance must not rerun worker");
+    assert.equal(finalized,1);
+    assert.equal(store.state,null);
+  } finally {await rm(f.root,{recursive:true,force:true})}
+});
