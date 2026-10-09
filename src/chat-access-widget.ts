@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { ChatAccessRegistry } from "./chat-access.js";
 import { parseEnvFile } from "./connector-env.js";
 
-export const CHAT_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v2.html";
+export const CHAT_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v3.html";
+export const CHAT_PREVIOUS_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v2.html";
 export const CHAT_APPROVAL_WIDGET_TOOL = {
   name: "devos_authorize_chat",
   title: "Authorize this ChatGPT chat",
@@ -49,6 +50,7 @@ export class ChatApprovalTickets {
     root: string,
     private readonly registry: ChatAccessRegistry,
     overridePassword?: string,
+    private readonly onApproved?: (fingerprint: string) => void,
   ) {
     const password = ownerPassword(root, overridePassword);
     this.digest = password ? createHash("sha256").update(password).digest() : undefined;
@@ -60,10 +62,31 @@ export class ChatApprovalTickets {
     const now = Date.now();
     for (const [ticket, pending] of this.pending)
       if (pending.expiresAt < now) this.pending.delete(ticket);
+    // Keep ONE challenge per chat until it is used/expired. Models can call
+    // several tools while the first approval card is still being rendered.
+    for (const [ticket, pending] of this.pending)
+      if (pending.fingerprint === fingerprint && pending.attempts < MAX_ATTEMPTS)
+        // The FIRST denied MCP call owns the sole visible form. Reuse the
+        // challenge for Safari fallback but suppress all additional cards.
+        return { ready: false, reason: "approval_pending", ticket,
+          expires_in_seconds: Math.max(0, Math.floor((pending.expiresAt - now) / 1000)) };
     if (this.pending.size >= MAX_TICKETS) return { ready: false, reason: "capacity" };
     const ticket = randomBytes(24).toString("base64url");
     this.pending.set(ticket, { fingerprint, expiresAt: now + TICKET_TTL_MS, attempts: 0 });
     return { ready: true, ticket, expires_in_seconds: Math.floor(TICKET_TTL_MS / 1000) };
+  }
+
+  /** A ticket is displayable only while outstanding and before its chat is
+   * approved. Safe for a read-only HTTPS status check, no MAC/URL exposed. */
+  isPending(ticket: unknown): boolean {
+    if (typeof ticket !== "string" || !/^[A-Za-z0-9_-]{32}$/.test(ticket)) return false;
+    const entry = this.pending.get(ticket);
+    if (!entry) return false;
+    if (entry.expiresAt <= Date.now() || entry.attempts >= MAX_ATTEMPTS) {
+      this.pending.delete(ticket);
+      return false;
+    }
+    return !this.registry.isApproved(entry.fingerprint);
   }
 
   approve(body: unknown): boolean {
@@ -91,6 +114,11 @@ export class ChatApprovalTickets {
     this.pending.delete(record.ticket);
     try {
       this.registry.approve(ticket.fingerprint, record.url);
+      for (const [key, pending] of this.pending)
+        if (pending.fingerprint === ticket.fingerprint) this.pending.delete(key);
+      try { this.onApproved?.(ticket.fingerprint); } catch {
+        // UI refresh is best-effort; authorization has already been persisted.
+      }
       return true;
     } catch {
       return false;
@@ -101,6 +129,7 @@ export class ChatApprovalTickets {
 /** Inline MCP Apps HTML. Never use a model-visible tool call to submit passwords. */
 export function chatApprovalWidget(origin: string): string {
   const endpoint = JSON.stringify(new URL("/chat-access/approve", origin).href).replace(/</g, "\\u003c");
+  const statusEndpoint = JSON.stringify(new URL("/chat-access/check", origin).href).replace(/</g, "\\u003c");
   return `<!doctype html>
 <html lang="ru">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -114,6 +143,7 @@ button{font:inherit;font-weight:600;padding:10px 14px;margin-top:14px;border:1px
 small{color:inherit;opacity:.75}
 </style></head>
 <body>
+<main id="approval-panel" hidden>
 <h3>DevOS — разрешить этот чат</h3>
 <small>Принимаются ссылки /c/ и /share/ из мобильного ChatGPT. Ссылка /share/ публичная: доступ к Mac определяется паролем и MCP-сессией, а не владением этой ссылкой. Пароль отправляется напрямую в DevOS.</small>
 <form id="auth">
@@ -125,12 +155,48 @@ small{color:inherit;opacity:.75}
 <button id="go" type="submit">Разрешить и продолжить</button>
 </form>
 <div id="message" role="status" aria-live="polite"></div>
+</main>
 <script>
 "use strict";
 const endpoint = ${endpoint};
+const statusEndpoint = ${statusEndpoint};
 const out = document.getElementById("message");
+const panel = document.getElementById("approval-panel");
 const form = document.getElementById("auth");
+form.hidden = true;
 let activeTicket = null;
+let refreshEpoch = 0;
+let recheckTimer = null;
+// Older ChatGPT widget instances can survive after a different card has
+// approved the same session. Independently hide them when their ticket dies.
+// Do not reset form fields during rechecks (especially iOS keyboard focus).
+function schedulePendingRecheck(ticket) {
+  if (recheckTimer !== null) clearTimeout(recheckTimer);
+  recheckTimer = setTimeout(async () => {
+    recheckTimer = null;
+    if (activeTicket !== ticket) return;
+    try {
+      const response = await fetch(statusEndpoint, {
+        method: "POST", mode: "cors", credentials: "omit",
+        cache: "no-store", referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket })
+      });
+      const status = response.ok ? await response.json() : null;
+      if (ticket !== activeTicket) return;
+      if (status && status.pending === false) {
+        activeTicket = null;
+        ++refreshEpoch;
+        form.hidden = true;
+        panel.hidden = true;
+        return;
+      }
+    } catch { /* transient network error: revalidate on next pass */ }
+    if (ticket === activeTicket) schedulePendingRecheck(ticket);
+  }, 4000);
+  // Harmless in a browser; keep Node VM widget tests from leaking timers.
+  if (typeof recheckTimer?.unref === "function") recheckTimer.unref();
+}
 
 // Prefer the standard MCP Apps bridge. On some native iOS releases the
 // ChatGPT compatibility alias sendFollowUpMessage resolves without actually
@@ -190,33 +256,55 @@ function readToolOutput() {
   if (payload.ticket || payload.reason) return payload;
   return null;
 }
-function refresh() {
+async function refresh() {
+  const epoch = ++refreshEpoch;
+  if (recheckTimer !== null) clearTimeout(recheckTimer);
+  recheckTimer = null;
   const result = readToolOutput();
-  if (!result) { out.textContent = "Ожидаем ответ DevOS…"; return; }
-  if (result.approved === true || result.reason === "already_authorized") {
-    activeTicket = null;
-    form.hidden = true;
-    out.textContent = "Доступ DevOS уже разрешён для этого чата.";
+  activeTicket = null;
+  form.hidden = true;
+  panel.hidden = true;
+  // A cached approval template can be attached to successful read_file calls.
+  // Never render it without a live, unconsumed challenge for this conversation.
+  if (!result || result.approved === true || result.reason === "already_authorized")
+    return;
+  const ticket = result.ticket;
+  if (result.ready === true && typeof ticket === "string" &&
+      /^[A-Za-z0-9_-]{32}$/.test(ticket)) {
+    try {
+      const response = await fetch(statusEndpoint, {
+        method: "POST", mode: "cors", credentials: "omit",
+        cache: "no-store", referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket })
+      });
+      const status = response.ok ? await response.json() : null;
+      if (epoch !== refreshEpoch || !status?.pending) return;
+      activeTicket = ticket;
+      panel.hidden = false;
+      form.hidden = false;
+      schedulePendingRecheck(ticket);
+      out.textContent = "Готово к подтверждению. Запрос действует 5 минут.";
+    } catch {
+      if (epoch === refreshEpoch)
+        out.textContent = "Не удалось проверить запрос. Повтори вызов DevOS.";
+    }
     return;
   }
-  if (!result.ready) {
-    activeTicket = null;
-    form.hidden = true;
+  if (["missing_session", "password_not_configured", "capacity"].includes(result.reason)) {
     out.textContent = result.reason === "missing_session"
       ? "ChatGPT не передал идентификатор этой беседы. Доступ закрыт."
       : result.reason === "password_not_configured"
       ? "Для виджета ещё не настроен отдельный пароль на Mac."
       : "Сейчас невозможно открыть подтверждение. Повтори вызов инструмента.";
-    return;
   }
-  activeTicket = result.ticket;
-  out.textContent = "Готово к подтверждению. Запрос действует 5 минут.";
 }
-refresh();
-window.addEventListener("openai:set_globals", refresh);
+void refresh();
+window.addEventListener("openai:set_globals", () => { void refresh(); });
 form.addEventListener("submit", async function(event) {
   event.preventDefault();
   if (!activeTicket) { out.textContent = "Нет действующего запроса авторизации."; return; }
+  const submittedTicket = activeTicket;
   const input = document.getElementById("password");
   const password = input.value;
   input.value = ""; // Clear immediately; never store in widgetState, tool arguments or messages.
@@ -229,7 +317,7 @@ form.addEventListener("submit", async function(event) {
       method: "POST", mode: "cors", credentials: "omit",
       cache: "no-store", referrerPolicy: "no-referrer",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticket: activeTicket, url, password })
+      body: JSON.stringify({ ticket: submittedTicket, url, password })
     });
     if (!response.ok) {
       out.textContent = "Не удалось авторизовать чат. Проверь ссылку и пароль. После нескольких попыток вызови инструмент снова.";
@@ -238,7 +326,11 @@ form.addEventListener("submit", async function(event) {
     const result = await response.json();
     if (!result.approved) throw new Error("approval failed");
     activeTicket = null;
+    ++refreshEpoch;
+    if (recheckTimer !== null) clearTimeout(recheckTimer);
+    recheckTimer = null;
     form.hidden = true;
+    panel.hidden = true;
     out.textContent = "Доступ разрешён. Передаём подтверждение в ChatGPT…";
     // The initial Mac operation was denied and never queued. The host alone
     // decides whether to start the original workflow in a new model turn.
@@ -260,6 +352,7 @@ form.addEventListener("submit", async function(event) {
       }
       out.textContent = "Подтверждение отправлено в ChatGPT. Ожидаем продолжения исходного запроса…";
     } catch {
+      panel.hidden = false;
       // Do not retry through the other method after sending: an ack can be
       // lost even if the host started processing, causing duplicate actions.
       out.textContent = "Доступ разрешён, но ChatGPT не подтвердил продолжение. Если ответ не появится, повтори исходный запрос один раз.";

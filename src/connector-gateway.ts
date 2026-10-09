@@ -19,7 +19,7 @@ import { ConnectorAuth } from "./connector-auth.js";
 import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./desktop-commander-integration.js";
 import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { ChatAccessRegistry, CHAT_NOOP_TOOL, chatSessionSignal, noOpResult, deniedChatToolResult } from "./chat-access.js";
-import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_URI, chatApprovalWidget, externalChatApprovalForm } from "./chat-access-widget.js";
+import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_URI, chatApprovalWidget, externalChatApprovalForm, CHAT_PREVIOUS_APPROVAL_WIDGET_URI } from "./chat-access-widget.js";
 import { ChatWorkerProbeRegistry, CHAT_WORKER_PROBE_TOOL } from "./chat-worker-probe.js";
 import { ChatWorkerGrantRegistry } from "./chat-worker-grants.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
@@ -250,6 +250,7 @@ interface PublicMcpSession {
   transport: StreamableHTTPServerTransport;
   server: Server;
   clientId: string;
+  fingerprints: Set<string>;
   activeRequestCount: number;
   lastActivityAt: number;
 }
@@ -330,7 +331,7 @@ export async function startGateway(options: {
       identity &&
       req.headers.origin &&
       req.headers.origin !== identity.origin &&
-      req.path !== "/chat-access/approve" && req.path !== "/chat-access/form"
+      req.path !== "/chat-access/approve" && req.path !== "/chat-access/check" && req.path !== "/chat-access/form"
     ) {
       res.status(403).json({ error: "forbidden_origin" });
       return;
@@ -353,7 +354,17 @@ export async function startGateway(options: {
   };
   const localTools = new DevosToolRegistry(options.root);
   const chatAccess = new ChatAccessRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
-  const chatApproval = new ChatApprovalTickets(options.chatAccessRoot ?? options.root, chatAccess);
+  const chatApproval = new ChatApprovalTickets(
+    options.chatAccessRoot ?? options.root, chatAccess, undefined,
+    (fingerprint) => {
+      // Tell surviving MCP clients to refresh their tool metadata so the
+      // approval template is removed from subsequently approved operations.
+      // Some iOS clients ignore list_changed: the widget still hides itself.
+      for (const session of sessions.values())
+        if (session.fingerprints.has(fingerprint))
+          void session.server.sendToolListChanged().catch(() => {});
+    },
+  );
   const workerProbe = new ChatWorkerProbeRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
   const workerGrants = new ChatWorkerGrantRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
   const callOrigin = new AsyncLocalStorage<{ clientId: string; sessionHeader: unknown }>();
@@ -462,6 +473,25 @@ export async function startGateway(options: {
     res.type("html").send(externalChatApprovalForm());
   });
 
+  // Read-only active-challenge check. Prevent old or duplicate inline cards
+  // from reappearing after another card already authorized the same chat.
+  app.post("/chat-access/check",
+    (_req, res, next) => { res.set("Access-Control-Allow-Origin", "*"); next(); },
+    rateLimit({ windowMs: 15 * 60_000, limit: 1200, standardHeaders: false, legacyHeaders: false }),
+    express.json({ limit: "1kb", type: "application/json" }),
+    (req, res) => {
+      const body = req.body;
+      const ticket = body && typeof body === "object" && !Array.isArray(body) &&
+        Object.keys(body).length === 1 ? body.ticket : undefined;
+      res.status(200).json({ pending: chatApproval.isPending(ticket) });
+    },
+  );
+  app.options("/chat-access/check", (_req, res) => {
+    res.set({ "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type" }).sendStatus(204);
+  });
+
   // Public only for widget-to-gateway HTTPS fetch: a one-time ticket issued
   // through authenticated MCP AND an independent high-entropy password are required.
   // No cookies or ambient bearer credentials. Never log request body or password.
@@ -559,6 +589,7 @@ export async function startGateway(options: {
             },
           );
           server.onerror = () => {};
+          const sessionFingerprints = new Set<string>();
           server.fallbackRequestHandler = async (request, extra) => {
             const token = (
               request.params?._meta as
@@ -574,6 +605,7 @@ export async function startGateway(options: {
             const fingerprint = signal && origin
               ? chatAccess.fingerprint(origin.clientId, signal)
               : undefined;
+            if (fingerprint) sessionFingerprints.add(fingerprint);
             const authorized = chatAccess.isApproved(fingerprint) || workerGrants.isGranted(fingerprint);
             if (request.method === "tools/call") {
               if (request.params?.name === CHAT_NOOP_TOOL.name) {
@@ -586,7 +618,7 @@ export async function startGateway(options: {
                 const issued = chatApproval.issue(fingerprint);
                 return {
                   ...noOpResult(fingerprint, false),
-                  ...(issued.ready && identity ? { content: [{
+                  ...((issued.ready || issued.reason === "approval_pending") && identity ? { content: [{
                     type: "text", text: JSON.stringify({
                       status: "no_action", approved: false, chat_reference: fingerprint,
                       authorization_required: true,
@@ -595,7 +627,7 @@ export async function startGateway(options: {
                   }] } : {}),
                   structuredContent: { status: "no_action", approved: false,
                     ...(fingerprint ? { chat_reference: fingerprint } : {}), ...issued,
-                    ...(issued.ready && identity ? {
+                    ...((issued.ready || issued.reason === "approval_pending") && identity ? {
                       approval_url: new URL("/chat-access/form", identity).href + "#" + issued.ticket,
                     } : {}) },
                 };
@@ -607,7 +639,7 @@ export async function startGateway(options: {
               if (request.params?.name === CHAT_APPROVAL_WIDGET_TOOL.name) {
                 if (authorized) return noOpResult(fingerprint, true);
                 const issued = chatApproval.issue(fingerprint);
-                const link = issued.ready && identity
+                const link = (issued.ready || issued.reason === "approval_pending") && identity
                   ? new URL("/chat-access/form", identity).href + "#" + issued.ticket
                   : undefined;
                 return { content: [{ type: "text", text: JSON.stringify(issued) +
@@ -640,6 +672,24 @@ export async function startGateway(options: {
                       "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI },
                   };
                 }
+                if (issued.reason === "approval_pending") {
+                  // Another tool already displayed this chat's only form.
+                  // Do not mark as an error or attach another MCP App widget.
+                  const link = identity
+                    ? new URL("/chat-access/form", identity).href + "#" + issued.ticket
+                    : undefined;
+                  const result = {
+                    status: "authorization_pending", operation_executed: false,
+                    ...issued, ...(link ? { approval_url: link } : {}),
+                  };
+                  return {
+                    content: [{ type: "text", text:
+                      "DevOS authorization is already awaiting confirmation in the first form. " +
+                      "This Mac operation was not executed. Do not open another form or request another password." +
+                      (link ? " Safari fallback: " + link : "") }],
+                    structuredContent: result,
+                  };
+                }
                 return deniedChatToolResult();
               }
             } else if (request.method === "resources/list") {
@@ -649,11 +699,12 @@ export async function startGateway(options: {
                 mimeType: "text/html;profile=mcp-app",
               }] };
             } else if (request.method === "resources/read" &&
-                       request.params?.uri === CHAT_APPROVAL_WIDGET_URI) {
+                       (request.params?.uri === CHAT_APPROVAL_WIDGET_URI ||
+                        request.params?.uri === CHAT_PREVIOUS_APPROVAL_WIDGET_URI)) {
               if (!identity) throw new Error("Connector public origin unavailable");
               const html = chatApprovalWidget(identity.origin);
               return { contents: [{
-                uri: CHAT_APPROVAL_WIDGET_URI,
+                uri: request.params?.uri ?? CHAT_APPROVAL_WIDGET_URI,
                 mimeType: "text/html;profile=mcp-app",
                 text: html,
                 _meta: {
@@ -869,7 +920,18 @@ export async function startGateway(options: {
                         "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI,
                       },
                     } : {}),
-                  })), CHAT_NOOP_TOOL, CHAT_APPROVAL_WIDGET_TOOL, CHAT_WORKER_PROBE_TOOL],
+                  })),
+                  ...(authorized
+                    ? [CHAT_NOOP_TOOL, CHAT_APPROVAL_WIDGET_TOOL].map(tool => ({
+                        ...tool,
+                        // Once approved, even safe helper tools must not
+                        // advertise another password card.
+                        _meta: { securitySchemes: [
+                          { type: "oauth2", scopes: ["mcp:tools"] },
+                        ] },
+                      }))
+                    : [CHAT_NOOP_TOOL, CHAT_APPROVAL_WIDGET_TOOL]),
+                  CHAT_WORKER_PROBE_TOOL],
               };
             }
             return result;
@@ -897,6 +959,7 @@ export async function startGateway(options: {
             transport,
             server,
             clientId: req.auth!.clientId,
+            fingerprints: sessionFingerprints,
             activeRequestCount: 0,
             lastActivityAt: Date.now(),
           };

@@ -9,8 +9,8 @@ export const CHAT_NOOP_TOOL = {
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   _meta: {
-    ui: { resourceUri: "ui://devos/chat-approval-v2.html" },
-    "openai/outputTemplate": "ui://devos/chat-approval-v2.html",
+    ui: { resourceUri: "ui://devos/chat-approval-v3.html" },
+    "openai/outputTemplate": "ui://devos/chat-approval-v3.html",
     securitySchemes: [{ type: "oauth2", scopes: ["mcp:tools"] }],
   },
 } as const;
