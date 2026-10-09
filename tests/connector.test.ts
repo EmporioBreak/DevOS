@@ -470,6 +470,62 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
     );
     await client.connect(transport as Transport);
     const tools = await client.listTools();
+    // The skill preference UI/API is available only after owner chat access
+    // has already been approved. It never reopens the password widget.
+    await mkdir(join(root, "config"), { recursive: true });
+    for (const file of ["devos-skills.json", "devos-skill-policy.json"])
+      await writeFile(join(root, "config", file),
+        await readFile(join(process.cwd(), "config", file)));
+    const policyTool = tools.tools.find(t => t.name === "devos_skill_policy_get") as any;
+    assert.equal(policyTool?._meta?.ui?.resourceUri, "ui://devos/skill-policy-v1.html");
+    assert.equal(policyTool?._meta?.["openai/widgetAccessible"],true);
+    const setterDescriptor=tools.tools.find(t=>t.name==="devos_skill_policy_set") as any;
+    assert.equal(setterDescriptor?._meta?.["openai/widgetAccessible"],true);
+    assert.ok(tools.tools.some(t => t.name === "devos_skill_policy_set"));
+    const policy = await client.callTool({name:"devos_skill_policy_get",arguments:{}});
+    assert.equal(policy.isError,undefined);
+    const data = policy.structuredContent as {
+      fingerprint:string;skills:Array<{id:string}>;
+    };
+    assert.ok(data);
+    assert.match(data.fingerprint,/^[0-9a-f]{64}$/);
+    assert.equal(data.skills.length,17);
+    assert.doesNotMatch(JSON.stringify(policy), /authorization_required|approval_pending/);
+    const policyUpdate = await client.callTool({
+      name:"devos_skill_policy_set",
+      arguments:{skill_id:"superpowers-test-driven-development",
+        mode:"optional",scope:"global",expected_fingerprint:data.fingerprint},
+    });
+    assert.equal(policyUpdate.isError,undefined);
+    assert.equal((policyUpdate.structuredContent as {updated:boolean}).updated,true);
+    const widget = await client.readResource({uri:"ui://devos/skill-policy-v1.html"});
+    assert.match("text" in widget.contents[0]! ? widget.contents[0].text : "",
+      /DevOS — навыки/);
+    const resources = await client.listResources();
+    assert.ok(resources.resources.some(r=>r.uri==="ui://devos/skill-policy-v1.html"));
+    // An unapproved chat with the same OAuth client is not entitled to the
+    // owner's preferences or the settings MCP App. This must NOT make
+    // the original authorization form appear on ordinary tool results.
+    const otherClient = new Client({name:"unapproved-chat",version:"1"},{capabilities:{}});
+    const otherTransport = new StreamableHTTPClientTransport(new URL(base+"/mcp"),{
+      requestInit:{headers:{Authorization:"Bearer "+tokens.access_token,
+        "x-openai-session":"different-unapproved-chat"}},
+    });
+    try {
+      await otherClient.connect(otherTransport as Transport);
+      const otherTools = await otherClient.listTools();
+      const otherPolicyTool = otherTools.tools.find(t=>t.name==="devos_skill_policy_get") as any;
+      assert.equal(otherPolicyTool?._meta?.ui,undefined);
+      assert.equal(otherPolicyTool?._meta?.["openai/widgetAccessible"],undefined);
+      const otherResources = await otherClient.listResources();
+      assert.ok(!otherResources.resources.some(r=>r.uri==="ui://devos/skill-policy-v1.html"));
+      await assert.rejects(otherClient.readResource({uri:"ui://devos/skill-policy-v1.html"}));
+      const refused = await otherClient.callTool({name:"devos_skill_policy_get",arguments:{}});
+      assert.match(JSON.stringify(refused),/authorization_required|missing_session/);
+      assert.doesNotMatch(JSON.stringify(refused),/"skills":\[/);
+    } finally {
+      await otherClient.close();
+    }
     assert.ok(tools.tools.some((t) => t.name === "read_file"));
     for (const requiredTool of [
       "set_config_value",

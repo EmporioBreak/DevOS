@@ -5,6 +5,9 @@ import type { TaskRef } from "../workflow.js";
 import { dirname, join } from "node:path";
 import { JsonStateStore } from "../json-state-store.js";
 import type { WorkerStatus } from "../workflow.js";
+import { readSkillPolicy, policyFingerprint, updateSkillPreference, writeSkillPolicy } from "../skill-policy.js";
+import { parseSkillLibrary } from "../skills-library.js";
+import { SKILL_POLICY_WIDGET_URI } from "../skill-policy-widget.js";
 
 const REPORT_STATUSES = new Set<WorkerStatus>([
   "done", "approved", "changes_requested", "needs_local_worker", "failed",
@@ -18,10 +21,13 @@ function reportPath(root: string, task: TaskRef, turn: WorkerReportTurn): string
     `turn-${turn.turn}-${turn.tokenHash}.json`);
 }
 type Arguments = Record<string, unknown>;
-type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
+type ToolResult = { content: Array<{ type: "text"; text: string }>;
+  isError?: boolean; structuredContent?: Record<string, unknown> };
 
 function textResult(value: unknown): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(value) }] };
+  return { content: [{ type: "text", text: JSON.stringify(value) }],
+    ...(value && typeof value === "object" && !Array.isArray(value)
+      ? { structuredContent: value as Record<string, unknown> } : {}) };
 }
 function input(value: unknown): Arguments {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -43,6 +49,37 @@ function exactKeys(args: Arguments, allowed: string[]) {
 }
 
 export const DEVOS_TOOLS = [
+  {
+    name: "devos_skill_policy_get",
+    title: "DevOS skill preferences",
+    description: "Read available Skills Library names and versioned global/project/role/task preferences. Requires an already owner-approved DevOS chat. Call when user asks to configure skills, not automatically in a new chat.",
+    inputSchema: {
+      type: "object", properties: {}, additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    _meta: { ui: { resourceUri: SKILL_POLICY_WIDGET_URI },
+      "openai/outputTemplate": SKILL_POLICY_WIDGET_URI,
+      "openai/widgetAccessible": true },
+  },
+  {
+    name: "devos_skill_policy_set",
+    title: "Update DevOS skill preference",
+    description: "Set one skill mode required/optional/off at global/project/role/task scope. Requires an already owner-approved DevOS chat. Read devos_skill_policy_get first; pass its exact fingerprint to avoid overwriting concurrent settings. Does not start a DevOS worker or modify GitHub automatically.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string", description: "Registered Skills Library ID" },
+        mode: { type: "string", enum: ["required","optional","off"] },
+        scope: { type: "string", enum: ["global","project","role","task"] },
+        context: { type: "string", description: "project owner/repo, role name, or task owner/repo#issue; omit for global" },
+        expected_fingerprint: { type: "string", description: "64-hex current policy fingerprint returned by devos_skill_policy_get" },
+      },
+      required: ["skill_id","mode","scope","expected_fingerprint"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    _meta: { "openai/widgetAccessible": true },
+  },
   {
     name: "devos_task_status",
     title: "DevOS task status",
@@ -91,7 +128,10 @@ export class DevosToolRegistry {
     return DEVOS_TOOLS.map(tool => ({
       ...tool,
       inputSchema: structuredClone(tool.inputSchema),
-      _meta: { securitySchemes: [{ type: "oauth2", scopes: ["mcp:tools"] }] },
+      _meta: {
+        ...("_meta" in tool ? tool._meta : {}),
+        securitySchemes: [{ type: "oauth2", scopes: ["mcp:tools"] }],
+      },
     }));
   }
 
@@ -135,6 +175,39 @@ export class DevosToolRegistry {
     if (!this.has(name)) throw new Error("Unknown DevOS tool");
     try {
       const args = input(argumentsValue);
+      if (name === "devos_skill_policy_get" || name === "devos_skill_policy_set") {
+        const catalog = parseSkillLibrary(JSON.parse(
+          await readFile(join(this.root, "config", "devos-skills.json"), "utf8")));
+        const current = await readSkillPolicy(this.root);
+        if (name === "devos_skill_policy_get") {
+          exactKeys(args, []);
+          return textResult({
+            version: 1,
+            fingerprint: policyFingerprint(current),
+            policy: current,
+            skills: catalog.skills.map(skill => ({
+              id: skill.id, name: skill.name, description: skill.description,
+              version: skill.version, origin: skill.source.kind,
+            })),
+          });
+        }
+        exactKeys(args, ["skill_id", "mode", "scope", "context", "expected_fingerprint"]);
+        if (typeof args.skill_id !== "string" || typeof args.mode !== "string" ||
+            typeof args.scope !== "string" ||
+            typeof args.expected_fingerprint !== "string")
+          throw new Error("Invalid skill preference update arguments");
+        const preference = {
+          skillId: args.skill_id,
+          mode: args.mode,
+          scope: args.scope,
+          ...(args.context === undefined ? {} : {context: args.context}),
+        };
+        const policy = updateSkillPreference(current,
+          preference as Parameters<typeof updateSkillPreference>[1], catalog);
+        const fingerprint = await writeSkillPolicy(this.root,policy,args.expected_fingerprint);
+        return textResult({updated:true,policy,fingerprint,
+          git_status:"Local Git-backed settings updated; commit/PR remains Main Agent responsibility"});
+      }
       const task = taskFrom(args);
       if (name === "devos_task_status") {
         exactKeys(args, ["repo", "issue"]);

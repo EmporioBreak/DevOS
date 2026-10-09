@@ -24,6 +24,7 @@ import { ChatWorkerProbeRegistry, CHAT_WORKER_PROBE_TOOL } from "./chat-worker-p
 import { ChatWorkerGrantRegistry } from "./chat-worker-grants.js";
 import { watchChatAccessRevocation } from "./chat-authorization-watch.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
+import { SKILL_POLICY_WIDGET_URI, skillPolicyWidget } from "./skill-policy-widget.js";
 
 export function publicIdentity(value: string): URL {
   try {
@@ -670,6 +671,13 @@ export async function startGateway(options: {
                   (link ? "\\nЕсли форма не отображается в ChatGPT для iOS, открой через Safari: " + link : "") }],
                   structuredContent: { ...issued, ...(link ? { approval_url: link } : {}) } };
               }
+              // Skill preferences are owner-administration, not a worker
+              // capability. A browser-worker grant MUST NOT authorize settings
+              // changes or reveal the owner's global/project policies.
+              if (authorized && (request.params?.name === "devos_skill_policy_get" ||
+                   request.params?.name === "devos_skill_policy_set") &&
+                  !chatAccess.isApproved(fingerprint))
+                throw new Error("Skill preferences require an owner-approved chat");
               if (!authorized) {
                 // Ordinary tools never own a widget. The assistant invokes
                 // devos_authorize_chat as the next tool call in this user turn.
@@ -690,6 +698,23 @@ export async function startGateway(options: {
                 name: "DevOS chat access approval form",
                 uri: CHAT_APPROVAL_WIDGET_URI,
                 mimeType: "text/html;profile=mcp-app",
+              }, ...(chatAccess.isApproved(fingerprint) ? [{
+                name: "DevOS skill preferences (owner only)",
+                uri: SKILL_POLICY_WIDGET_URI,
+                mimeType: "text/html;profile=mcp-app",
+              }] : [])] };
+            } else if (request.method === "resources/read" &&
+                       request.params?.uri === SKILL_POLICY_WIDGET_URI) {
+              if (!chatAccess.isApproved(fingerprint))
+                throw new Error("Skill preferences require an owner-approved chat");
+              return { contents: [{
+                uri: SKILL_POLICY_WIDGET_URI,
+                mimeType: "text/html;profile=mcp-app",
+                text: skillPolicyWidget(),
+                _meta: { ui: { csp: {connectDomains: [], resourceDomains: []},
+                  prefersBorder: true },
+                  "openai/ui": { availableDisplayModes: ["inline"] },
+                  "openai/widgetPrefersBorder": true },
               }] };
             } else if (request.method === "resources/read" &&
                        (request.params?.uri === CHAT_APPROVAL_WIDGET_URI ||
@@ -918,9 +943,22 @@ export async function startGateway(options: {
                     };
                   }), ...localTools.list().map(tool => ({
                     ...tool,
-                    _meta: { securitySchemes: [
-                      { type: "oauth2", scopes: ["mcp:tools"] },
-                    ] },
+                    // Preserve a UI only for the explicit owner settings tool.
+                    // Ordinary operations must never acquire approval widgets.
+                    _meta: {
+                      ...(chatAccess.isApproved(fingerprint) &&
+                        (tool.name === "devos_skill_policy_get" ||
+                         tool.name === "devos_skill_policy_set")
+                        ? { "openai/widgetAccessible": true } : {}),
+                      ...(tool.name === "devos_skill_policy_get" &&
+                        chatAccess.isApproved(fingerprint) ? {
+                        ui: { resourceUri: SKILL_POLICY_WIDGET_URI },
+                        "openai/outputTemplate": SKILL_POLICY_WIDGET_URI,
+                      } : {}),
+                      securitySchemes: [
+                        { type: "oauth2", scopes: ["mcp:tools"] },
+                      ],
+                    },
                   })),
                   CHAT_NOOP_TOOL,
                   // Keep the helper descriptor stable after local revocation:
