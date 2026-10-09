@@ -116,8 +116,8 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
       }) as Transport);
       const tools = (await client.listTools()).tools;
       const preflightTool = tools.find(t => t.name === "devos_noop");
-      assert.equal((preflightTool as any)?._meta?.ui?.resourceUri, CHAT_APPROVAL_WIDGET_URI,
-        "first MCP preflight should render the form directly");
+      assert.equal((preflightTool as any)?._meta?.ui, undefined,
+        "the no-op check must never render an empty authorization card");
       const descriptor = tools.find(t => t.name === "devos_authorize_chat");
       assert.ok(descriptor);
       assert.equal((descriptor as any)._meta?.ui?.resourceUri, CHAT_APPROVAL_WIDGET_URI);
@@ -125,9 +125,9 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
       for (const name of ["read_file", "start_process", "devos_task_status"]) {
         const tool = tools.find(t => t.name === name) as any;
         assert.ok(tool, name + " listed");
-        assert.equal(tool._meta?.ui?.resourceUri, CHAT_APPROVAL_WIDGET_URI,
-          "unapproved " + name + " must advertise the inline form on the first call");
-        assert.equal(tool._meta?.["openai/outputTemplate"], CHAT_APPROVAL_WIDGET_URI);
+        assert.equal(tool._meta?.ui, undefined,
+          "an ordinary " + name + " must not attach a cached approval iframe");
+        assert.equal(tool._meta?.["openai/outputTemplate"], undefined);
       }
 
       const list = await client.listResources();
@@ -168,33 +168,29 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
       assert.match(externalHtml, /location.hash.slice\(1\)/);
       assert.ok(!externalHtml.includes(password));
       const initialPreflight = await client.callTool({ name: "devos_noop", arguments: {} });
-      assert.equal((initialPreflight as any).structuredContent?.ready, true,
-        "one safe MCP call must include widget ticket without a separate authorization tool");
-      assert.match((initialPreflight.content as any[])[0].text,
-        /"approval_url":"https:\/\/widget\.devos\.example\/chat-access\/form#[A-Za-z0-9_-]{32}"/);
+      assert.equal((initialPreflight as any).structuredContent?.status, "authorization_required");
+      assert.equal((initialPreflight as any).structuredContent?.operation_executed, false);
+      assert.equal((initialPreflight as any).structuredContent?.ticket, undefined,
+        "no-op cannot create another approval widget ticket");
       const blocked = await client.callTool({ name: "get_config", arguments: {} });
       assert.notEqual(blocked.isError, true, "iOS must render the approval widget instead of an MCP error");
-      assert.equal((blocked as any).structuredContent?.status, "authorization_pending");
+      assert.equal((blocked as any).structuredContent?.status, "authorization_required");
       assert.equal((blocked as any).structuredContent?.operation_executed, false);
-      const fallbackLink = (blocked.content as any[])[0].text;
-      assert.match(fallbackLink, /https:\/\/widget\.devos\.example\/chat-access\/form#[A-Za-z0-9_-]{32}/);
-      assert.ok(!fallbackLink.includes(password), "no password in tool response");
-      assert.equal((blocked as any).structuredContent?.ready, false,
-        "second denied tool must not display a duplicate approval form");
-      assert.equal((blocked as any).structuredContent?.reason, "approval_pending");
-      assert.equal((blocked as any).structuredContent?.ticket,
-        (initialPreflight as any).structuredContent?.ticket,
-        "only one challenge may be attached to all denied operations in this chat");
-      assert.deepEqual(await check((blocked as any).structuredContent.ticket),
-        { pending: true });
+      assert.match((blocked.content as any[])[0].text, /devos_authorize_chat/,
+        "denied tool must direct the assistant to the only approval tool");
+      assert.equal((blocked as any).structuredContent?.ticket, undefined,
+        "ordinary tools must never issue a visible approval ticket");
       assert.equal((blocked as any)._meta?.ui, undefined,
-        "secondary denial must not attach another widget resource");
+        "ordinary tools never attach an approval widget to denied responses");
       const begin = await client.callTool({ name: "devos_authorize_chat", arguments: {} });
       assert.notEqual(begin.isError, true);
       const challenge = payload(begin) as { ready: boolean; ticket: string };
-      assert.equal(challenge.ready, false);
-      assert.equal((challenge as any).reason, "approval_pending");
-      assert.equal(challenge.ticket, (initialPreflight as any).structuredContent.ticket);
+      assert.equal(challenge.ready, true);
+      assert.deepEqual(await check(challenge.ticket), { pending: true });
+      const again = payload(await client.callTool({ name: "devos_authorize_chat", arguments: {} })) as any;
+      assert.equal(again.ready, false);
+      assert.equal(again.reason, "approval_pending");
+      assert.equal(again.ticket, challenge.ticket);
       assert.match(challenge.ticket, /^[a-zA-Z0-9_-]+$/);
       assert.ok(!JSON.stringify(begin).includes(password));
 
@@ -249,12 +245,11 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
       assert.equal((deniedSecond as any).structuredContent?.status, "authorization_required");
       assert.equal((deniedSecond as any).structuredContent?.operation_executed, false);
       const ref = payload(await second.callTool({ name: "devos_authorize_chat", arguments: {} })) as any;
-      assert.equal(ref.ready, false);
-      assert.equal(ref.reason, "approval_pending");
+      assert.equal(ref.ready, true);
       assert.notEqual(ref.ticket, challenge.ticket);
       assert.equal((await submit(ref.ticket, "wrong-secret")).status, 403);
       const stillDenied = await second.callTool({ name: "get_config", arguments: {} });
-      assert.equal((stillDenied as any).structuredContent?.status, "authorization_pending");
+      assert.equal((stillDenied as any).structuredContent?.status, "authorization_required");
       assert.equal((stillDenied as any).structuredContent?.operation_executed, false);
 
       const missing = new Client({ name:"missing-session", version:"1" }, {capabilities:{}});

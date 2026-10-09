@@ -5,12 +5,10 @@ import { dirname, join } from "node:path";
 export const CHAT_NOOP_TOOL = {
   name: "devos_noop",
   title: "DevOS no-op / chat access reference",
-  description: "Does nothing. When ChatGPT supplies a session identifier, returns its opaque approval reference and current approval status. Never runs shell commands or reads user files.",
+  description: "Read-only access check. If not approved, immediately call devos_authorize_chat with empty arguments in this same user turn to show the only password form; never ask for a second message. Never reads Mac files.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   _meta: {
-    ui: { resourceUri: "ui://devos/chat-approval-v3.html" },
-    "openai/outputTemplate": "ui://devos/chat-approval-v3.html",
     securitySchemes: [{ type: "oauth2", scopes: ["mcp:tools"] }],
   },
 } as const;
@@ -164,5 +162,5 @@ export function noOpResult(reference?: string, approved = false) {
 }
 
 export function deniedChatToolResult() {
-  return { isError: true, content: [{ type: "text" as const, text: "DevOS tools are not authorized for this ChatGPT conversation. Open the approval form attached to this tool result (or call devos_authorize_chat with empty arguments). Do not send the user to ChatGPT plugin settings, and do not ask them to paste a password in chat. No operation was performed." }] };
+  return { isError: true, content: [{ type: "text" as const, text: "DevOS tools are not authorized for this ChatGPT conversation. Call devos_authorize_chat with empty arguments in this same user turn; only that tool can render the approval form. Never ask for a password in chat or send the user to plugin settings. No Mac operation was performed." }] };
 }

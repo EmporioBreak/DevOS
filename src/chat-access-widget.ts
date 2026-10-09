@@ -9,7 +9,7 @@ export const CHAT_PREVIOUS_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v2.ht
 export const CHAT_APPROVAL_WIDGET_TOOL = {
   name: "devos_authorize_chat",
   title: "Authorize this ChatGPT chat",
-  description: "Show an inline password and private chat URL form. The password is submitted directly by the widget to DevOS over HTTPS; NEVER place a password into tool arguments or conversation text.",
+  description: "The ONLY DevOS tool that shows the chat-access inline password form. Call immediately when an ordinary DevOS tool or devos_noop reports authorization_required, in the SAME user turn. The password and mobile /share or /c URL are entered only in the HTTPS form, never in chat or tool arguments.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   _meta: {

@@ -17,11 +17,14 @@ Ordinary chats that do not need DevOS or Desktop Commander must not call
 `devos_noop`, open a password form, or interrupt the user.
 
 Before a main-agent conversation actually uses DevOS/Desktop Commander MCP,
-call the side-effect-free `devos_noop` to check that conversation's approval;
-this first call can also display the approval form directly, without
-requiring the owner to ask for a separate `devos_authorize_chat` call.
+call the side-effect-free `devos_noop` to check that conversation's approval.
+If it returns `authorization_required`, call `devos_authorize_chat` with
+empty arguments **immediately in the same assistant turn** to show the only
+inline approval form. Never ask the owner to send an extra message.
 When a normal DevOS/Desktop Commander tool returns `authorization_required`,
-the requested operation has not run. Its inline form must be displayed directly;
+the requested operation has not run: call `devos_authorize_chat` in the same
+turn. Ordinary tools MUST NOT own the approval MCP App template because
+ChatGPT iOS renders empty black cards on every later tool result;
 do not send the user to plugin settings, do not claim the app is disconnected,
 and do not tell them to type another message. The widget sends exactly ONE auto-continuation request to ChatGPT after
 successful approval: standard MCP Apps `ui/message` when negotiated, or the

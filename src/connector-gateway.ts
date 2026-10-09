@@ -615,21 +615,13 @@ export async function startGateway(options: {
                     ready: false, reason: "already_authorized",
                     ...(fingerprint ? { chat_reference: fingerprint } : {}) },
                 };
-                const issued = chatApproval.issue(fingerprint);
                 return {
-                  ...noOpResult(fingerprint, false),
-                  ...((issued.ready || issued.reason === "approval_pending") && identity ? { content: [{
-                    type: "text", text: JSON.stringify({
-                      status: "no_action", approved: false, chat_reference: fingerprint,
-                      authorization_required: true,
-                      approval_url: new URL("/chat-access/form", identity).href + "#" + issued.ticket,
-                    }),
-                  }] } : {}),
-                  structuredContent: { status: "no_action", approved: false,
-                    ...(fingerprint ? { chat_reference: fingerprint } : {}), ...issued,
-                    ...((issued.ready || issued.reason === "approval_pending") && identity ? {
-                      approval_url: new URL("/chat-access/form", identity).href + "#" + issued.ticket,
-                    } : {}) },
+                  content: [{ type: "text", text: fingerprint
+                    ? "Authorization required. Call devos_authorize_chat with no arguments now in this same turn to open the approval form."
+                    : "ChatGPT did not provide a trusted session. Mac access is denied." }],
+                  structuredContent: { status: fingerprint ? "authorization_required" : "missing_session",
+                    approved: false, operation_executed: false,
+                    ...(fingerprint ? { chat_reference: fingerprint } : {}) },
                 };
               }
               if (request.params?.name === CHAT_WORKER_PROBE_TOOL.name) {
@@ -647,50 +639,19 @@ export async function startGateway(options: {
                   structuredContent: { ...issued, ...(link ? { approval_url: link } : {}) } };
               }
               if (!authorized) {
-                const issued = chatApproval.issue(fingerprint);
-                // On iOS a tool result marked isError is not rendered as an
-                // MCP App, even with a UI template. Report a *successful*
-                // protocol response describing a denied operation instead.
-                // The requested command is NEVER forwarded on this path.
-                if (issued.ready) {
-                  const result = {
-                    status: "authorization_required",
-                    operation_executed: false,
-                    ...issued,
-                    ...(identity ? {
-                      approval_url: new URL("/chat-access/form", identity).href + "#" + issued.ticket,
-                    } : {}),
-                  };
-                  return {
-                    content: [{ type: "text", text:
-                      "Authorization required; the requested DevOS operation was NOT executed. " +
-                      "Open the attached inline approval form. On successful approval it asks ChatGPT to continue the original task automatically; do not tell the user to write 'Готово'. If the mobile app does not show the form, use this DevOS Safari link: " +
-                      (identity ? new URL("/chat-access/form", identity).href + "#" + issued.ticket : "") +
-                      " . The operation was NOT executed; never put a password into chat or plugin settings." }],
-                    structuredContent: result,
-                    _meta: { ui: { resourceUri: CHAT_APPROVAL_WIDGET_URI },
-                      "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI },
-                  };
-                }
-                if (issued.reason === "approval_pending") {
-                  // Another tool already displayed this chat's only form.
-                  // Do not mark as an error or attach another MCP App widget.
-                  const link = identity
-                    ? new URL("/chat-access/form", identity).href + "#" + issued.ticket
-                    : undefined;
-                  const result = {
-                    status: "authorization_pending", operation_executed: false,
-                    ...issued, ...(link ? { approval_url: link } : {}),
-                  };
-                  return {
-                    content: [{ type: "text", text:
-                      "DevOS authorization is already awaiting confirmation in the first form. " +
-                      "This Mac operation was not executed. Do not open another form or request another password." +
-                      (link ? " Safari fallback: " + link : "") }],
-                    structuredContent: result,
-                  };
-                }
-                return deniedChatToolResult();
+                // Ordinary tools never own a widget. The assistant invokes
+                // devos_authorize_chat as the next tool call in this user turn.
+                // No file, shell or task operation is executed while denied.
+                if (!fingerprint) return deniedChatToolResult();
+                return {
+                  content: [{ type: "text", text:
+                    "Mac operation blocked: this ChatGPT chat requires DevOS approval. " +
+                    "Call devos_authorize_chat with empty arguments NOW in this same turn " +
+                    "to show the approval form; do not ask the user for another message. " +
+                    "No Mac operation was performed." }],
+                  structuredContent: { status: "authorization_required",
+                    operation_executed: false, approval_tool: CHAT_APPROVAL_WIDGET_TOOL.name },
+                };
               }
             } else if (request.method === "resources/list") {
               return { resources: [{
@@ -897,15 +858,12 @@ export async function startGateway(options: {
                             ? annotations.openWorldHint
                             : !readOnly,
                       },
-                      // For an unapproved ChatGPT conversation, the first
-                      // requested operation itself has an approval UI. Host
-                      // clients choose widgets from tools/list metadata, not
-                      // from an error response's metadata alone.
+                      // NEVER attach an approval MCP App to ordinary tools.
+                      // ChatGPT iOS caches tools/list and renders a black
+                      // iframe on *every* later successful tool result even
+                      // if this chat has since been approved. Only the
+                      // dedicated devos_authorize_chat tool owns the form.
                       _meta: {
-                        ...(!authorized ? {
-                          ui: { resourceUri: CHAT_APPROVAL_WIDGET_URI },
-                          "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI,
-                        } : {}),
                         securitySchemes: [
                           { type: "oauth2", scopes: ["mcp:tools"] },
                         ],
@@ -913,24 +871,19 @@ export async function startGateway(options: {
                     };
                   }), ...localTools.list().map(tool => ({
                     ...tool,
-                    ...(!authorized ? {
-                      _meta: {
-                        ...(tool._meta ?? {}),
-                        ui: { resourceUri: CHAT_APPROVAL_WIDGET_URI },
-                        "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI,
-                      },
-                    } : {}),
+                    _meta: { securitySchemes: [
+                      { type: "oauth2", scopes: ["mcp:tools"] },
+                    ] },
                   })),
+                  CHAT_NOOP_TOOL,
                   ...(authorized
-                    ? [CHAT_NOOP_TOOL, CHAT_APPROVAL_WIDGET_TOOL].map(tool => ({
-                        ...tool,
-                        // Once approved, even safe helper tools must not
-                        // advertise another password card.
+                    ? [{
+                        ...CHAT_APPROVAL_WIDGET_TOOL,
                         _meta: { securitySchemes: [
                           { type: "oauth2", scopes: ["mcp:tools"] },
                         ] },
-                      }))
-                    : [CHAT_NOOP_TOOL, CHAT_APPROVAL_WIDGET_TOOL]),
+                      }]
+                    : [CHAT_APPROVAL_WIDGET_TOOL]),
                   CHAT_WORKER_PROBE_TOOL],
               };
             }
