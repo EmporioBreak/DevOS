@@ -247,6 +247,36 @@ export const CONNECTOR_REQUEST_TIMEOUTS = {
 
 const MAX_PUBLIC_MCP_SESSIONS = 32;
 const MCP_SESSION_EVICTION_CLOSE_TIMEOUT_MS = 1_000;
+const WORKER_GRANT_WAIT_MS = 35_000;
+const WORKER_GRANT_WAIT_POLL_MS = 250;
+const MAX_WORKER_GRANT_WAITERS = 16;
+let workerGrantWaiters = 0;
+
+/** Wait only after an independently validated pending challenge was observed.
+ * The challenge is a hint; only the existing signed grant check can succeed. */
+export async function waitForWorkerGrant(
+  hasFreshPending: () => boolean,
+  isGranted: () => boolean,
+  signal: AbortSignal,
+  timeoutMs = WORKER_GRANT_WAIT_MS,
+): Promise<boolean> {
+  if (!hasFreshPending() || workerGrantWaiters >= MAX_WORKER_GRANT_WAITERS) return false;
+  workerGrantWaiters++;
+  const deadline = Date.now() + Math.min(timeoutMs, WORKER_GRANT_WAIT_MS);
+  try {
+    while (!signal.aborted) {
+      if (isGranted()) return true;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(done, Math.min(WORKER_GRANT_WAIT_POLL_MS, remaining));
+        function done() { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); }
+        signal.addEventListener("abort", done, { once: true });
+      });
+    }
+    return false;
+  } finally { workerGrantWaiters--; }
+}
 
 interface PublicMcpSession {
   transport: StreamableHTTPServerTransport;
@@ -375,28 +405,6 @@ export async function startGateway(options: {
   );
   const workerProbe = new ChatWorkerProbeRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
   const workerGrants = new ChatWorkerGrantRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
-  // Only a signed probe for this actual host/OAuth session can initiate a
-  // short, bounded wait. The waiting call NEVER grants access by itself.
-  let pendingWorkerNoopWaits = 0;
-  const awaitVerifiedWorkerGrant = async (fingerprint: string | undefined) => {
-    if (!fingerprint || !workerProbe.hasPendingFor(fingerprint) ||
-        pendingWorkerNoopWaits >= 8) return false;
-    pendingWorkerNoopWaits++;
-    try {
-      const deadline = Date.now() + 25_000;
-      while (Date.now() < deadline && !closing) {
-        if (workerGrants.isGranted(fingerprint)) return true;
-        if (!workerProbe.hasPendingFor(fingerprint)) {
-          // An issued probe might have just been claimed by the trusted
-          // verifier; give it one short commit grace, never assume a grant.
-          await new Promise(resolve => setTimeout(resolve, 250));
-          return workerGrants.isGranted(fingerprint);
-        }
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-      return workerGrants.isGranted(fingerprint);
-    } finally { pendingWorkerNoopWaits--; }
-  };
   const callOrigin = new AsyncLocalStorage<{ clientId: string; sessionHeader: unknown }>();
   let desktop: DesktopCommanderIntegration;
   desktop = new DesktopCommanderIntegration({
@@ -664,16 +672,25 @@ export async function startGateway(options: {
               if (request.params?.name === CHAT_NOOP_TOOL.name) {
                 // Keep this request's signed pending-worker classification even
                 // if the local verifier consumes the nonce before responding.
-                const pendingWorker = !authorized && workerProbe.hasPendingFor(fingerprint);
-                const verified = authorized ||
-                  (pendingWorker && await awaitVerifiedWorkerGrant(fingerprint));
+                // This session's HMAC-verified probe only permits a bounded wait.
+                // No access is granted until the independent active signed grant exists.
+                // Keep classification even if the trusted verifier consumes the probe.
+                const pendingWorker = !authorized && workerProbe.hasFreshPending(fingerprint);
+                // Preserve the already HMAC-verified, session-bound wait hint:
+                // the trusted observer can claim the nonce between this check
+                // and the wait starting. Claiming is not proof of a grant.
+                const verified = authorized || (pendingWorker && await waitForWorkerGrant(
+                  () => pendingWorker,
+                  () => chatAccess.isApproved(fingerprint) || workerGrants.isGranted(fingerprint),
+                  extra.signal,
+                ));
                 if (verified) return {
                   ...noOpResult(fingerprint, true),
                   structuredContent: { status: "no_action", approved: true,
                     ready: false, reason: "already_authorized",
                     ...(fingerprint ? { chat_reference: fingerprint } : {}) },
                 };
-                const unverifiedWorker = pendingWorker || workerProbe.hasPendingFor(fingerprint);
+                const unverifiedWorker = pendingWorker || workerProbe.hasFreshPending(fingerprint);
                 return {
                   content: [{ type: "text", text: unverifiedWorker
                     ? "DevOS worker proof is not verified. No Mac access was granted; do not request the owner's password or use operational tools."

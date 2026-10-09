@@ -133,6 +133,13 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
     const safeProbe = parse(await client.callTool({ name: "devos_worker_probe", arguments: {} }));
     assert.equal(safeProbe.status, "issued");
     assert.match(safeProbe.nonce, /^[a-f0-9]{64}$/);
+    let raceSettled = false;
+    const lateGrantNoop = client.callTool({ name: "devos_noop", arguments: {} }).then((result: any) => {
+      raceSettled = true;
+      return result;
+    });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(raceSettled, false, "fresh signed probe permits bounded wait for the independent grant");
     assert.equal((await client.callTool({ name: "get_config", arguments: {} })).structuredContent?.status,
       "authorization_required", "worker probe alone must not authorize operational MCP");
     const registry = new ChatAccessRegistry(root, secret);
@@ -177,6 +184,9 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
     const resumedNoop = (await pendingNoop).structuredContent as any;
     assert.equal(resumedNoop.approved, true,
       "one bounded noop call observes a separately verified worker grant");
+    const lateGrantResult = parse(await lateGrantNoop);
+    assert.equal(lateGrantResult.approved, true,
+      "another concurrent noop still observes signed grant after challenge claim");
     assert.notEqual((await client.callTool({ name: "get_config", arguments: {} })).isError, true,
       "verified active worker forwards to Desktop Commander without password");
     assert.notEqual((await client.callTool({ name: "devos_task_status",

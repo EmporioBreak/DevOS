@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile, chmod } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -63,6 +64,88 @@ test("tampered or wrong-key challenges fail closed", async () => {
     if (third.status !== "issued") return;
     await chmod(join(directory, (await readdir(directory))[0]!), 0o644);
     assert.equal(registry.claim(third.nonce, 5_000_021), null, "unsafe file mode must fail");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("only a fresh signed pending probe for the exact fingerprint enables bounded waiting", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-worker-pending-"));
+  try {
+    const registry = new ChatWorkerProbeRegistry(root, secret);
+    assert.equal(registry.hasFreshPending(fingerprintA, 10_000), false);
+    const pending = registry.issue(fingerprintA, 10_000);
+    assert.equal(pending.status, "issued");
+    assert.equal(registry.hasFreshPending(fingerprintA, 10_001), true);
+    assert.equal(registry.hasFreshPending(fingerprintB, 10_001), false);
+    assert.equal(registry.hasFreshPending(fingerprintA, 130_000), false, "expired probe must not wait");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("tampered pending probes do not enable waiting", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-worker-pending-tamper-"));
+  try {
+    const registry = new ChatWorkerProbeRegistry(root, secret);
+    const pending = registry.issue(fingerprintA, 20_000);
+    assert.equal(pending.status, "issued");
+    const directory = join(root, ".devos", "connector", "worker-probes");
+    const file = join(directory, (await readdir(directory))[0]!);
+    const row = JSON.parse(await readFile(file, "utf8"));
+    row.fingerprint = fingerprintB;
+    await writeFile(file, JSON.stringify(row));
+    assert.equal(registry.hasFreshPending(fingerprintA, 20_001), false);
+    assert.equal(registry.hasFreshPending(fingerprintB, 20_001), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("hostile probe catalogs beyond the bounded candidate limit fail closed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-worker-hostile-catalog-"));
+  try {
+    const registry = new ChatWorkerProbeRegistry(root, secret);
+    const directory = join(root, ".devos", "connector", "worker-probes");
+    await mkdir(directory, { recursive: true });
+    const genuine = registry.issue(fingerprintA);
+    assert.equal(genuine.status, "issued");
+    const genuineFile = (await readdir(directory))[0]!;
+    const authenticBytes = await readFile(join(directory, genuineFile));
+    // Every name carries an authentic signed row. The scanner must still reject
+    // an over-cap catalog rather than treating a partial view as sufficient.
+    await Promise.all(Array.from({ length: 128 }, (_, i) =>
+      writeFile(join(directory, (i + 1).toString(16).padStart(64, "0") + ".json"), authenticBytes)));
+    assert.equal(registry.hasFreshPending(fingerprintA), false);
+    assert.equal(registry.issue(fingerprintA).status, "capacity");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("pending probe scan resists a file swap between discovery and open", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-worker-probe-symlink-"));
+  try {
+    const registry = new ChatWorkerProbeRegistry(root, secret);
+    const issued = registry.issue(fingerprintA);
+    assert.equal(issued.status, "issued");
+    if (issued.status !== "issued") return;
+    const directory = join(root, ".devos", "connector", "worker-probes");
+    const files = await readdir(directory);
+    const candidate = join(directory, files[0]!);
+    const replacement = join(root, "replacement-probe.json");
+    await writeFile(replacement, await readFile(candidate), { mode: 0o600 });
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
+    const originalOpen = fs.openSync;
+    let swapped = false;
+    fs.openSync = ((path: string | Buffer | URL, flags: number | string, mode?: number) => {
+      if (!swapped && path === candidate) {
+        swapped = true;
+        fs.unlinkSync(candidate);
+        fs.renameSync(replacement, candidate);
+      }
+      return originalOpen(path, flags as any, mode);
+    }) as typeof fs.openSync;
+    syncBuiltinESMExports();
+    try { assert.equal(registry.hasFreshPending(fingerprintA), false); }
+    finally {
+      fs.openSync = originalOpen;
+      syncBuiltinESMExports();
+    }
+    assert.equal(swapped, true, "test replaced the file after enumeration, immediately before open");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -83,6 +83,49 @@ export function start(
   );
   return { child, done, output: () => output };
 }
+// Same real foreground connector and runtime as start(..., "run"), but with
+// only the supervisor's backoff clock injected. The process isolation keeps
+// exit status, stderr redaction and env handling under test as before.
+export function startWithImmediateRetryClock(root: string) {
+  const connectorUrl = new URL("../src/connector.ts", import.meta.url).href;
+  const script = [
+    'import { PassThrough } from "node:stream";',
+    `import { connector } from ${JSON.stringify(connectorUrl)};`,
+    "const delays = [];",
+    "const lifetime = new PassThrough();",
+    "try {",
+    '  await connector("run", process.cwd(), lifetime, { sleep: async ms => { delays.push(ms); } });',
+    "} catch (error) {",
+    "  console.error(error instanceof Error ? error.message : String(error));",
+    "  process.exitCode = 1;",
+    "} finally {",
+    "  lifetime.destroy();",
+    '  console.log("DEVOS_TEST_RETRY_DELAYS=" + JSON.stringify(delays));',
+    "}",
+  ].join("\n");
+  const child = spawn(
+    process.execPath,
+    ["--import", loader, "--input-type=module", "--eval", script],
+    {
+      cwd: root,
+      env: {
+        ...process.env,
+        NGROK_AUTHTOKEN: secret,
+        DEVOS_CONNECTOR_OWNER_SECRET: secret,
+        DEVOS_DEBUG: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  let output = "";
+  child.stdout.on("data", (part) => { output += part; });
+  child.stderr.on("data", (part) => { output += part; });
+  const done = new Promise<{ code: number | null; output: string }>((resolve) =>
+    child.once("close", (code) => resolve({ code, output })),
+  );
+  return { child, done, output: () => output };
+}
+
 export async function waitFor(
   check: () => boolean | Promise<boolean>,
   timeout = 10_000,
