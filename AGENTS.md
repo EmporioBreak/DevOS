@@ -4,7 +4,11 @@
 
 This repository is operated through DevOS. New local Codex sessions should treat this file as the standing operational contract for work in `EmporioBreak/DevOS`.
 
-The main agent owns the user task and final judgment. DevOS owns coordination, never judgment.
+**DevOS** is the whole autonomous software-development system: DevOS Main Agent, official Spec Kit, compatible Superpowers methods, DevOS Skills Library, DevOS Runner, DevOS MCP, and GitHub. Do not describe the whole product as merely the local orchestrator.
+
+The **DevOS Main Agent** owns project-wide planning, cross-Issue dependencies, owner agreements, and final judgment. The **DevOS Runner** owns linear mechanical coordination of **one predeclared GitHub Issue worker graph**, never product judgment. Existing `devos` CLI and `DEVOS_*` protocols retain their names. See `docs/architecture/devos2.md` and Epic #121 for the agreed target architecture.
+
+**Explicit migration exception (only Epic #121):** As approved by the owner on 2026-10-09, the Main Agent independently implements and tests the DevOS 2 migration **in the isolated staging copy**, without launching the DevOS Runner or extra workers. This does not relax the normal execution boundary for other Issues and does not authorize production deployment or bypassing MCP authorization.
 
 ## Browser conversation continuity
 
