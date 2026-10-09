@@ -179,7 +179,7 @@ test("strict browser to Codex fallback preserves signed assignment, original Iss
     }};
     const state=await new Orchestrator({projectRoot:f.root,workflow:f.w,
       executors:new Map([["chatgpt_browser",browser],["codex",codex]]),
-      stateStore:new FakeStore(),verifyAssignedWorkerSkills:async workerId=>{
+      stateStore:new FakeStore(),verifyAssignedWorkerSkills:async (workerId:string)=>{
         const stage=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
         const ref=stage.workers.find(x=>x.workerId===workerId)!;
         return {stage:ref.stage,manifestSha256:ref.manifestSha256};
@@ -210,4 +210,68 @@ test("strict verification must precede Camoufox process startup",async()=>{
     else process.env.DEVOS_CONNECTOR_OWNER_SECRET=previous;
     await rm(f.root,{recursive:true,force:true});
   }
+});
+
+test("strict review loop reuses exact browser chats and task PR across requested corrections",async()=>{
+  const f=await fixture();
+  try{
+    await sealRunnerSkillGraph(f.root,f.w,secret,async()=>true,upstreamRoot);
+    const calls:WorkerRequest[]=[];
+    let reviewCount=0;
+    const chat:Executor={kind:"chatgpt_browser",async run(request){
+      calls.push(request);
+      const url="https://chatgpt.com/g/g-project/c/"+request.workerId+"-744";
+      if(request.workerId==="reviewer")reviewCount++;
+      return {text:'DEVOS_RESULT {"status":"'+
+        (request.workerId==="reviewer" && reviewCount===1?"changes_requested":
+        request.workerId==="reviewer"?"approved":"done")+'"}',
+        sessionId:url};
+    }};
+    const store=new FakeStore();
+    const actual=await new Orchestrator({projectRoot:f.root,
+      workflow:f.w,executors:new Map([["chatgpt_browser",chat]]),
+      stateStore:store,verifyAssignedWorkerSkills:async (workerId:string)=>{
+        const result=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
+        const p=result.workers.find(w=>w.workerId===workerId)!;
+        return {stage:p.stage,manifestSha256:p.manifestSha256};
+      }}).run();
+    assert.deepEqual(calls.map(x=>x.workerId),
+      ["developer","reviewer","developer","reviewer"]);
+    assert.equal(actual.completedRuns,4);
+    assert.equal(actual.mainAgentReviewPending,true);
+    assert.equal(actual.task?.pr,917);
+    assert.equal(calls[2]?.sessionId,"https://chatgpt.com/g/g-project/c/developer-744");
+    assert.equal(calls[3]?.sessionId,"https://chatgpt.com/g/g-project/c/reviewer-744");
+    assert.notEqual(calls[0]?.browserTurnId,calls[2]?.browserTurnId);
+    assert.equal(actual.sessions.developer,"https://chatgpt.com/g/g-project/c/developer-744");
+    assert.equal(actual.sessions.reviewer,"https://chatgpt.com/g/g-project/c/reviewer-744");
+  }finally{await rm(f.root,{recursive:true,force:true})}
+});
+test("strict ambiguous browser result cannot replay an already submitted turn",async()=>{
+  const f=await fixture();
+  try{
+    await sealRunnerSkillGraph(f.root,f.w,secret,async()=>true,upstreamRoot);
+    const store=new FakeStore();
+    let sends=0;
+    const chat:Executor={kind:"chatgpt_browser",async run(request){
+      sends++;
+      const url="https://chatgpt.com/g/g-project/c/confirmed-744";
+      await request.onSession?.(url);
+      return {text:"ambiguous post-submit terminal output",sessionId:url};
+    }};
+    const config={projectRoot:f.root,workflow:f.w,
+      executors:new Map([["chatgpt_browser",chat]]),
+      stateStore:store,
+      verifyAssignedWorkerSkills:async (workerId:string)=>{
+        const graph=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
+        const found=graph.workers.find(x=>x.workerId===workerId)!;
+        return {stage:found.stage,manifestSha256:found.manifestSha256};
+      }};
+    await assert.rejects(new Orchestrator(config).run(),/DEVOS_RESULT/);
+    assert.equal(sends,1);
+    assert.equal(store.state?.sessions.developer,
+      "https://chatgpt.com/g/g-project/c/confirmed-744");
+    await assert.rejects(new Orchestrator(config).run(),/Unresolved prior browser turn/);
+    assert.equal(sends,1,"may-have-submitted must NOT replay unsafe browser operation");
+  }finally{await rm(f.root,{recursive:true,force:true})}
 });
