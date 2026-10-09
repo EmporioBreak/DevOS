@@ -9,6 +9,8 @@ import { readSkillPolicy, policyFingerprint, updateSkillPreference, writeSkillPo
 import { parseSkillLibrary } from "../skills-library.js";
 import { SKILL_POLICY_WIDGET_URI } from "../skill-policy-widget.js";
 import { BrowserSkillDelivery, type VerifiedWorkerIdentity } from "../browser-skill-delivery.js";
+import { getSkillsDiagnostics, previewSkillsUpdate } from "../skill-diagnostics.js";
+import type { WorkerSkillContext } from "../skill-policy.js";
 
 const REPORT_STATUSES = new Set<WorkerStatus>([
   "done", "approved", "changes_requested", "needs_local_worker", "failed",
@@ -50,6 +52,30 @@ function exactKeys(args: Arguments, allowed: string[]) {
 }
 
 export const DEVOS_TOOLS = [
+  {
+    name: "devos_skill_diagnostics",
+    title: "DevOS Skills diagnostics",
+    description: "Read-only owner-only audit of the pinned Skills Library, effective policy and optional GitHub Issue/worker skill set; no credentials or private profile paths returned.",
+    inputSchema: {type:"object",properties:{
+      repo:{type:"string"},issue:{type:"integer",minimum:1},
+      worker_id:{type:"string"},role:{type:"string"},
+      phase:{type:"string",enum:["planning","execution"]},
+      spec_kit_stage:{type:["string","null"]},
+      optional_candidates:{type:"array",items:{type:"string"}},
+    },additionalProperties:false},
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+  },
+  {
+    name: "devos_skill_update_preview",
+    title: "Review a pinned skill version diff",
+    description: "Read-only preview of proposed SKILL.md/assets version hashes and adaptation dependencies. This never installs, applies, merges or deploys a skill. Main Agent approval and a reviewed GitHub PR are still required.",
+    inputSchema:{type:"object",properties:{
+      skill_id:{type:"string"},
+      candidate_json:{type:"string",maxLength:65536,
+        description:"JSON Skills Library entry for the candidate revision; never send credentials"},
+    },required:["skill_id","candidate_json"],additionalProperties:false},
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+  },
   {
     name: "devos_skill_manifest",
     title: "List skills assigned to this DevOS browser worker",
@@ -222,6 +248,41 @@ export class DevosToolRegistry {
         if (typeof args.skill_id !== "string" || typeof args.resource !== "string")
           throw new Error("Invalid pinned skill resource request");
         return textResult(await delivery.read(trustedWorker,args.skill_id,args.resource));
+      }
+      if (name === "devos_skill_diagnostics") {
+        exactKeys(args, ["repo","issue","worker_id","role","phase",
+          "spec_kit_stage","optional_candidates"]);
+        const anyContext=Object.keys(args).length>0;
+        let context:WorkerSkillContext|undefined;
+        if (anyContext) {
+          if (typeof args.repo!=="string" || typeof args.issue!=="number" ||
+              !Number.isSafeInteger(args.issue) || args.issue<=0 ||
+              typeof args.worker_id!=="string" || typeof args.role!=="string" ||
+              (args.phase!=="planning" && args.phase!=="execution") ||
+              (args.spec_kit_stage!==null && typeof args.spec_kit_stage!=="string") ||
+              (args.optional_candidates!==undefined &&
+                (!Array.isArray(args.optional_candidates) ||
+                 args.optional_candidates.some(x=>typeof x!=="string"))))
+            throw new Error("Complete Issue/worker/role/phase/stage context required");
+          context={repo:args.repo,issue:args.issue,workerId:args.worker_id,
+            role:args.role,phase:args.phase,
+            specKitStage:args.spec_kit_stage as string|null,
+            optionalCandidates:args.optional_candidates as string[]|undefined ?? []};
+        }
+        return textResult(await getSkillsDiagnostics(this.root,{
+          ...(this.ownerSecret?{ownerSecret:this.ownerSecret}:{}),
+          ...(context?{context}:{}),
+        }));
+      }
+      if (name === "devos_skill_update_preview") {
+        exactKeys(args,["skill_id","candidate_json"]);
+        if (typeof args.skill_id!=="string" ||
+            typeof args.candidate_json!=="string" ||
+            Buffer.byteLength(args.candidate_json)>65_536)
+          throw new Error("Invalid skill update preview arguments");
+        const candidate:unknown=JSON.parse(args.candidate_json);
+        return textResult(await previewSkillsUpdate(this.root,args.skill_id,
+          candidate as Parameters<typeof previewSkillsUpdate>[2]));
       }
       if (name === "devos_skill_policy_get" || name === "devos_skill_policy_set") {
         const catalog = parseSkillLibrary(JSON.parse(

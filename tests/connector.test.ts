@@ -473,7 +473,9 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
     // The skill preference UI/API is available only after owner chat access
     // has already been approved. It never reopens the password widget.
     await mkdir(join(root, "config"), { recursive: true });
-    for (const file of ["devos-skills.json", "devos-skill-policy.json"])
+    for (const file of ["devos-skills.json", "devos-skill-policy.json",
+      "devos-quality-methods.json", "devos-upstreams.lock.json",
+      "devos-speckit-stage-pins.json"])
       await writeFile(join(root, "config", file),
         await readFile(join(process.cwd(), "config", file)));
     const policyTool = tools.tools.find(t => t.name === "devos_skill_policy_get") as any;
@@ -482,6 +484,9 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
     const setterDescriptor=tools.tools.find(t=>t.name==="devos_skill_policy_set") as any;
     assert.equal(setterDescriptor?._meta?.["openai/widgetAccessible"],true);
     assert.ok(tools.tools.some(t => t.name === "devos_skill_policy_set"));
+    const skillDiag = await client.callTool({name:"devos_skill_diagnostics",arguments:{}});
+    assert.equal(skillDiag.isError,undefined);
+    assert.equal((skillDiag.structuredContent as {skills:unknown[]}).skills.length,17);
     const policy = await client.callTool({name:"devos_skill_policy_get",arguments:{}});
     assert.equal(policy.isError,undefined);
     const data = policy.structuredContent as {
@@ -520,6 +525,9 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
       const otherResources = await otherClient.listResources();
       assert.ok(!otherResources.resources.some(r=>r.uri==="ui://devos/skill-policy-v1.html"));
       await assert.rejects(otherClient.readResource({uri:"ui://devos/skill-policy-v1.html"}));
+      const deniedDiag = await otherClient.callTool({name:"devos_skill_diagnostics",arguments:{}});
+      assert.match(JSON.stringify(deniedDiag),/authorization_required|missing_session/);
+      assert.doesNotMatch(JSON.stringify(deniedDiag),/sourceStatus|pinnedCommit/);
       const refused = await otherClient.callTool({name:"devos_skill_policy_get",arguments:{}});
       assert.match(JSON.stringify(refused),/authorization_required|missing_session/);
       assert.doesNotMatch(JSON.stringify(refused),/"skills":\[/);

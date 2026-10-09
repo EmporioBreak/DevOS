@@ -675,7 +675,9 @@ export async function startGateway(options: {
               // capability. A browser-worker grant MUST NOT authorize settings
               // changes or reveal the owner's global/project policies.
               if (authorized && (request.params?.name === "devos_skill_policy_get" ||
-                   request.params?.name === "devos_skill_policy_set") &&
+                   request.params?.name === "devos_skill_policy_set" ||
+                   request.params?.name === "devos_skill_diagnostics" ||
+                   request.params?.name === "devos_skill_update_preview") &&
                   !chatAccess.isApproved(fingerprint))
                 throw new Error("Skill preferences require an owner-approved chat");
               if (!authorized) {

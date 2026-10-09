@@ -13,6 +13,7 @@ import {
 } from "./completed-tasks.js";
 import { CodexExecutor } from "./codex-executor.js";
 import { runChatAccessAdmin, type ChatAccessCommand } from "./chat-access-admin.js";
+import { parseSkillsCliArgs, runSkillsCliCommand, type SkillsCliCommand } from "./skills-cli.js";
 import { LocalCommandRunner } from "./command-runner.js";
 import { debugLog } from "./debug-log.js";
 import type { Executor } from "./executor.js";
@@ -52,6 +53,7 @@ import {
 } from "./connector.js";
 
 export type CliCommand =
+  | { kind: "skills"; command: SkillsCliCommand }
   | { kind: "connector"; action: ConnectorAction }
   | { kind: "chat_access"; command: ChatAccessCommand }
   | { kind: "select" }
@@ -61,6 +63,7 @@ export function parseCliArgs(args: string[]): CliCommand {
   if (args.length === 0) {
     return { kind: "select" };
   }
+  if (args[0] === "skills") return {kind:"skills",command:parseSkillsCliArgs(args.slice(1))};
 
   if (args[0] === "connector" && args[1] === "access") {
     if (args.length === 3 && args[2] === "list")
@@ -222,6 +225,10 @@ export async function main(
   }
   const command = parseCliArgs(args);
 
+  if (command.kind === "skills") {
+    process.stdout.write(await runSkillsCliCommand(command.command,cwd));
+    return;
+  }
   if (command.kind === "connector") {
     await connector(command.action, cwd);
     return;
