@@ -45,6 +45,8 @@ environment variables, Spec Kit feature scripts must not write shared
 task's context. The DevOS Main Agent is responsible for GitHub dependencies
 between Issues and approves which feature artifacts belong to each.
 
+See also [official S03 Bundle/Artifact/Event CLI compatibility](spec-kit-extras.md).
+
 ## Verification
 
 Official `specify extension list --json` confirmed git 1.0.1,
