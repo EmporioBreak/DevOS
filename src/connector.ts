@@ -942,6 +942,7 @@ export async function connectorRuntime(root: string) {
       root: softwareRoot,
       chatAccessRoot: root,
       port: config.gatewayPort,
+      jsonResponseOnly: config.tunnel === "cloudflare",
       ownerSecret: ownerAuth(process.env.DEVOS_CONNECTOR_OWNER_SECRET),
       oauthClientsPath: join(root, ".devos/connector/oauth-clients.json"),
       oauthStatePath: join(root, ".devos/connector/oauth-state.enc"),

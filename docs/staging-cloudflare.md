@@ -26,13 +26,21 @@ Production остаётся на ngrok и обычных командах `./dev
 `DEVOS_BROWSER_PROFILE_DIR`. Эти команды не выполняются в Production.
 Cloudflare открывает временный HTTPS-URL `https://*.trycloudflare.com/mcp`.
 OAuth, PKCE и default-deny MCP-гейт остаются обязательными.
+
+При `tunnel: "cloudflare"` MCP Streamable HTTP автоматически использует
+**JSON-only ответы на POST**, без SSE. Это предусмотрено SDK и протоколом MCP:
+финальный результат команды передаётся обычным `application/json`.
+Production по умолчанию сохраняет SSE через ngrok.
+
 ## Ограничения и проверки
 
 - **Quick Tunnel — только для тестов:** hostname меняется при restart,
   нет uptime guarantee и Cloudflare заявляет отсутствие поддержки SSE.
-  Поэтому HTTP 200 `/health` ещё не подтверждает работу StreamableHTTP MCP
-  внутри ChatGPT. Для постоянного подключения понадобится отдельный
-  проверенный Cloudflare Tunnel со стабильным hostname и SSE-тестами.
+  JSON-only избегает SSE для ответов, но промежуточные уведомления
+  `notifications/progress` и другие потоковые события клиент не получит.
+  Не утверждаем полную совместимость ChatGPT без реального OAuth/MCP smoke.
+  Для постоянного hostname/полноценного streaming рекомендуется отдельный
+  именованный Cloudflare Tunnel с подтверждённым правом управления доменом.
 - OAuth bearer-state DevOS привязан к точному публичному `/mcp` адресу.
   Скопированные данные сохраняются, но ранее выданные ngrok tokens могут
   потребовать OAuth-consent на новом Cloudflare URL: не стираем их заранее.

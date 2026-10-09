@@ -297,6 +297,8 @@ export async function startGateway(options: {
   /** Project owning the chat allowlist; may differ from the software checkout. */
   chatAccessRoot?: string;
   port: number;
+  /** Staging Quick Tunnel cannot relay SSE; send final JSON-RPC result only. */
+  jsonResponseOnly?: boolean;
   ownerSecret: string;
   publicUrl?: string;
   oauthClientsPath?: string | null;
@@ -1020,6 +1022,7 @@ export async function startGateway(options: {
           let newSession: PublicMcpSession | undefined;
           const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: randomUUID,
+            ...(options.jsonResponseOnly ? { enableJsonResponse: true } : {}),
             onsessioninitialized: (sessionId) => {
               if (!newSession) return;
               newSession.lastActivityAt = Date.now();
