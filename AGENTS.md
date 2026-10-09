@@ -20,6 +20,13 @@ Before a main-agent conversation actually uses DevOS/Desktop Commander MCP,
 call the side-effect-free `devos_noop` to check that conversation's approval;
 this first call can also display the approval form directly, without
 requiring the owner to ask for a separate `devos_authorize_chat` call.
+When a normal DevOS/Desktop Commander tool returns `authorization_required`,
+the requested operation has not run. Its inline form must be displayed directly;
+do not send the user to plugin settings, do not claim the app is disconnected,
+and do not tell them to type another message. The widget may continue the
+original request after successful approval, if the host supports it.
+If the client fails to render inline MCP Apps, call `devos_authorize_chat`
+with empty arguments as the explicit fallback.
 Mobile `/share/` URLs may be accepted as owner-password-entered labels
 but are public snapshots, not proof of a private conversation. The grant
 always binds the authenticated MCP session and OAuth client, not the share URL.
