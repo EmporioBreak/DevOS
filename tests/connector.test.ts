@@ -704,6 +704,7 @@ import {
   fixture,
   fixtureSecret,
   start,
+  startWithImmediateRetryClock,
   ready,
   waitFor,
   dead,
@@ -808,10 +809,19 @@ test("missing auth/runtime, stale version, integrity and early ngrok failure red
       assert.ok(!result.output.includes(fixtureSecret));
       assert.match(result.output, /Missing/);
     }
-    const fail = await start(f.root, "run").done;
+    // Keep the real connector failure, subprocess exit status, stderr redaction
+    // and persisted terminal-state assertions, injecting a fast retry clock.
+    // The exact five Production delays are asserted without sleeping for 67s.
+    const fail = await startWithImmediateRetryClock(f.root).done;
     assert.equal(fail.code, 1);
     assert.ok(!fail.output.includes(fixtureSecret));
     assert.match(fail.output, /restart budget exhausted/);
+    const delays = fail.output.match(/^DEVOS_TEST_RETRY_DELAYS=(\[[^\r\n]+\])$/m);
+    assert.ok(delays, "the foreground supervisor recorded its retry sequence");
+    assert.deepEqual(
+      JSON.parse(delays[1]!),
+      [2_000, 5_000, 10_000, 20_000, 30_000],
+    );
     const failedState = JSON.parse(
       await readFile(join(f.root, ".devos/connector/state.json"), "utf8"),
     );
