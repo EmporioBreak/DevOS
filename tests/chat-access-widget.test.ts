@@ -66,6 +66,7 @@ test("approval widget contains only public HTTPS endpoint and direct fetch", () 
   const html = chatApprovalWidget("https://devos.example");
   assert.ok(html.includes("https://devos.example/chat-access/approve"));
   assert.match(html, /type="password"/);
+  assert.match(html, /Разрешить и продолжить/);
   assert.match(html, /credentials: "omit"/);
   assert.match(html, /method: "POST"/);
   assert.ok(!html.includes(owner) && !html.includes(password));

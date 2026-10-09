@@ -122,7 +122,7 @@ small{color:inherit;opacity:.75}
   required placeholder="https://chatgpt.com/share/… или /c/…" />
 <label for="password">Пароль авторизации DevOS</label>
 <input id="password" type="password" autocomplete="off" required />
-<button id="go" type="submit">Разрешить этот чат</button>
+<button id="go" type="submit">Разрешить и продолжить</button>
 </form>
 <div id="message" role="status" aria-live="polite"></div>
 <script>
