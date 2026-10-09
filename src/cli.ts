@@ -36,6 +36,7 @@ import { acquireTaskLock } from "./task-lock.js";
 import type { Workflow } from "./workflow.js";
 import { loadWorkflow } from "./workflow-loader.js";
 import { verifyRunnerSkillGraph } from "./runner-skill-graph.js";
+import { appendTaskAuditEvent } from "./pipeline-diagnostics.js";
 import { parseEnvFile } from "./connector-env.js";
 import { readFile } from "node:fs/promises";
 import {
@@ -201,7 +202,14 @@ export async function runWorkflow(
       await recordTaskCompletion(cwd, workflow.task.issue, state);
     },
     resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
-    onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
+    onEvent: async event => {
+      debugLog("orchestrator.event", event);
+      writeOrchestrationEvent(event);
+      // Diagnostics must never cause a worker turn to be replayed or the
+      // actual task to fail after a successful external side effect.
+      try {await appendTaskAuditEvent(cwd,workflow.task,event);}
+      catch {debugLog("orchestrator.audit_error", {category:"local_audit_unavailable"});}
+    },
   }).run();
   // final_review_required is not task completion. Keep the shared Camoufox
   // process and every worker tab alive for main-agent review / rework.

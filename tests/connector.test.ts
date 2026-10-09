@@ -484,6 +484,10 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
     const setterDescriptor=tools.tools.find(t=>t.name==="devos_skill_policy_set") as any;
     assert.equal(setterDescriptor?._meta?.["openai/widgetAccessible"],true);
     assert.ok(tools.tools.some(t => t.name === "devos_skill_policy_set"));
+    const timeline=await client.callTool({name:"devos_pipeline_status",arguments:{
+      repo:"EmporioBreak/DevOS",issue:748}});
+    assert.equal(timeline.isError,undefined);
+    assert.equal((timeline.structuredContent as {state:string})?.state,"not_started");
     const skillDiag = await client.callTool({name:"devos_skill_diagnostics",arguments:{}});
     assert.equal(skillDiag.isError,undefined);
     assert.equal((skillDiag.structuredContent as {skills:unknown[]}).skills.length,17);
@@ -528,6 +532,10 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
       const otherResources = await otherClient.listResources();
       assert.ok(!otherResources.resources.some(r=>r.uri==="ui://devos/skill-policy-v1.html"));
       await assert.rejects(otherClient.readResource({uri:"ui://devos/skill-policy-v1.html"}));
+      const deniedTimeline=await otherClient.callTool({name:"devos_pipeline_status",arguments:{
+        repo:"EmporioBreak/DevOS",issue:748}});
+      assert.match(JSON.stringify(deniedTimeline),/authorization_required|missing_session/);
+      assert.doesNotMatch(JSON.stringify(deniedTimeline),/reviewLoops|sourceStatus|workerId/);
       const deniedDiag = await otherClient.callTool({name:"devos_skill_diagnostics",arguments:{}});
       assert.match(JSON.stringify(deniedDiag),/authorization_required|missing_session/);
       assert.doesNotMatch(JSON.stringify(deniedDiag),/sourceStatus|pinnedCommit/);

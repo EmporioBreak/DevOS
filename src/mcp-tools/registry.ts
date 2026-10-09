@@ -10,6 +10,7 @@ import { parseSkillLibrary } from "../skills-library.js";
 import { SKILL_POLICY_WIDGET_URI } from "../skill-policy-widget.js";
 import { BrowserSkillDelivery, type VerifiedWorkerIdentity } from "../browser-skill-delivery.js";
 import { getSkillsDiagnostics, previewSkillsUpdate } from "../skill-diagnostics.js";
+import { readPipelineSnapshot } from "../pipeline-diagnostics.js";
 import type { WorkerSkillContext } from "../skill-policy.js";
 
 const REPORT_STATUSES = new Set<WorkerStatus>([
@@ -52,6 +53,15 @@ function exactKeys(args: Arguments, allowed: string[]) {
 }
 
 export const DEVOS_TOOLS = [
+  {
+    name: "devos_pipeline_status",
+    title: "DevOS Issue pipeline timeline",
+    description: "Read-only owner-only Issue stage, worker skill versions, review handoff and bounded audit events. No chat URLs, tokens or private paths.",
+    inputSchema:{type:"object",properties:{
+      repo:{type:"string"},issue:{type:"integer",minimum:1},
+    },required:["repo","issue"],additionalProperties:false},
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+  },
   {
     name: "devos_skill_diagnostics",
     title: "DevOS Skills diagnostics",
@@ -318,6 +328,10 @@ export class DevosToolRegistry {
           git_status:"Local Git-backed settings updated; commit/PR remains Main Agent responsibility"});
       }
       const task = taskFrom(args);
+      if(name === "devos_pipeline_status"){
+        exactKeys(args,["repo","issue"]);
+        return textResult(await readPipelineSnapshot(this.root,task,this.ownerSecret));
+      }
       if (name === "devos_task_status") {
         exactKeys(args, ["repo", "issue"]);
         const state = await new JsonStateStore(this.root, task).load();
