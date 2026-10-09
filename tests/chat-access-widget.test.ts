@@ -211,9 +211,33 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
         body: JSON.stringify({ ticket, password: provided, url: mobileShareUrl }),
       });
 
+      // Public ngrok traffic arrives on loopback. Anonymous invalid requests
+      // from one forwarded remote address must not exhaust the quota for the owner.
+      for (let i = 0; i < 15; i++) {
+        const attacker = await fetch(base + "/chat-access/approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json",
+            "X-Forwarded-For": "198.51.100.19" },
+          body: JSON.stringify({ ticket: "invalid", url: mobileShareUrl, password: "wrong" }),
+        });
+        assert.equal(attacker.status, 403);
+      }
+      const blockedAttacker = await fetch(base + "/chat-access/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json",
+          "X-Forwarded-For": "198.51.100.19" },
+        body: JSON.stringify({ ticket: "invalid", url: mobileShareUrl, password: "wrong" }),
+      });
+      assert.equal(blockedAttacker.status, 429);
       const invalid = await submit(challenge.ticket, "wrong-secret");
       assert.equal(invalid.status, 403);
-      const granted = await submit(challenge.ticket, password);
+      // The owner can still approve a valid ticket from the SAME client IP
+      // after the invalid-ticket bucket is exhausted by someone else.
+      const granted = await fetch(base + "/chat-access/approve", {
+        method: "POST", headers: { "Content-Type": "application/json",
+          "X-Forwarded-For": "198.51.100.19" },
+        body: JSON.stringify({ ticket: challenge.ticket, password, url: mobileShareUrl }),
+      });
       assert.equal(granted.status, 200);
       assert.deepEqual(await granted.json(), { approved: true });
       assert.equal(granted.headers.get("access-control-allow-origin"), "*");
@@ -225,10 +249,15 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
         "approved mobile share session can now call original Desktop Commander");
       const approvedListed = (await client.listTools()).tools as any[];
       for (const name of ["read_file", "start_process", "devos_task_status",
-                          "devos_noop", "devos_authorize_chat"]) {
+                          "devos_noop"]) {
         assert.equal(approvedListed.find(t => t.name === name)?._meta?.ui, undefined,
           "authorized " + name + " must not advertise the approval card");
       }
+      assert.equal(approvedListed.find(t => t.name === "devos_authorize_chat")?._meta?.ui?.resourceUri,
+        CHAT_APPROVAL_WIDGET_URI, "explicit helper must work from cached descriptors after revoke");
+      const helperAlready = payload(await client.callTool({ name: "devos_authorize_chat", arguments: {} })) as any;
+      assert.equal(helperAlready.status, "already_authorized");
+      assert.equal(helperAlready.approved, true);
       const oldResource = await client.readResource({
         uri: "ui://devos/chat-approval-v2.html",
       });
@@ -236,6 +265,16 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
       const already = await client.callTool({ name: "devos_noop", arguments: {} });
       assert.equal((already as any).structuredContent?.approved, true);
       assert.equal((already as any).structuredContent?.reason, "already_authorized");
+      const fingerprint = (already as any).structuredContent?.chat_reference;
+      const registry = new ChatAccessRegistry(root, owner);
+      assert.equal(registry.revoke(fingerprint), true);
+      const blockedAfterRevoke = await client.callTool({ name: "get_config", arguments: {} });
+      assert.equal((blockedAfterRevoke as any).structuredContent?.status, "authorization_required");
+      // The cached helper descriptor from before revoke still owns its app UI.
+      const reapprove = payload(await client.callTool({ name: "devos_authorize_chat", arguments: {} })) as any;
+      assert.equal(reapprove.ready, true);
+      assert.equal((await submit(reapprove.ticket, password)).status, 200);
+      assert.equal((await client.callTool({ name: "devos_noop", arguments: {} }) as any).structuredContent?.approved, true);
 
       second = new Client({ name: "unapproved chat", version: "1" }, { capabilities: {} });
       await second.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp"), {

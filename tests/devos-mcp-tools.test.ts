@@ -81,7 +81,9 @@ test("public MCP gateway merges DevOS tools with unchanged Desktop Commander", {
     assert.equal(listed.tools.find(t => t.name === "devos_task_status")?.annotations?.readOnlyHint, true);
     assert.ok(names.includes("devos_noop"), "safe no-op tool is always advertised");
     const noop = await client.callTool({ name: "devos_noop", arguments: {} });
-    assert.deepEqual(unpack(noop), { status: "no_action", approved: false });
+    assert.deepEqual((noop as any).structuredContent, {
+      status: "missing_session", approved: false, operation_executed: false,
+    });
     const upstream = await client.callTool({ name: "get_config", arguments: {} });
     assert.equal(upstream.isError, true, "unapproved chat cannot forward upstream tools");
     const response = await client.callTool({ name: "devos_task_status",

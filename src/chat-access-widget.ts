@@ -155,12 +155,14 @@ small{color:inherit;opacity:.75}
 <button id="go" type="submit">Разрешить и продолжить</button>
 </form>
 <div id="message" role="status" aria-live="polite"></div>
+<a id="approval-fallback" hidden target="_blank" rel="noopener noreferrer">Открыть форму в Safari</a>
 </main>
 <script>
 "use strict";
 const endpoint = ${endpoint};
 const statusEndpoint = ${statusEndpoint};
 const out = document.getElementById("message");
+const fallback = document.getElementById("approval-fallback");
 const panel = document.getElementById("approval-panel");
 const form = document.getElementById("auth");
 form.hidden = true;
@@ -204,6 +206,7 @@ function schedulePendingRecheck(ticket) {
 // Negotiate before the user submits; never try BOTH transports for one grant.
 const pendingBridge = new Map();
 let bridgeReady = false;
+let bridgeCanMessage = false;
 let standardToolOutput = null;
 let bridgeRequestId = 0;
 window.addEventListener("message", event => {
@@ -218,7 +221,8 @@ window.addEventListener("message", event => {
   const pending = pendingBridge.get(message.id);
   pendingBridge.delete(message.id);
   clearTimeout(pending.timer);
-  if (message.error) pending.reject(new Error("Host rejected MCP Apps request"));
+  if (message.error || message.result?.isError === true)
+    pending.reject(new Error("Host rejected MCP Apps request"));
   else pending.resolve(message.result);
 });
 function bridgeRequest(method, params, timeoutMs) {
@@ -237,8 +241,12 @@ void bridgeRequest("ui/initialize", {
   protocolVersion: "2026-01-26",
   appInfo: { name: "devos-chat-approval", version: "2.0.0" },
   appCapabilities: { availableDisplayModes: ["inline"] }
-}, 2500).then(() => {
+}, 2500).then(result => {
   bridgeReady = true;
+  // Initialization only proves that the bridge exists. Message delivery
+  // must be advertised separately by the host.
+  bridgeCanMessage = result?.hostCapabilities?.message !== undefined &&
+    result.hostCapabilities.message !== false;
   window.parent.postMessage({
     jsonrpc: "2.0", method: "ui/notifications/initialized"
   }, "*");
@@ -253,7 +261,7 @@ function readToolOutput() {
   if (payload.content?.[0]?.text) {
     try { return JSON.parse(payload.content[0].text); } catch {}
   }
-  if (payload.ticket || payload.reason) return payload;
+  if (payload.ticket || payload.reason || payload.status === "already_authorized") return payload;
   return null;
 }
 async function refresh() {
@@ -264,8 +272,14 @@ async function refresh() {
   activeTicket = null;
   form.hidden = true;
   panel.hidden = true;
-  // A cached approval template can be attached to successful read_file calls.
-  // Never render it without a live, unconsumed challenge for this conversation.
+  fallback.hidden = true;
+  // An explicitly invoked helper should never produce an empty black card.
+  // Cached ordinary-tool responses still stay hidden.
+  if (result?.status === "already_authorized") {
+    panel.hidden = false;
+    out.textContent = "Доступ к Mac уже разрешён для этого чата.";
+    return;
+  }
   if (!result || result.approved === true || result.reason === "already_authorized")
     return;
   const ticket = result.ticket;
@@ -279,19 +293,41 @@ async function refresh() {
         body: JSON.stringify({ ticket })
       });
       const status = response.ok ? await response.json() : null;
-      if (epoch !== refreshEpoch || !status?.pending) return;
+      if (epoch !== refreshEpoch) return;
+      if (!status) {
+        panel.hidden = false;
+        out.textContent = "Сервер не смог проверить запрос. Используй ссылку Safari из ответа инструмента.";
+        return;
+      }
+      if (!status.pending) return; // Consumed or expired ticket: hide stale card.
       activeTicket = ticket;
       panel.hidden = false;
       form.hidden = false;
       schedulePendingRecheck(ticket);
       out.textContent = "Готово к подтверждению. Запрос действует 5 минут.";
     } catch {
-      if (epoch === refreshEpoch)
-        out.textContent = "Не удалось проверить запрос. Повтори вызов DevOS.";
+      if (epoch === refreshEpoch) {
+        panel.hidden = false;
+        out.textContent = "Не удалось проверить запрос. Используй ссылку Safari из ответа инструмента или повтори запрос.";
+      }
+    }
+    return;
+  }
+  if (result.reason === "approval_pending") {
+    // A second explicit call must not look like a broken, empty form.
+    panel.hidden = false;
+    out.textContent = "Подтверждение уже ожидается в предыдущей форме. Можно также открыть Safari.";
+    const link = result.approval_url;
+    const prefix = endpoint.replace("/chat-access/approve", "/chat-access/form#");
+    if (typeof link === "string" && link.startsWith(prefix) &&
+        /^[A-Za-z0-9_-]{32}$/.test(link.slice(prefix.length))) {
+      fallback.href = link;
+      fallback.hidden = false;
     }
     return;
   }
   if (["missing_session", "password_not_configured", "capacity"].includes(result.reason)) {
+    panel.hidden = false;
     out.textContent = result.reason === "missing_session"
       ? "ChatGPT не передал идентификатор этой беседы. Доступ закрыт."
       : result.reason === "password_not_configured"
@@ -337,13 +373,13 @@ form.addEventListener("submit", async function(event) {
     // Never forward a password, a ticket or a conversation URL to the model.
     const resumePrompt = "Доступ DevOS к этому чату успешно подтверждён. Без дополнительных вопросов продолжи последнее запрошенное мной действие с DevOS/Desktop Commander. Не повторяй авторизацию.";
     try {
-      if (bridgeReady) {
+      if (bridgeReady && bridgeCanMessage) {
         // Standard MCP Apps request provides explicit success/error response.
         await bridgeRequest("ui/message", {
           role: "user", content: [{ type: "text", text: resumePrompt }]
         }, 5000);
       } else if (typeof window.openai?.sendFollowUpMessage === "function") {
-        // Use compatibility path only if the standard handshake did NOT work.
+        // Use compatibility only when the host does not advertise ui/message.
         await window.openai.sendFollowUpMessage({
           prompt: resumePrompt, scrollToBottom: true
         });

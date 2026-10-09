@@ -4,20 +4,24 @@ import test from "node:test";
 import { chatApprovalWidget } from "../src/chat-access-widget.js";
 
 type HostOptions = {
-  standard: "supported" | "unsupported" | "denied";
+  standard: "supported" | "unsupported" | "denied" | "refusedResult";
+  hostMessage?: boolean;
+  toolOutput?: Record<string, unknown>;
   approved: boolean;
   standardOnly?: boolean;
   pendingOnCheck?: boolean;
+  checkStatusOk?: boolean;
   alreadyAuthorized?: boolean;
   noSubmit?: boolean;
 };
 async function exerciseHost({ standard, approved, standardOnly = false,
-  pendingOnCheck = true, alreadyAuthorized = false, noSubmit = false }: HostOptions) {
+  pendingOnCheck = true, checkStatusOk = true, alreadyAuthorized = false,
+  noSubmit = false, hostMessage = true, toolOutput }: HostOptions) {
   const html = chatApprovalWidget("https://devos.example");
   const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
   assert.ok(script, "inline widget JavaScript is present");
   const elements = new Map<string, any>();
-  for (const id of ["message", "approval-panel", "auth", "password", "chaturl", "go"]) {
+  for (const id of ["message", "approval-fallback", "approval-panel", "auth", "password", "chaturl", "go"]) {
     elements.set(id, { value: "", hidden: false, disabled: false,
       textContent: "", handlers: new Map() });
   }
@@ -48,7 +52,9 @@ async function exerciseHost({ standard, approved, standardOnly = false,
       queueMicrotask(() => listeners.get("message")?.({
         source: parent, data: standard === "unsupported"
           ? { jsonrpc: "2.0", id: value.id, error: { code: -32601, message: "unsupported" } }
-          : { jsonrpc: "2.0", id: value.id, result: { hostCapabilities: {} } },
+          : { jsonrpc: "2.0", id: value.id, result: {
+            hostCapabilities: hostMessage ? { message: {} } : {},
+          } },
       }));
       if (standardOnly) queueMicrotask(() => listeners.get("message")?.({
         source: parent, data: {
@@ -61,16 +67,17 @@ async function exerciseHost({ standard, approved, standardOnly = false,
       queueMicrotask(() => listeners.get("message")?.({
         source: parent, data: standard === "denied"
           ? { jsonrpc: "2.0", id: value.id, error: { code: -32000, message: "denied" } }
-          : { jsonrpc: "2.0", id: value.id, result: {} },
+          : { jsonrpc: "2.0", id: value.id,
+            result: standard === "refusedResult" ? { isError: true } : {} },
       }));
     }
   } };
   const window = {
     parent,
     openai: standardOnly ? undefined : {
-      toolOutput: alreadyAuthorized
+      toolOutput: toolOutput || (alreadyAuthorized
         ? { approved: true, reason: "already_authorized" }
-        : { ready: true, ticket: "a".repeat(32) },
+        : { ready: true, ticket: "a".repeat(32) }),
       sendFollowUpMessage: async (msg: any) => { alias.push(msg); },
     },
     addEventListener(name: string, fn: (e: unknown) => void) {
@@ -90,7 +97,7 @@ async function exerciseHost({ standard, approved, standardOnly = false,
   const fetch = async (url: string, options: any) => {
     http.push({ url, body: JSON.parse(options.body) });
     if (url.endsWith("/chat-access/check"))
-      return { ok: true, json: async () => ({ pending: ticketStillPending }) };
+      return { ok: checkStatusOk, json: async () => ({ pending: ticketStillPending }) };
     return { ok: approved, json: async () => ({ approved }) };
   };
   runInNewContext(script, { window, document, fetch,
@@ -194,4 +201,52 @@ test("previously visible authorization card hides after another card approves th
   assert.equal(h.elements.get("auth").hidden, true);
   assert.equal(h.sent.filter(m => m.method === "ui/message").length, 0,
     "an old card must not trigger another model continuation");
+});
+
+test("host without message capability uses compatibility continuation", async () => {
+  const h = await exerciseHost({ standard: "supported", approved: true, hostMessage: false });
+  assert.equal(h.sent.filter(m => m.method === "ui/message").length, 0);
+  assert.equal(h.alias.length, 1);
+});
+
+test("host result.isError rejects ui/message without unsafe replay", async () => {
+  const h = await exerciseHost({ standard: "refusedResult", approved: true });
+  assert.equal(h.sent.filter(m => m.method === "ui/message").length, 1);
+  assert.equal(h.alias.length, 0);
+  assert.match(h.elements.get("message").textContent, /не подтвердил продолжение/);
+});
+
+test("missing host session shows a visible explanation, not a blank card", async () => {
+  const h = await exerciseHost({ standard: "supported", approved: false,
+    toolOutput: { ready: false, reason: "missing_session" }, noSubmit: true });
+  assert.equal(h.elements.get("approval-panel").hidden, false);
+  assert.equal(h.elements.get("auth").hidden, true);
+  assert.match(h.elements.get("message").textContent, /идентификатор/);
+});
+
+test("duplicate approval helper explains pending request and offers Safari", async () => {
+  const link = "https://devos.example/chat-access/form#" + "a".repeat(32);
+  const h = await exerciseHost({ standard: "supported", approved: false, noSubmit: true,
+    toolOutput: { ready: false, reason: "approval_pending", approval_url: link } });
+  assert.equal(h.elements.get("approval-panel").hidden, false);
+  assert.equal(h.elements.get("auth").hidden, true);
+  assert.match(h.elements.get("message").textContent, /ожидается/);
+  assert.equal(h.elements.get("approval-fallback").hidden, false);
+  assert.equal(h.elements.get("approval-fallback").href, link);
+});
+
+test("status-check HTTP failure shows a visible fallback explanation", async () => {
+  const h = await exerciseHost({ standard: "supported", approved: false,
+    checkStatusOk: false, noSubmit: true });
+  assert.equal(h.elements.get("approval-panel").hidden, false);
+  assert.equal(h.elements.get("auth").hidden, true);
+  assert.match(h.elements.get("message").textContent, /Safari/);
+});
+
+test("already-authorized explicit helper renders informative text, not a blank card", async () => {
+  const h = await exerciseHost({ standard: "supported", approved: true, noSubmit: true,
+    toolOutput: { status: "already_authorized", approved: true } });
+  assert.equal(h.elements.get("approval-panel").hidden, false);
+  assert.equal(h.elements.get("auth").hidden, true);
+  assert.match(h.elements.get("message").textContent, /уже разрешён/);
 });

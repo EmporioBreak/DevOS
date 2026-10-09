@@ -22,6 +22,7 @@ import { ChatAccessRegistry, CHAT_NOOP_TOOL, chatSessionSignal, noOpResult, deni
 import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_URI, chatApprovalWidget, externalChatApprovalForm, CHAT_PREVIOUS_APPROVAL_WIDGET_URI } from "./chat-access-widget.js";
 import { ChatWorkerProbeRegistry, CHAT_WORKER_PROBE_TOOL } from "./chat-worker-probe.js";
 import { ChatWorkerGrantRegistry } from "./chat-worker-grants.js";
+import { watchChatAccessRevocation } from "./chat-authorization-watch.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
 
 export function publicIdentity(value: string): URL {
@@ -324,6 +325,10 @@ export async function startGateway(options: {
     ? publicIdentity(options.publicUrl)
     : undefined;
   const app = express();
+  // The public ngrok ingress terminates on loopback. Distinguish remote
+  // clients by the forwarding chain rather than rate-limiting every
+  // approval attempt under the same 127.0.0.1 address.
+  app.set("trust proxy", "loopback");
   app.disable("x-powered-by");
   // Do not trust forwarded host/proto/header values as an OAuth issuer.
   app.use((req, res, next) => {
@@ -475,10 +480,21 @@ export async function startGateway(options: {
 
   // Read-only active-challenge check. Prevent old or duplicate inline cards
   // from reappearing after another card already authorized the same chat.
+  // Invalid-ticket floods cannot exhaust a valid ticket's polling budget,
+  // even if ngrok does not forward the remote IP.
+  const invalidCheckLimit = rateLimit({ windowMs: 15 * 60_000,
+    limit: 1200, standardHeaders: false, legacyHeaders: false });
+  const validCheckLimit = rateLimit({ windowMs: 15 * 60_000,
+    limit: 1200, standardHeaders: false, legacyHeaders: false,
+    keyGenerator: req => String(req.body.ticket) });
   app.post("/chat-access/check",
     (_req, res, next) => { res.set("Access-Control-Allow-Origin", "*"); next(); },
-    rateLimit({ windowMs: 15 * 60_000, limit: 1200, standardHeaders: false, legacyHeaders: false }),
     express.json({ limit: "1kb", type: "application/json" }),
+    (req, res, next) => {
+      const ticket = req.body?.ticket;
+      if (chatApproval.isPending(ticket)) void validCheckLimit(req, res, next);
+      else void invalidCheckLimit(req, res, next);
+    },
     (req, res) => {
       const body = req.body;
       const ticket = body && typeof body === "object" && !Array.isArray(body) &&
@@ -503,10 +519,22 @@ export async function startGateway(options: {
       "Access-Control-Max-Age": "600",
     }).sendStatus(204);
   });
+  // Invalid anonymous requests consume only the source-IP abuse budget.
+  // A valid one-shot ticket gets an independent quota: no anonymous flood
+  // can lock out the owner merely by sharing a proxy or NAT address.
+  const invalidApprovalLimit = rateLimit({ windowMs: 15 * 60_000,
+    limit: 15, standardHeaders: false, legacyHeaders: false });
+  const validApprovalLimit = rateLimit({ windowMs: 5 * 60_000,
+    limit: 15, standardHeaders: false, legacyHeaders: false,
+    keyGenerator: req => String(req.body.ticket) });
   app.post("/chat-access/approve",
     (_req, res, next) => { res.set("Access-Control-Allow-Origin", "*"); next(); },
-    rateLimit({ windowMs: 15 * 60_000, limit: 15, standardHeaders: false, legacyHeaders: false }),
     express.json({ limit: "4kb", type: "application/json" }),
+    (req, res, next) => {
+      const ticket = req.body?.ticket;
+      if (chatApproval.isPending(ticket)) void validApprovalLimit(req, res, next);
+      else void invalidApprovalLimit(req, res, next);
+    },
     (req, res) => {
       res.set("Access-Control-Allow-Origin", "*");
       const approved = chatApproval.approve(req.body);
@@ -629,7 +657,11 @@ export async function startGateway(options: {
                 return { content: [{ type: "text", text: JSON.stringify(issued) }], structuredContent: issued };
               }
               if (request.params?.name === CHAT_APPROVAL_WIDGET_TOOL.name) {
-                if (authorized) return noOpResult(fingerprint, true);
+                if (authorized) {
+                  const result = { status: "already_authorized", approved: true };
+                  return { content: [{ type: "text", text: JSON.stringify(result) }],
+                    structuredContent: result };
+                }
                 const issued = chatApproval.issue(fingerprint);
                 const link = (issued.ready || issued.reason === "approval_pending") && identity
                   ? new URL("/chat-access/form", identity).href + "#" + issued.ticket
@@ -704,6 +736,11 @@ export async function startGateway(options: {
                 };
             let result: any;
             const requestController = new AbortController();
+            const accessStillValid = () =>
+              chatAccess.isApproved(fingerprint) || workerGrants.isGranted(fingerprint);
+            const stopRevocationWatch = toolCall && fingerprint
+              ? watchChatAccessRevocation(accessStillValid, requestController)
+              : undefined;
             const abortFromClient = () =>
               requestController.abort(extra.signal.reason);
             if (extra.signal.aborted) abortFromClient();
@@ -711,6 +748,10 @@ export async function startGateway(options: {
             activeRequests.add(requestController);
             let forwardedRequestPromise: Promise<any> | undefined;
             try {
+              // Recheck immediately before forwarding, closing the gap
+              // between initial authorization and upstream dispatch.
+              if (toolCall && !accessStillValid())
+                throw new Error("Chat authorization revoked before dispatch");
               const forwardOptions = {
                 signal: requestController.signal,
                 ...timeoutOptions,
@@ -765,10 +806,15 @@ export async function startGateway(options: {
               }
               forwardedRequests.add(forwardedRequestPromise);
               result = await forwardedRequestPromise;
+              // Do not release sensitive tool output after a concurrent revoke,
+              // even if the upstream process ignored the abort signal.
+              if (toolCall && (!accessStillValid() || requestController.signal.aborted))
+                throw new Error("Chat authorization was revoked during tool execution");
             } catch (error) {
               void Promise.allSettled(writes);
               throw error;
             } finally {
+              stopRevocationWatch?.();
               activeRequests.delete(requestController);
               extra.signal.removeEventListener("abort", abortFromClient);
               if (forwardedRequestPromise)
@@ -876,14 +922,10 @@ export async function startGateway(options: {
                     ] },
                   })),
                   CHAT_NOOP_TOOL,
-                  ...(authorized
-                    ? [{
-                        ...CHAT_APPROVAL_WIDGET_TOOL,
-                        _meta: { securitySchemes: [
-                          { type: "oauth2", scopes: ["mcp:tools"] },
-                        ] },
-                      }]
-                    : [CHAT_APPROVAL_WIDGET_TOOL]),
+                  // Keep the helper descriptor stable after local revocation:
+                  // already cached tool lists must still be able to reopen
+                  // the form. Ordinary tools never own a widget.
+                  CHAT_APPROVAL_WIDGET_TOOL,
                   CHAT_WORKER_PROBE_TOOL],
               };
             }
