@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile, writeFile, rename, lstat, realpath, open, rm, link, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseSkillLibrary, type SkillLibrary } from "./skills-library.js";
@@ -222,8 +222,15 @@ export async function resolveWorkerSkills(
  * Existing assignments are idempotent for the same exact bytes; a different
  * selection for the same Issue/worker is not authorized during continuation.
  */
+function assignmentMac(manifest: ResolvedWorkerSkills, secret: string): string {
+  if (Buffer.byteLength(secret,"utf8")<32)
+    throw new Error("Signing worker skill assignments requires host owner secret");
+  const key=createHash("sha256").update("DevOS worker skills v1\0").update(secret).digest();
+  return createHmac("sha256",key).update("assigned\0")
+    .update(JSON.stringify(manifest)).digest("hex");
+}
 export async function saveWorkerSkillManifest(
-  root: string, manifest: ResolvedWorkerSkills,
+  root: string, manifest: ResolvedWorkerSkills, secret?: string,
 ): Promise<string> {
   if (manifest.version !== 1 || !REPO.test(manifest.task.repo) ||
       !Number.isSafeInteger(manifest.task.issue) || manifest.task.issue < 1 ||
@@ -238,7 +245,10 @@ export async function saveWorkerSkillManifest(
   if ((await realpath(base)) !== base)
     throw new Error("Worker assignment storage cannot use symlinked paths");
   const target = join(base,manifest.workerId+".json");
-  const bytes = JSON.stringify(manifest,null,2)+"\n";
+  const stored=secret
+    ? {version:2,manifest,mac:assignmentMac(manifest,secret)}
+    : manifest;
+  const bytes = JSON.stringify(stored,null,2)+"\n";
   const temp = target+"."+randomUUID()+".tmp";
   try {
     await writeFile(temp,bytes,{flag:"wx",mode:0o600});
@@ -254,13 +264,31 @@ export async function saveWorkerSkillManifest(
 }
 export async function readWorkerSkillManifest(
   root: string, task: {repo:string;issue:number}, workerId:string,
+  secret?: string,
 ): Promise<ResolvedWorkerSkills> {
   if (!REPO.test(task.repo) || !Number.isSafeInteger(task.issue) || task.issue<1 ||
       !/^[A-Za-z0-9_-]{1,100}$/.test(workerId))
     throw new Error("Invalid worker skill assignment reference");
   const path = join(await realpath(root),".devos","skills","assignments",
     encodeURIComponent(task.repo),String(task.issue),workerId+".json");
-  const manifest = JSON.parse(await readFile(path,"utf8")) as ResolvedWorkerSkills;
+  const stored:unknown=JSON.parse(await readFile(path,"utf8"));
+  if (!stored || typeof stored!=="object" || Array.isArray(stored))
+    throw new Error("Invalid worker skill assignment data");
+  const obj=stored as Record<string,unknown>;
+  let manifest:ResolvedWorkerSkills;
+  if (secret) {
+    if (obj.version!==2 || !obj.manifest ||
+        typeof obj.mac!=="string" || !/^[a-f0-9]{64}$/.test(obj.mac))
+      throw new Error("Signed worker skill assignment required for browser delivery");
+    manifest=obj.manifest as ResolvedWorkerSkills;
+    const expected=assignmentMac(manifest,secret);
+    if (!timingSafeEqual(Buffer.from(expected,"hex"),Buffer.from(obj.mac,"hex")))
+      throw new Error("Worker skill assignment MAC integrity failure");
+  } else {
+    if (obj.version===2)
+      throw new Error("Signed worker skill assignment requires owner verification");
+    manifest=stored as ResolvedWorkerSkills;
+  }
   if (manifest.task.repo!==task.repo || manifest.task.issue!==task.issue ||
       manifest.workerId!==workerId || manifest.version!==1)
     throw new Error("Worker skill assignment identity mismatch");

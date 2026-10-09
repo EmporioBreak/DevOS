@@ -358,7 +358,7 @@ export async function startGateway(options: {
     failureReported = true;
     options.onFailure?.("desktop_commander");
   };
-  const localTools = new DevosToolRegistry(options.root);
+  const localTools = new DevosToolRegistry(options.root, options.ownerSecret);
   const chatAccess = new ChatAccessRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
   const chatApproval = new ChatApprovalTickets(
     options.chatAccessRoot ?? options.root, chatAccess, undefined,
@@ -804,6 +804,10 @@ export async function startGateway(options: {
                   localTools.has(forwardedRequest.params.name)) {
                 forwardedRequestPromise = localTools.call(
                   forwardedRequest.params.name, forwardedRequest.params.arguments,
+                  // Never derive this identity from model-provided tool arguments.
+                  // The registry checks the signed grant, the task lock and
+                  // the live active worker state on every call.
+                  workerGrants.activeIdentity(fingerprint),
                 );
               } else if (forwardedRequest.method === "tools/call" &&
                          typeof forwardedRequest.params?.name === "string" &&

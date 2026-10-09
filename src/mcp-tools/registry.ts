@@ -8,6 +8,7 @@ import type { WorkerStatus } from "../workflow.js";
 import { readSkillPolicy, policyFingerprint, updateSkillPreference, writeSkillPolicy } from "../skill-policy.js";
 import { parseSkillLibrary } from "../skills-library.js";
 import { SKILL_POLICY_WIDGET_URI } from "../skill-policy-widget.js";
+import { BrowserSkillDelivery, type VerifiedWorkerIdentity } from "../browser-skill-delivery.js";
 
 const REPORT_STATUSES = new Set<WorkerStatus>([
   "done", "approved", "changes_requested", "needs_local_worker", "failed",
@@ -49,6 +50,30 @@ function exactKeys(args: Arguments, allowed: string[]) {
 }
 
 export const DEVOS_TOOLS = [
+  {
+    name: "devos_skill_manifest",
+    title: "List skills assigned to this DevOS browser worker",
+    description: "Read the exact pinned skill list for this active verified DevOS browser worker. Identity comes from the server's host-confirmed chat grant, never tool arguments. An ordinary owner chat cannot impersonate a worker.",
+    inputSchema: {type:"object",properties:{},additionalProperties:false},
+    annotations: {readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+  },
+  {
+    name: "devos_skill_search",
+    title: "Search this worker's assigned DevOS skills",
+    description: "Search only pinned skills assigned to the current verified browser worker; cannot enumerate other projects or workers.",
+    inputSchema: {type:"object",properties:{query:{type:"string",maxLength:120}},
+      required:["query"],additionalProperties:false},
+    annotations: {readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+  },
+  {
+    name: "devos_skill_read",
+    title: "Read an assigned pinned DevOS skill resource",
+    description: "Read SKILL.md or named references/scripts/assets of a skill already assigned to this verified browser worker. Strict SHA-256 and path checks; returns read-only resources, never executes scripts.",
+    inputSchema: {type:"object",properties:{
+      skill_id:{type:"string"},resource:{type:"string"},
+    },required:["skill_id","resource"],additionalProperties:false},
+    annotations: {readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+  },
   {
     name: "devos_skill_policy_get",
     title: "DevOS skill preferences",
@@ -118,7 +143,7 @@ export const DEVOS_TOOLS = [
 ] as const;
 
 export class DevosToolRegistry {
-  constructor(private readonly root: string) {}
+  constructor(private readonly root: string, private readonly ownerSecret?: string) {}
 
   has(name: string): boolean {
     return DEVOS_TOOLS.some(tool => tool.name === name);
@@ -171,10 +196,33 @@ export class DevosToolRegistry {
     throw new Error("MCP report observer stopped");
   }
 
-  async call(name: string, argumentsValue: unknown): Promise<ToolResult> {
+  async call(
+    name: string, argumentsValue: unknown,
+    trustedWorker?: VerifiedWorkerIdentity | null,
+  ): Promise<ToolResult> {
     if (!this.has(name)) throw new Error("Unknown DevOS tool");
     try {
       const args = input(argumentsValue);
+      if (name === "devos_skill_manifest" || name === "devos_skill_search" ||
+          name === "devos_skill_read") {
+        if (!trustedWorker)
+          throw new Error("Skill access requires a server-verified active DevOS worker grant");
+        if (!this.ownerSecret) throw new Error("Server owner secret required for pinned browser skills");
+        const delivery = new BrowserSkillDelivery(this.root,this.ownerSecret);
+        if (name === "devos_skill_manifest") {
+          exactKeys(args, []);
+          return textResult({skills:await delivery.list(trustedWorker)});
+        }
+        if (name === "devos_skill_search") {
+          exactKeys(args, ["query"]);
+          if (typeof args.query !== "string") throw new Error("Invalid skill search query");
+          return textResult({skills:await delivery.search(trustedWorker,args.query)});
+        }
+        exactKeys(args, ["skill_id","resource"]);
+        if (typeof args.skill_id !== "string" || typeof args.resource !== "string")
+          throw new Error("Invalid pinned skill resource request");
+        return textResult(await delivery.read(trustedWorker,args.skill_id,args.resource));
+      }
       if (name === "devos_skill_policy_get" || name === "devos_skill_policy_set") {
         const catalog = parseSkillLibrary(JSON.parse(
           await readFile(join(this.root, "config", "devos-skills.json"), "utf8")));
