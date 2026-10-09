@@ -4,7 +4,7 @@
 import {readFile} from "node:fs/promises";
 import {homedir} from "node:os";
 import {join} from "node:path";
-import {Camoufox,getRandomPreset} from "@camoufox/camoufox";
+import {launchVisibleStagingCamoufox} from "./staging-headed-launch.js";
 
 const staging=process.env.DEVOS_STAGING_ROOT;
 if(!staging || !staging.endsWith("/DevOS-staging"))
@@ -17,10 +17,7 @@ if(typeof target!=="string"||!/^https:\/\/chatgpt\.com\/g\/g-[^/]+(?:\/.*)?$/.te
 const profile=join(homedir(),".devos-staging","camoufox-profile");
 let context;
 try{
- const preset=getRandomPreset("macos");
- if(!preset)throw new Error("Missing bundled Camoufox fingerprint preset");
- context=await Camoufox({user_data_dir:profile,persistent_context:true,
-   fingerprint_preset:preset,headless:true,timeout:20000});
+ context=await launchVisibleStagingCamoufox(profile,20000);
  const page=context.pages()[0]??await context.newPage();
  const response=await page.goto(target,{waitUntil:"domcontentloaded",timeout:30000});
  await page.waitForTimeout(2500);
