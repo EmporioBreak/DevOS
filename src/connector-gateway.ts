@@ -595,12 +595,27 @@ export async function startGateway(options: {
               }
               if (!authorized) {
                 const issued = chatApproval.issue(fingerprint);
-                return {
-                  ...deniedChatToolResult(),
-                  structuredContent: issued,
-                  _meta: { ui: { resourceUri: CHAT_APPROVAL_WIDGET_URI },
-                    "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI },
-                };
+                // On iOS a tool result marked isError is not rendered as an
+                // MCP App, even with a UI template. Report a *successful*
+                // protocol response describing a denied operation instead.
+                // The requested command is NEVER forwarded on this path.
+                if (issued.ready) {
+                  const result = {
+                    status: "authorization_required",
+                    operation_executed: false,
+                    ...issued,
+                  };
+                  return {
+                    content: [{ type: "text", text:
+                      "Authorization required; the requested DevOS operation was NOT executed. " +
+                      "Complete the attached inline approval form to continue; " +
+                      "never send a password in chat or visit plugin settings." }],
+                    structuredContent: result,
+                    _meta: { ui: { resourceUri: CHAT_APPROVAL_WIDGET_URI },
+                      "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI },
+                  };
+                }
+                return deniedChatToolResult();
               }
             } else if (request.method === "resources/list") {
               return { resources: [{
@@ -806,16 +821,30 @@ export async function startGateway(options: {
                             ? annotations.openWorldHint
                             : !readOnly,
                       },
-                      // Desktop Commander's local UI metadata is meant for its
-                      // own host surfaces. Do not make ChatGPT scan those
-                      // resources when this connector only needs remote tools.
+                      // For an unapproved ChatGPT conversation, the first
+                      // requested operation itself has an approval UI. Host
+                      // clients choose widgets from tools/list metadata, not
+                      // from an error response's metadata alone.
                       _meta: {
+                        ...(!authorized ? {
+                          ui: { resourceUri: CHAT_APPROVAL_WIDGET_URI },
+                          "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI,
+                        } : {}),
                         securitySchemes: [
                           { type: "oauth2", scopes: ["mcp:tools"] },
                         ],
                       },
                     };
-                  }), ...localTools.list(), CHAT_NOOP_TOOL, CHAT_APPROVAL_WIDGET_TOOL, CHAT_WORKER_PROBE_TOOL],
+                  }), ...localTools.list().map(tool => ({
+                    ...tool,
+                    ...(!authorized ? {
+                      _meta: {
+                        ...(tool._meta ?? {}),
+                        ui: { resourceUri: CHAT_APPROVAL_WIDGET_URI },
+                        "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI,
+                      },
+                    } : {}),
+                  })), CHAT_NOOP_TOOL, CHAT_APPROVAL_WIDGET_TOOL, CHAT_WORKER_PROBE_TOOL],
               };
             }
             return result;

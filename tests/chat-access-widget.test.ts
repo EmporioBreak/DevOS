@@ -99,6 +99,13 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
       assert.ok(descriptor);
       assert.equal((descriptor as any)._meta?.ui?.resourceUri, CHAT_APPROVAL_WIDGET_URI);
       assert.ok(tools.some(t => t.name === "devos_noop"));
+      for (const name of ["read_file", "start_process", "devos_task_status"]) {
+        const tool = tools.find(t => t.name === name) as any;
+        assert.ok(tool, name + " listed");
+        assert.equal(tool._meta?.ui?.resourceUri, CHAT_APPROVAL_WIDGET_URI,
+          "unapproved " + name + " must advertise the inline form on the first call");
+        assert.equal(tool._meta?.["openai/outputTemplate"], CHAT_APPROVAL_WIDGET_URI);
+      }
 
       const list = await client.listResources();
       assert.ok(list.resources.some(r => r.uri === CHAT_APPROVAL_WIDGET_URI));
@@ -114,7 +121,9 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
       assert.equal((initialPreflight as any).structuredContent?.ready, true,
         "one safe MCP call must include widget ticket without a separate authorization tool");
       const blocked = await client.callTool({ name: "get_config", arguments: {} });
-      assert.equal(blocked.isError, true);
+      assert.notEqual(blocked.isError, true, "iOS must render the approval widget instead of an MCP error");
+      assert.equal((blocked as any).structuredContent?.status, "authorization_required");
+      assert.equal((blocked as any).structuredContent?.operation_executed, false);
       assert.equal((blocked as any).structuredContent?.ready, true,
         "a denied operational tool should also return an approval ticket");
       assert.equal((blocked as any)._meta?.ui?.resourceUri, CHAT_APPROVAL_WIDGET_URI);
@@ -152,6 +161,9 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
 
       assert.notEqual((await client.callTool({ name: "get_config", arguments: {} })).isError, true,
         "approved mobile share session can now call original Desktop Commander");
+      const approvedListed = (await client.listTools()).tools as any[];
+      assert.equal(approvedListed.find(t => t.name === "read_file")?._meta?.ui, undefined,
+        "authorized tools must not keep displaying approval widget");
       const already = await client.callTool({ name: "devos_noop", arguments: {} });
       assert.equal((already as any).structuredContent?.approved, true);
       assert.equal((already as any).structuredContent?.reason, "already_authorized");
@@ -160,12 +172,16 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
       await second.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
         requestInit: { headers: { ...auth, "x-openai-session": "widget-chat-session-B" } },
       }) as Transport);
-      assert.equal((await second.callTool({ name: "get_config", arguments: {} })).isError, true);
+      const deniedSecond = await second.callTool({ name: "get_config", arguments: {} });
+      assert.equal((deniedSecond as any).structuredContent?.status, "authorization_required");
+      assert.equal((deniedSecond as any).structuredContent?.operation_executed, false);
       const ref = payload(await second.callTool({ name: "devos_authorize_chat", arguments: {} })) as any;
       assert.equal(ref.ready, true);
       assert.notEqual(ref.ticket, challenge.ticket);
       assert.equal((await submit(ref.ticket, "wrong-secret")).status, 403);
-      assert.equal((await second.callTool({ name: "get_config", arguments: {} })).isError, true);
+      const stillDenied = await second.callTool({ name: "get_config", arguments: {} });
+      assert.equal((stillDenied as any).structuredContent?.status, "authorization_required");
+      assert.equal((stillDenied as any).structuredContent?.operation_executed, false);
 
       const missing = new Client({ name:"missing-session", version:"1" }, {capabilities:{}});
       try {

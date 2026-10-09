@@ -164,5 +164,5 @@ export function noOpResult(reference?: string, approved = false) {
 }
 
 export function deniedChatToolResult() {
-  return { isError: true, content: [{ type: "text" as const, text: "DevOS tools are not authorized for this ChatGPT conversation." }] };
+  return { isError: true, content: [{ type: "text" as const, text: "DevOS tools are not authorized for this ChatGPT conversation. Open the approval form attached to this tool result (or call devos_authorize_chat with empty arguments). Do not send the user to ChatGPT plugin settings, and do not ask them to paste a password in chat. No operation was performed." }] };
 }
