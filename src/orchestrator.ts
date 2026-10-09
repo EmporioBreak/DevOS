@@ -303,6 +303,10 @@ export class Orchestrator {
               ? "\n\nDevOS browser attempt ID: " + state.activeReport!.tokenHash + ". This is a non-secret correlation identifier; do not repeat it in your final answer or GitHub comments."
               : ""),
           workerId: worker.id,
+          ...(worker.executor === "codex" ? {
+            codexSkills: { task: activeWorkflow.task, workerId: worker.id,
+              mandatory: false /* #144 enables required prelaunch manifests */ },
+          } : {}),
           ...(worker.executor === "chatgpt_browser"
             ? {
                 knownBrowserSessions: knownBrowserSessions!,
@@ -347,6 +351,9 @@ export class Orchestrator {
           output = await executor.run({
             projectRoot: this.options.projectRoot,
             prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot),
+            workerId: worker.id,
+            codexSkills: { task: activeWorkflow.task, workerId: worker.id,
+              mandatory: false /* #144 enables required prelaunch manifests */ },
             onSession,
           });
         } else if (

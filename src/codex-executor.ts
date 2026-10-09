@@ -2,6 +2,7 @@ import type { CommandRunner } from "./command-runner.js";
 import type { Executor, WorkerRequest } from "./executor.js";
 import type { WorkerOutput } from "./workflow.js";
 import { parseDevosResult } from "./result.js";
+import { prepareCodexSkills } from "./codex-skills.js";
 
 export class CodexResumeUnavailableError extends Error {
   readonly safeToRetryFresh = true;
@@ -36,6 +37,8 @@ export class CodexExecutor implements Executor {
   ) {}
 
   async run(request: WorkerRequest): Promise<WorkerOutput> {
+    if (request.codexSkills)
+      await prepareCodexSkills(request.projectRoot, request.codexSkills);
     const args = request.sessionId
       ? buildCodexResumeArgs(
           request.projectRoot,
