@@ -19,7 +19,7 @@ import { ConnectorAuth } from "./connector-auth.js";
 import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./desktop-commander-integration.js";
 import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { ChatAccessRegistry, CHAT_NOOP_TOOL, chatSessionSignal, noOpResult, deniedChatToolResult } from "./chat-access.js";
-import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_URI, chatApprovalWidget, externalChatApprovalForm, CHAT_PREVIOUS_APPROVAL_WIDGET_URI } from "./chat-access-widget.js";
+import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_URI, chatApprovalWidget, externalChatApprovalForm, CHAT_PREVIOUS_APPROVAL_WIDGET_URI, CHAT_CACHED_APPROVAL_WIDGET_URI } from "./chat-access-widget.js";
 import { ChatWorkerProbeRegistry, CHAT_WORKER_PROBE_TOOL } from "./chat-worker-probe.js";
 import { ChatWorkerGrantRegistry } from "./chat-worker-grants.js";
 import { watchChatAccessRevocation } from "./chat-authorization-watch.js";
@@ -693,7 +693,8 @@ export async function startGateway(options: {
               }] };
             } else if (request.method === "resources/read" &&
                        (request.params?.uri === CHAT_APPROVAL_WIDGET_URI ||
-                        request.params?.uri === CHAT_PREVIOUS_APPROVAL_WIDGET_URI)) {
+                        request.params?.uri === CHAT_PREVIOUS_APPROVAL_WIDGET_URI ||
+                        request.params?.uri === CHAT_CACHED_APPROVAL_WIDGET_URI)) {
               if (!identity) throw new Error("Connector public origin unavailable");
               const html = chatApprovalWidget(identity.origin);
               return { contents: [{

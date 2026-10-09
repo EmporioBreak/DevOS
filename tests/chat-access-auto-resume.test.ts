@@ -6,7 +6,7 @@ import { chatApprovalWidget } from "../src/chat-access-widget.js";
 type HostOptions = {
   standard: "supported" | "unsupported" | "denied" | "refusedResult";
   hostMessage?: boolean;
-  toolOutput?: Record<string, unknown>;
+  toolOutput?: Record<string, unknown> | null;
   approved: boolean;
   standardOnly?: boolean;
   pendingOnCheck?: boolean;
@@ -75,9 +75,9 @@ async function exerciseHost({ standard, approved, standardOnly = false,
   const window = {
     parent,
     openai: standardOnly ? undefined : {
-      toolOutput: toolOutput || (alreadyAuthorized
+      toolOutput: toolOutput === undefined ? (alreadyAuthorized
         ? { approved: true, reason: "already_authorized" }
-        : { ready: true, ticket: "a".repeat(32) }),
+        : { ready: true, ticket: "a".repeat(32) }) : toolOutput,
       sendFollowUpMessage: async (msg: any) => { alias.push(msg); },
     },
     addEventListener(name: string, fn: (e: unknown) => void) {
@@ -249,4 +249,17 @@ test("already-authorized explicit helper renders informative text, not a blank c
   assert.equal(h.elements.get("approval-panel").hidden, false);
   assert.equal(h.elements.get("auth").hidden, true);
   assert.match(h.elements.get("message").textContent, /уже разрешён/);
+});
+
+test("iOS host without toolOutput displays fallback instructions, never password fields", async () => {
+  const html = chatApprovalWidget("https://devos.example");
+  assert.match(html, /<main id="approval-panel">/);
+  assert.match(html, /<form id="auth" hidden>/);
+  assert.match(html, /Ожидание данных авторизации от ChatGPT/);
+  const h = await exerciseHost({ standard: "unsupported", approved: false,
+    toolOutput: null, noSubmit: true });
+  assert.equal(h.elements.get("approval-panel").hidden, false);
+  assert.equal(h.elements.get("auth").hidden, true);
+  assert.match(h.elements.get("message").textContent, /Safari/);
+  assert.equal(h.http.length, 0, "unknown ticket must never trigger a network call");
 });

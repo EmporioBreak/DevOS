@@ -82,7 +82,9 @@ test("chat password accepts 1 UTF-8 byte and rejects empty or over-limit values"
 test("approval widget contains only public HTTPS endpoint and direct fetch", () => {
   const html = chatApprovalWidget("https://devos.example");
   assert.ok(html.includes("https://devos.example/chat-access/approve"));
-  assert.match(html, /<main id="approval-panel" hidden>/);
+  assert.match(html, /<main id="approval-panel">/);
+  assert.match(html, /<form id="auth" hidden>/);
+  assert.match(html, /Ожидание данных авторизации от ChatGPT/);
   assert.match(html, /chat-access\/check/);
   assert.match(html, /type="password"/);
   assert.match(html, /Разрешить и продолжить/);
@@ -93,7 +95,7 @@ test("approval widget contains only public HTTPS endpoint and direct fetch", () 
   assert.ok(html.includes("sendFollowUpMessage"));
   assert.ok(html.includes('"ui/message"'));
   assert.ok(html.includes('"ui/initialize"'));
-  assert.equal(CHAT_APPROVAL_WIDGET_URI, "ui://devos/chat-approval-v3.html");
+  assert.equal(CHAT_APPROVAL_WIDGET_URI, "ui://devos/chat-approval-v4.html");
   assert.ok(!html.includes("sendFollowUpMessage({ prompt: password"));
   assert.match(html, /share\/…/);
 });
@@ -258,6 +260,8 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
       const helperAlready = payload(await client.callTool({ name: "devos_authorize_chat", arguments: {} })) as any;
       assert.equal(helperAlready.status, "already_authorized");
       assert.equal(helperAlready.approved, true);
+      const cachedV3 = await client.readResource({ uri: "ui://devos/chat-approval-v3.html" });
+      assert.equal(cachedV3.contents[0]?.uri, "ui://devos/chat-approval-v3.html");
       const oldResource = await client.readResource({
         uri: "ui://devos/chat-approval-v2.html",
       });

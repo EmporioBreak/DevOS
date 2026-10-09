@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { ChatAccessRegistry } from "./chat-access.js";
 import { parseEnvFile } from "./connector-env.js";
 
-export const CHAT_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v3.html";
+export const CHAT_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v4.html";
 export const CHAT_PREVIOUS_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v2.html";
+export const CHAT_CACHED_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v3.html";
 export const CHAT_APPROVAL_WIDGET_TOOL = {
   name: "devos_authorize_chat",
   title: "Authorize this ChatGPT chat",
@@ -134,7 +135,8 @@ export function chatApprovalWidget(origin: string): string {
 <html lang="ru">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-body{font:14px system-ui,sans-serif;margin:0;padding:16px;color:inherit}
+:root{color-scheme:light dark}
+body{font:14px system-ui,sans-serif;margin:0;padding:16px;color:CanvasText;background:Canvas}
 h3{font-size:16px;margin:0 0 10px}
 label{display:block;margin:12px 0 4px}
 input{width:100%;box-sizing:border-box;font:inherit;padding:10px;border:1px solid #888;border-radius:9px;background:transparent;color:inherit}
@@ -143,10 +145,10 @@ button{font:inherit;font-weight:600;padding:10px 14px;margin-top:14px;border:1px
 small{color:inherit;opacity:.75}
 </style></head>
 <body>
-<main id="approval-panel" hidden>
+<main id="approval-panel">
 <h3>DevOS — разрешить этот чат</h3>
 <small>Принимаются ссылки /c/ и /share/ из мобильного ChatGPT. Ссылка /share/ публичная: доступ к Mac определяется паролем и MCP-сессией, а не владением этой ссылкой. Пароль отправляется напрямую в DevOS.</small>
-<form id="auth">
+<form id="auth" hidden>
 <label for="chaturl">Ссылка на чат из ChatGPT</label>
 <input id="chaturl" type="url" inputmode="url" autocomplete="off" spellcheck="false"
   required placeholder="https://chatgpt.com/share/… или /c/…" />
@@ -154,7 +156,7 @@ small{color:inherit;opacity:.75}
 <input id="password" type="password" autocomplete="off" required />
 <button id="go" type="submit">Разрешить и продолжить</button>
 </form>
-<div id="message" role="status" aria-live="polite"></div>
+<div id="message" role="status" aria-live="polite">Ожидание данных авторизации от ChatGPT… Если форма не появляется, открой ссылку Safari из ответа ассистента. Пароль в чат не отправляй.</div>
 <a id="approval-fallback" hidden target="_blank" rel="noopener noreferrer">Открыть форму в Safari</a>
 </main>
 <script>
@@ -273,14 +275,19 @@ async function refresh() {
   form.hidden = true;
   panel.hidden = true;
   fallback.hidden = true;
-  // An explicitly invoked helper should never produce an empty black card.
-  // Cached ordinary-tool responses still stay hidden.
+  // iOS may render the MCP App without delivering toolOutput. Never show
+  // an empty iframe or expose an unbound password form in that case.
+  if (!result) {
+    panel.hidden = false;
+    out.textContent = "ChatGPT не передал форме данные авторизации. Открой ссылку Safari из ответа ассистента. Пароль в чат не отправляй.";
+    return;
+  }
   if (result?.status === "already_authorized") {
     panel.hidden = false;
     out.textContent = "Доступ к Mac уже разрешён для этого чата.";
     return;
   }
-  if (!result || result.approved === true || result.reason === "already_authorized")
+  if (result.approved === true || result.reason === "already_authorized")
     return;
   const ticket = result.ticket;
   if (result.ready === true && typeof ticket === "string" &&
