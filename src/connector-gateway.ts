@@ -632,7 +632,7 @@ export async function startGateway(options: {
                   return {
                     content: [{ type: "text", text:
                       "Authorization required; the requested DevOS operation was NOT executed. " +
-                      "Open the attached inline approval form. If the ChatGPT mobile app does not show it, open this secure DevOS form in Safari: " +
+                      "Open the attached inline approval form. On successful approval it asks ChatGPT to continue the original task automatically; do not tell the user to write 'Готово'. If the mobile app does not show the form, use this DevOS Safari link: " +
                       (identity ? new URL("/chat-access/form", identity).href + "#" + issued.ticket : "") +
                       " . The operation was NOT executed; never put a password into chat or plugin settings." }],
                     structuredContent: result,

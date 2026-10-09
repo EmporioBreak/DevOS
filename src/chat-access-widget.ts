@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { ChatAccessRegistry } from "./chat-access.js";
 import { parseEnvFile } from "./connector-env.js";
 
-export const CHAT_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v1.html";
+export const CHAT_APPROVAL_WIDGET_URI = "ui://devos/chat-approval-v2.html";
 export const CHAT_APPROVAL_WIDGET_TOOL = {
   name: "devos_authorize_chat",
   title: "Authorize this ChatGPT chat",
@@ -122,7 +122,7 @@ small{color:inherit;opacity:.75}
   required placeholder="https://chatgpt.com/share/… или /c/…" />
 <label for="password">Пароль авторизации DevOS</label>
 <input id="password" type="password" autocomplete="off" required />
-<button id="go" type="submit">Разрешить этот чат</button>
+<button id="go" type="submit">Разрешить и продолжить</button>
 </form>
 <div id="message" role="status" aria-live="polite"></div>
 <script>
@@ -131,7 +131,55 @@ const endpoint = ${endpoint};
 const out = document.getElementById("message");
 const form = document.getElementById("auth");
 let activeTicket = null;
+
+// Prefer the standard MCP Apps bridge. On some native iOS releases the
+// ChatGPT compatibility alias sendFollowUpMessage resolves without actually
+// continuing the chat. ui/message is the portable, acknowledged alternative.
+// Negotiate before the user submits; never try BOTH transports for one grant.
+const pendingBridge = new Map();
+let bridgeReady = false;
+let standardToolOutput = null;
+let bridgeRequestId = 0;
+window.addEventListener("message", event => {
+  if (event.source !== window.parent || event.data?.jsonrpc !== "2.0") return;
+  const message = event.data;
+  if (message.method === "ui/notifications/tool-result") {
+    standardToolOutput = message.params?.structuredContent || null;
+    refresh();
+    return;
+  }
+  if (!pendingBridge.has(message.id)) return;
+  const pending = pendingBridge.get(message.id);
+  pendingBridge.delete(message.id);
+  clearTimeout(pending.timer);
+  if (message.error) pending.reject(new Error("Host rejected MCP Apps request"));
+  else pending.resolve(message.result);
+});
+function bridgeRequest(method, params, timeoutMs) {
+  const id = "devos-approval-" + (++bridgeRequestId);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingBridge.delete(id);
+      reject(new Error("Host MCP Apps bridge unavailable"));
+    }, timeoutMs);
+    pendingBridge.set(id, { resolve, reject, timer });
+    window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+  });
+}
+// Handshake result, not the presence of postMessage, proves standard support.
+void bridgeRequest("ui/initialize", {
+  protocolVersion: "2026-01-26",
+  appInfo: { name: "devos-chat-approval", version: "2.0.0" },
+  appCapabilities: { availableDisplayModes: ["inline"] }
+}, 2500).then(() => {
+  bridgeReady = true;
+  window.parent.postMessage({
+    jsonrpc: "2.0", method: "ui/notifications/initialized"
+  }, "*");
+}).catch(() => { /* ChatGPT compatibility globals may still be available. */ });
+
 function readToolOutput() {
+  if (standardToolOutput) return standardToolOutput;
   const payload = window.openai?.toolOutput;
   if (!payload) return null;
   if (payload.structuredContent && typeof payload.structuredContent === "object")
@@ -191,21 +239,30 @@ form.addEventListener("submit", async function(event) {
     if (!result.approved) throw new Error("approval failed");
     activeTicket = null;
     form.hidden = true;
-    out.textContent = "Чат разрешён. Продолжаем исходную задачу…";
-    // Never send the password or the share URL to the model.
-    // A supported ChatGPT host may automatically continue the user-requested
-    // workflow after the one user confirmation, without another typed turn.
-    if (typeof window.openai?.sendFollowUpMessage === "function") {
-      try {
+    out.textContent = "Доступ разрешён. Передаём подтверждение в ChatGPT…";
+    // The initial Mac operation was denied and never queued. The host alone
+    // decides whether to start the original workflow in a new model turn.
+    // Never forward a password, a ticket or a conversation URL to the model.
+    const resumePrompt = "Доступ DevOS к этому чату успешно подтверждён. Без дополнительных вопросов продолжи последнее запрошенное мной действие с DevOS/Desktop Commander. Не повторяй авторизацию.";
+    try {
+      if (bridgeReady) {
+        // Standard MCP Apps request provides explicit success/error response.
+        await bridgeRequest("ui/message", {
+          role: "user", content: [{ type: "text", text: resumePrompt }]
+        }, 5000);
+      } else if (typeof window.openai?.sendFollowUpMessage === "function") {
+        // Use compatibility path only if the standard handshake did NOT work.
         await window.openai.sendFollowUpMessage({
-          prompt: "Авторизация MCP DevOS в этом чате подтверждена. Продолжи мой исходный запрос, который привёл к форме, без повторного запроса пароля или ссылки.",
-          scrollToBottom: true
+          prompt: resumePrompt, scrollToBottom: true
         });
-      } catch {
-        out.textContent = "Доступ разрешён. Автопродолжение недоступно в этом клиенте — повтори исходное действие.";
+      } else {
+        throw new Error("No host continuation capability");
       }
-    } else {
-      out.textContent = "Доступ разрешён. Этот клиент не поддерживает автоматическое продолжение — повтори исходное действие.";
+      out.textContent = "Подтверждение отправлено в ChatGPT. Ожидаем продолжения исходного запроса…";
+    } catch {
+      // Do not retry through the other method after sending: an ack can be
+      // lost even if the host started processing, causing duplicate actions.
+      out.textContent = "Доступ разрешён, но ChatGPT не подтвердил продолжение. Если ответ не появится, повтори исходный запрос один раз.";
     }
   } catch {
     out.textContent = "Нет связи с DevOS. Пароль не сохранён — повтори попытку.";

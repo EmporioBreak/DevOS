@@ -23,8 +23,14 @@ requiring the owner to ask for a separate `devos_authorize_chat` call.
 When a normal DevOS/Desktop Commander tool returns `authorization_required`,
 the requested operation has not run. Its inline form must be displayed directly;
 do not send the user to plugin settings, do not claim the app is disconnected,
-and do not tell them to type another message. The widget may continue the
-original request after successful approval, if the host supports it.
+and do not tell them to type another message. The widget sends exactly ONE auto-continuation request to ChatGPT after
+successful approval: standard MCP Apps `ui/message` when negotiated, or the
+legacy ChatGPT `sendFollowUpMessage` bridge as a fallback. Do not tell the
+owner to type "Готово" after filling an inline form: the widget itself
+requests continuation. Only if the widget explicitly says the client did
+not confirm the continuation may the user need to retry the original task.
+This continuation is a client capability, not a server guarantee; never
+automatically replay an unapproved, state-changing MCP operation.
 If the client fails to render inline MCP Apps, present the exact
 `approval_url` returned by the denied tool or `devos_noop` as a clickable
 HTTPS link: it opens the standalone DevOS password form in Safari.
