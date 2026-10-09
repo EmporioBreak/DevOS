@@ -47,3 +47,42 @@ npm test
 После положительного теста провести **отдельно** полный Feature / Bugfix / Assess, review/rework, Codex fallback, Web/iOS authorization, live recovery и проверенный приватный backup/restore. Только после этого допустимо обсуждать релизное решение владельца; preflight сам по себе ничего не развёртывает.
 
 Актуальные результаты и блокеры: [Issue #150](https://github.com/EmporioBreak/DevOS/issues/150), [Issue #151](https://github.com/EmporioBreak/DevOS/issues/151), [Issue #152](https://github.com/EmporioBreak/DevOS/issues/152) и [draft PR #189](https://github.com/EmporioBreak/DevOS/pull/189).
+
+## Дополнительная диагностика: тестовый воркер использовал MCP Production
+
+Позднейшая **строго read-only** проверка сохранённого Staging QA-чата
+(никакой повторной отправки) показала в обычной загрузке ChatGPT браузером
+**GET HTTP 200** на `/backend-api/conversations/{id}`. Ответ содержал
+**ровно один настоящий структурированный `devos_worker_probe`**, распознанный
+строгим парсером, и сохранённое совпадение pinned resource. Старый прямой
+HTTP 401 не распространяется на этот успешный браузерный GET.
+
+Обнаружен конфликт сред: локальный pinned `devos_worker_probe` у Production
+и Staging **одинаковый**, хотя публичные OAuth resources разные. Запись
+одноразового запроса существует у **Production** (время записи **15:39:09 UTC**),
+в Staging её нет. QA state Staging обновился в **15:39:06 UTC**.
+Это сильное свидетельство, что браузерный тестовый чат вызвал **основное
+Production-подключение ChatGPT**, а Staging пытался проверить его в собственной
+базе и не мог выдать разрешение. Прямое криптографическое сопоставление
+самого nonce с записью Production не выполнялось, поэтому это наиболее
+вероятная причина, а не формальное доказательство издателя. QA process lock
+теперь указывает на уже завершившийся PID: старый ход без live task owner
+по правилам безопасности **невозможно авторизовать задним числом**.
+
+Перед **любым новым** настоящим Staging worker E2E обязательно выполнить
+чтение локальных установленных binding идентификаторов, **без вывода самих
+идентификаторов**:
+
+```sh
+DEVOS_STAGING_ROOT=/path/to/DevOS-staging \
+  ./node_modules/.bin/tsx scripts/staging-worker-app-preflight.ts
+```
+
+При текущем дублировании возвращается `blocked` с кодом
+`production_tool_identity_reused` и exit `2` — **не запускать воркера**.
+Нужен **отдельный реально подключённый ChatGPT MCP app для Staging** с
+отличающимся installed `devos_worker_probe` resource. Подключение требует
+явного действия владельца ChatGPT; нельзя перезаписывать Production
+resource/pin, копировать чужой OAuth или выдавать grant вручную. Даже при
+`local_identity_separate` проверка сообщает `liveChatGptAppVerified=false`:
+только отдельный live ChatGPT OAuth+MCP smoke подтверждает подключение.
