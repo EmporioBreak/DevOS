@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, renameSync, unlinkSync, writeFileSync, closeSync } from "node:fs";
 import { join } from "node:path";
 
 /** A probe is never an authorization grant. It supplies a server-origin
@@ -19,6 +19,8 @@ const NONCE = /^[a-f0-9]{64}$/;
 const FINGERPRINT = /^chat_[a-f0-9]{64}$/;
 const TTL_MS = 2 * 60_000;
 const MAX_PENDING = 128;
+const MAX_DIRECTORY_ENTRIES = MAX_PENDING * 2;
+const MAX_PENDING_FILE_BYTES = 4096;
 
 export class ChatWorkerProbeRegistry {
   private readonly dir: string;
@@ -38,24 +40,71 @@ export class ChatWorkerProbeRegistry {
   private signed(row: Omit<Pending, "mac">): string {
     return this.hmac("record\0" + JSON.stringify(row));
   }
+  /** Enumerate a bounded catalog. Overflow is ambiguous evidence and fails closed. */
+  private candidateFiles(): string[] | null {
+    let dir;
+    try { dir = opendirSync(this.dir); } catch { return null; }
+    const candidates: string[] = [];
+    let entries = 0;
+    try {
+      while (true) {
+        const entry = dir.readSync();
+        if (!entry) return candidates;
+        if (++entries > MAX_DIRECTORY_ENTRIES) return null;
+        if (/^[a-f0-9]{64}\.json$/.test(entry.name)) {
+          candidates.push(entry.name);
+          if (candidates.length > MAX_PENDING) return null;
+        }
+      }
+    } finally { dir.closeSync(); }
+  }
+  /** Read bounded bytes from an already-open private regular file. Candidate
+   * paths are constructed only from registry-owned names. */
+  private readPendingRecord(path: string): Pending | null {
+    let fd: number | undefined;
+    try {
+      const before = lstatSync(path);
+      if (!before.isFile() || (before.mode & 0o777) !== 0o600 || before.size > MAX_PENDING_FILE_BYTES) return null;
+      fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      const st = fstatSync(fd);
+      if (!st.isFile() || (st.mode & 0o777) !== 0o600 || st.size > MAX_PENDING_FILE_BYTES ||
+          st.dev !== before.dev || st.ino !== before.ino) return null;
+      const bytes = Buffer.alloc(st.size);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const read = readSync(fd, bytes, offset, bytes.length - offset, offset);
+        if (read === 0) return null;
+        offset += read;
+      }
+      const after = fstatSync(fd);
+      if (after.dev !== st.dev || after.ino !== st.ino || after.size !== st.size ||
+          (after.mode & 0o777) !== 0o600) return null;
+      return JSON.parse(bytes.toString("utf8")) as Pending;
+    } catch { return null; }
+    finally { if (fd !== undefined) try { closeSync(fd); } catch {} }
+  }
+  private authentic(row: Pending): boolean {
+    try {
+      const plain = { version: 1 as const, fingerprint: row.fingerprint, issuedAt: row.issuedAt, expiresAt: row.expiresAt };
+      const mac = typeof row.mac === "string" && /^[a-f0-9]{64}$/.test(row.mac) ? Buffer.from(row.mac, "hex") : null;
+      return row.version === 1 && FINGERPRINT.test(row.fingerprint) && Number.isSafeInteger(row.issuedAt) &&
+        Number.isSafeInteger(row.expiresAt) && row.expiresAt - row.issuedAt === TTL_MS && mac !== null &&
+        timingSafeEqual(mac, Buffer.from(this.signed(plain), "hex"));
+    } catch { return false; }
+  }
   /** True only while a private, fresh, HMAC-verified challenge for this exact
    * fingerprint remains on disk. This is a wait hint, never an authorization. */
   hasFreshPending(fingerprint: string | undefined, now = Date.now()): boolean {
     if (!fingerprint || !FINGERPRINT.test(fingerprint)) return false;
     try {
-      const files = readdirSync(this.dir).filter(f => /^[a-f0-9]{64}\.json$/.test(f)).slice(0, MAX_PENDING);
+      const files = this.candidateFiles();
+      if (!files) return false;
       for (const file of files) {
         try {
           const path = join(this.dir, file);
-          const st = lstatSync(path);
-          if (!st.isFile() || (st.mode & 0o077) !== 0 || st.size > 4096) continue;
-          const row = JSON.parse(readFileSync(path, "utf8")) as Pending;
-          const plain = { version: 1 as const, fingerprint: row.fingerprint, issuedAt: row.issuedAt, expiresAt: row.expiresAt };
-          const mac = typeof row.mac === "string" && /^[a-f0-9]{64}$/.test(row.mac) ? Buffer.from(row.mac, "hex") : null;
-          if (row.version === 1 && row.fingerprint === fingerprint && Number.isSafeInteger(row.issuedAt) &&
-              Number.isSafeInteger(row.expiresAt) && row.expiresAt - row.issuedAt === TTL_MS &&
-              now >= row.issuedAt && now < row.expiresAt && mac &&
-              timingSafeEqual(mac, Buffer.from(this.signed(plain), "hex"))) return true;
+          const row = this.readPendingRecord(path);
+          if (row && row.fingerprint === fingerprint && now >= row.issuedAt && now < row.expiresAt &&
+              this.authentic(row)) return true;
         } catch { /* malformed or concurrently claimed evidence is ignored */ }
       }
     } catch { /* missing/inaccessible probe directory means no wait */ }
@@ -66,19 +115,19 @@ export class ChatWorkerProbeRegistry {
     if (!fingerprint || !FINGERPRINT.test(fingerprint))
       return { status: "unavailable" as const };
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    const files = readdirSync(this.dir).filter(f => /^[a-f0-9]{64}\.json$/.test(f));
+    let files = this.candidateFiles();
+    if (!files) return { status: "capacity" as const };
     if (files.length >= MAX_PENDING) {
       for (const file of files) {
         try {
           const path = join(this.dir, file);
-          const st = lstatSync(path);
-          if (!st.isFile() || (st.mode & 0o077) !== 0) continue;
-          const row = JSON.parse(readFileSync(path, "utf8")) as Pending;
-          if (typeof row.expiresAt === "number" && row.expiresAt < now)
+          const row = this.readPendingRecord(path);
+          if (row && this.authentic(row) && row.expiresAt < now)
             unlinkSync(path);
         } catch { /* uncertain evidence is not trusted or reused */ }
       }
-      if (readdirSync(this.dir).filter(f => /^[a-f0-9]{64}\.json$/.test(f)).length >= MAX_PENDING)
+      files = this.candidateFiles();
+      if (!files || files.length >= MAX_PENDING)
         return { status: "capacity" as const };
     }
     const nonce = randomBytes(32).toString("hex");
@@ -96,15 +145,8 @@ export class ChatWorkerProbeRegistry {
     const claimed = source + "." + randomUUID() + ".claimed";
     try { renameSync(source, claimed); } catch { return null; }
     try {
-      const st = lstatSync(claimed);
-      if (!st.isFile() || (st.mode & 0o077) !== 0) return null;
-      const row = JSON.parse(readFileSync(claimed, "utf8")) as Pending;
-      const plain = { version: 1 as const, fingerprint: row.fingerprint, issuedAt: row.issuedAt, expiresAt: row.expiresAt };
-      const mac = typeof row.mac === "string" && /^[a-f0-9]{64}$/.test(row.mac) ? Buffer.from(row.mac, "hex") : null;
-      if (row.version !== 1 || !FINGERPRINT.test(row.fingerprint) || !Number.isSafeInteger(row.issuedAt) ||
-          !Number.isSafeInteger(row.expiresAt) || row.expiresAt - row.issuedAt !== TTL_MS ||
-          now < row.issuedAt || now >= row.expiresAt || !mac ||
-          !timingSafeEqual(mac, Buffer.from(this.signed(plain), "hex"))) return null;
+      const row = this.readPendingRecord(claimed);
+      if (!row || now < row.issuedAt || now >= row.expiresAt || !this.authentic(row)) return null;
       return row.fingerprint;
     } catch { return null; }
     finally { try { unlinkSync(claimed); } catch {} }
