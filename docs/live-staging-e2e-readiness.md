@@ -13,6 +13,7 @@ Date: **2026-10-09**. This is a **partial LIVE probe with an explicit blocker**,
 | Probe | Actual observation | Decision |
 | --- | --- | --- |
 | `tests/live-staging-chatgpt.smoke.ts` — read-only navigation using actual copied Camoufox profile | Camoufox launched; `https://chatgpt.com/` HTTPS origin; configured Project loaded; HTTP **200**; **no login redirect** or challenge; no user/worker message sent | **PASS (navigation only)** |
+| `tests/live-staging-composer.smoke.ts` — read-only composer detection in the same staging Project | **Actual message editor visible**; send button not visible before entering text (not itself evidence of a defect); no message sent | **PASS (editor visibility only)** |
 | `tests/live-browser-worker-transport.smoke.ts` — two benign ChatGPT QA turn plan, same exact Project conversation | The **first turn did not return a confirmed terminal result**; deadline, approximately **116.79 seconds**. It may have submitted. The script did not attempt the second turn. No authenticated original Spec Kit, DevOS worker grant or reviewer chain was exercised | **BLOCKED** |
 | Local Staging one-shot guard | A private `.devos/qa/live-chatgpt-transport-20261009.json` records the ambiguous attempt. The smoke refuses later attempts with `one_shot_sentinel_present` **before browser launch or submit** | **PASS: no unsafe replay** |
 | Production impact | No Production main, ngrok tunnel, active connector, browser profile, ChatGPT authorization store or cookies were intentionally changed | **No migration performed** |
@@ -23,6 +24,7 @@ Date: **2026-10-09**. This is a **partial LIVE probe with an explicit blocker**,
 
 ```sh
 DEVOS_STAGING_ROOT=/path/to/DevOS-staging npx tsx tests/live-staging-chatgpt.smoke.ts
+DEVOS_STAGING_ROOT=/path/to/DevOS-staging npx tsx tests/live-staging-composer.smoke.ts
 ```
 
 The **message-sending** probe is purposefully opt-in and one-shot. The current date's marker exists after the real blocked attempt; invoking it again refuses to send anything:
