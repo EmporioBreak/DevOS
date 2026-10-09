@@ -6,8 +6,9 @@ import { chatApprovalWidget } from "../src/chat-access-widget.js";
 type HostOptions = {
   standard: "supported" | "unsupported" | "denied";
   approved: boolean;
+  standardOnly?: boolean;
 };
-async function exerciseHost({ standard, approved }: HostOptions) {
+async function exerciseHost({ standard, approved, standardOnly = false }: HostOptions) {
   const html = chatApprovalWidget("https://devos.example");
   const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
   assert.ok(script, "inline widget JavaScript is present");
@@ -31,6 +32,12 @@ async function exerciseHost({ standard, approved }: HostOptions) {
           ? { jsonrpc: "2.0", id: value.id, error: { code: -32601, message: "unsupported" } }
           : { jsonrpc: "2.0", id: value.id, result: { hostCapabilities: {} } },
       }));
+      if (standardOnly) queueMicrotask(() => listeners.get("message")?.({
+        source: parent, data: {
+          jsonrpc: "2.0", method: "ui/notifications/tool-result",
+          params: { structuredContent: { ready: true, ticket: "one-time-ticket" } },
+        },
+      }));
     }
     if (value.method === "ui/message") {
       queueMicrotask(() => listeners.get("message")?.({
@@ -42,7 +49,7 @@ async function exerciseHost({ standard, approved }: HostOptions) {
   } };
   const window = {
     parent,
-    openai: {
+    openai: standardOnly ? undefined : {
       toolOutput: { ready: true, ticket: "one-time-ticket" },
       sendFollowUpMessage: async (msg: any) => { alias.push(msg); },
     },
@@ -107,4 +114,11 @@ test("bad password never invokes the host continuation APIs", async () => {
   assert.equal(h.sent.filter(m => m.method === "ui/message").length, 0);
   assert.equal(h.alias.length, 0);
   assert.equal(h.elements.get("auth").hidden, false);
+});
+
+test("standard-only host can initialize and deliver widget ticket without window.openai", async () => {
+  const h = await exerciseHost({ standard: "supported", approved: true, standardOnly: true });
+  assert.equal(h.sent.filter(m => m.method === "ui/message").length, 1);
+  assert.equal(h.alias.length, 0);
+  assert.equal(h.elements.get("auth").hidden, true);
 });
