@@ -15,6 +15,7 @@ import { oauthToken } from "./connector-auth-fixture.js";
 const url = "https://chatgpt.com/c/6ac799bd-7ffc-83eb-b2b0-15d6a2f558a0";
 const owner = "owner-secret-" + randomBytes(32).toString("hex");
 const password = "approval-password-" + randomBytes(32).toString("hex");
+const mobileShareUrl = "https://chatgpt.com/share/6ac864aa-fc90-83ed-8d16-91a75fb01000";
 const payload = (r: any) => r.structuredContent || JSON.parse(r.content[0].text);
 
 test("tickets are bounded, one-use, password-checked and bound to approved chat", async () => {
@@ -138,7 +139,7 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
           Origin: "https://web-sandbox.oaiusercontent.com",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ ticket, password: provided, url }),
+        body: JSON.stringify({ ticket, password: provided, url: mobileShareUrl }),
       });
 
       const invalid = await submit(challenge.ticket, "wrong-secret");
@@ -150,7 +151,10 @@ test("OAuth MCP app renders inline widget and approves by direct HTTPS POST, nev
       assert.equal((await submit(challenge.ticket, password)).status, 403, "no replay");
 
       assert.notEqual((await client.callTool({ name: "get_config", arguments: {} })).isError, true,
-        "approved chat can now call original Desktop Commander");
+        "approved mobile share session can now call original Desktop Commander");
+      const already = await client.callTool({ name: "devos_noop", arguments: {} });
+      assert.equal((already as any).structuredContent?.approved, true);
+      assert.equal((already as any).structuredContent?.reason, "already_authorized");
 
       second = new Client({ name: "unapproved chat", version: "1" }, { capabilities: {} });
       await second.connect(new StreamableHTTPClientTransport(new URL(base + "/mcp"), {

@@ -570,7 +570,12 @@ export async function startGateway(options: {
             const authorized = chatAccess.isApproved(fingerprint) || workerGrants.isGranted(fingerprint);
             if (request.method === "tools/call") {
               if (request.params?.name === CHAT_NOOP_TOOL.name) {
-                if (authorized) return noOpResult(fingerprint, true);
+                if (authorized) return {
+                  ...noOpResult(fingerprint, true),
+                  structuredContent: { status: "no_action", approved: true,
+                    ready: false, reason: "already_authorized",
+                    ...(fingerprint ? { chat_reference: fingerprint } : {}) },
+                };
                 const issued = chatApproval.issue(fingerprint);
                 return {
                   ...noOpResult(fingerprint, false),

@@ -145,6 +145,12 @@ function readToolOutput() {
 function refresh() {
   const result = readToolOutput();
   if (!result) { out.textContent = "Ожидаем ответ DevOS…"; return; }
+  if (result.approved === true || result.reason === "already_authorized") {
+    activeTicket = null;
+    form.hidden = true;
+    out.textContent = "Доступ DevOS уже разрешён для этого чата.";
+    return;
+  }
   if (!result.ready) {
     activeTicket = null;
     form.hidden = true;
