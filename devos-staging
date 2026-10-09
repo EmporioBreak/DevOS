@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+export DEVOS_BROWSER_PROFILE_DIR="${DEVOS_BROWSER_PROFILE_DIR:-$HOME/.devos-staging/camoufox-profile}"
+exec "$ROOT/devos" "$@"

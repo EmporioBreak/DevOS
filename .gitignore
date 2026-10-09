@@ -2,3 +2,4 @@ node_modules/
 dist/
 .devos/
 .env
+.DS_Store

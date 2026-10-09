@@ -1473,3 +1473,28 @@ test("live connector ownership without identity is ambiguous, not stale", () => 
     true,
   );
 });
+
+
+test("cloudflare staging tunnel config and URL validation are fail-closed", () => {
+  assert.deepEqual(connectorModule.connectorConfig({ gatewayPort: 8788, ngrokApiPort: 4042, tunnel: "cloudflare" }), {
+    gatewayPort: 8788, ngrokApiPort: 4042, tunnel: "cloudflare",
+  });
+  assert.deepEqual(connectorModule.connectorConfig({}), {
+    gatewayPort: 8787, ngrokApiPort: 4041,
+  });
+  for (const tunnel of ["", "foo", "trycloudflare.com", null])
+    assert.throws(() => connectorModule.connectorConfig({ tunnel }));
+  assert.equal(connectorModule.cloudflareQuickTunnelUrl(
+    "2026-10-09 INF | https://test-stage-123.trycloudflare.com | OK"
+  ), "https://test-stage-123.trycloudflare.com/");
+  for (const log of [
+    "https://evil.tld",
+    "https://test-stage-123.trycloudflare.com.evil.tld",
+    "https://trycloudflare.com",
+    "no public endpoint",
+  ]) assert.equal(connectorModule.cloudflareQuickTunnelUrl(log), undefined);
+  assert.match(connectorModule.formatConnectorStatus({
+    lifecycle: "healthy", supervisor: "owned", runtimeAlive: true,
+    localHealthy: true, ngrokRegistered: true, tunnel: "cloudflare",
+  }), /cloudflare HTTPS endpoint registered/);
+});
