@@ -66,6 +66,35 @@ test("tampered or wrong-key challenges fail closed", async () => {
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("only a fresh signed pending probe for the exact fingerprint enables bounded waiting", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-worker-pending-"));
+  try {
+    const registry = new ChatWorkerProbeRegistry(root, secret);
+    assert.equal(registry.hasFreshPending(fingerprintA, 10_000), false);
+    const pending = registry.issue(fingerprintA, 10_000);
+    assert.equal(pending.status, "issued");
+    assert.equal(registry.hasFreshPending(fingerprintA, 10_001), true);
+    assert.equal(registry.hasFreshPending(fingerprintB, 10_001), false);
+    assert.equal(registry.hasFreshPending(fingerprintA, 130_000), false, "expired probe must not wait");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("tampered pending probes do not enable waiting", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-worker-pending-tamper-"));
+  try {
+    const registry = new ChatWorkerProbeRegistry(root, secret);
+    const pending = registry.issue(fingerprintA, 20_000);
+    assert.equal(pending.status, "issued");
+    const directory = join(root, ".devos", "connector", "worker-probes");
+    const file = join(directory, (await readdir(directory))[0]!);
+    const row = JSON.parse(await readFile(file, "utf8"));
+    row.fingerprint = fingerprintB;
+    await writeFile(file, JSON.stringify(row));
+    assert.equal(registry.hasFreshPending(fingerprintA, 20_001), false);
+    assert.equal(registry.hasFreshPending(fingerprintB, 20_001), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 function providerTool(result: unknown, resourceUri = uri) {
   return { author: { role: "tool", name: "api_tool.call_tool" }, status: "finished_successfully",
     metadata: { invoked_resource: { resource_uri: resourceUri } },

@@ -38,6 +38,29 @@ export class ChatWorkerProbeRegistry {
   private signed(row: Omit<Pending, "mac">): string {
     return this.hmac("record\0" + JSON.stringify(row));
   }
+  /** True only while a private, fresh, HMAC-verified challenge for this exact
+   * fingerprint remains on disk. This is a wait hint, never an authorization. */
+  hasFreshPending(fingerprint: string | undefined, now = Date.now()): boolean {
+    if (!fingerprint || !FINGERPRINT.test(fingerprint)) return false;
+    try {
+      const files = readdirSync(this.dir).filter(f => /^[a-f0-9]{64}\.json$/.test(f)).slice(0, MAX_PENDING);
+      for (const file of files) {
+        try {
+          const path = join(this.dir, file);
+          const st = lstatSync(path);
+          if (!st.isFile() || (st.mode & 0o077) !== 0 || st.size > 4096) continue;
+          const row = JSON.parse(readFileSync(path, "utf8")) as Pending;
+          const plain = { version: 1 as const, fingerprint: row.fingerprint, issuedAt: row.issuedAt, expiresAt: row.expiresAt };
+          const mac = typeof row.mac === "string" && /^[a-f0-9]{64}$/.test(row.mac) ? Buffer.from(row.mac, "hex") : null;
+          if (row.version === 1 && row.fingerprint === fingerprint && Number.isSafeInteger(row.issuedAt) &&
+              Number.isSafeInteger(row.expiresAt) && row.expiresAt - row.issuedAt === TTL_MS &&
+              now >= row.issuedAt && now < row.expiresAt && mac &&
+              timingSafeEqual(mac, Buffer.from(this.signed(plain), "hex"))) return true;
+        } catch { /* malformed or concurrently claimed evidence is ignored */ }
+      }
+    } catch { /* missing/inaccessible probe directory means no wait */ }
+    return false;
+  }
   /** Safe for any OAuth caller; never reveals session fingerprint or raw session id. */
   issue(fingerprint: string | undefined, now = Date.now()) {
     if (!fingerprint || !FINGERPRINT.test(fingerprint))

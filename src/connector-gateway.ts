@@ -246,6 +246,36 @@ export const CONNECTOR_REQUEST_TIMEOUTS = {
 
 const MAX_PUBLIC_MCP_SESSIONS = 32;
 const MCP_SESSION_EVICTION_CLOSE_TIMEOUT_MS = 1_000;
+const WORKER_GRANT_WAIT_MS = 35_000;
+const WORKER_GRANT_WAIT_POLL_MS = 250;
+const MAX_WORKER_GRANT_WAITERS = 16;
+let workerGrantWaiters = 0;
+
+/** Wait only after an independently validated pending challenge was observed.
+ * The challenge is a hint; only the existing signed grant check can succeed. */
+export async function waitForWorkerGrant(
+  hasFreshPending: () => boolean,
+  isGranted: () => boolean,
+  signal: AbortSignal,
+  timeoutMs = WORKER_GRANT_WAIT_MS,
+): Promise<boolean> {
+  if (!hasFreshPending() || workerGrantWaiters >= MAX_WORKER_GRANT_WAITERS) return false;
+  workerGrantWaiters++;
+  const deadline = Date.now() + Math.min(timeoutMs, WORKER_GRANT_WAIT_MS);
+  try {
+    while (!signal.aborted) {
+      if (isGranted()) return true;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(done, Math.min(WORKER_GRANT_WAIT_POLL_MS, remaining));
+        function done() { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); }
+        signal.addEventListener("abort", done, { once: true });
+      });
+    }
+    return false;
+  } finally { workerGrantWaiters--; }
+}
 
 interface PublicMcpSession {
   transport: StreamableHTTPServerTransport;
@@ -638,6 +668,17 @@ export async function startGateway(options: {
             if (request.method === "tools/call") {
               if (request.params?.name === CHAT_NOOP_TOOL.name) {
                 if (authorized) return {
+                  ...noOpResult(fingerprint, true),
+                  structuredContent: { status: "no_action", approved: true,
+                    ready: false, reason: "already_authorized",
+                    ...(fingerprint ? { chat_reference: fingerprint } : {}) },
+                };
+                const workerAuthorized = fingerprint ? await waitForWorkerGrant(
+                  () => workerProbe.hasFreshPending(fingerprint),
+                  () => chatAccess.isApproved(fingerprint) || workerGrants.isGranted(fingerprint),
+                  extra.signal,
+                ) : false;
+                if (workerAuthorized) return {
                   ...noOpResult(fingerprint, true),
                   structuredContent: { status: "no_action", approved: true,
                     ready: false, reason: "already_authorized",
