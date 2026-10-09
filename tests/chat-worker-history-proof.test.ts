@@ -46,3 +46,70 @@ test("history refuses model text, prior-turn evidence and ambiguous tool results
  assert.equal(exactWorkerHistoryProof(conversation([user("new-msg"),{...good,author:{role:"tool",name:"functions.exec"}}]),url,"new-msg",uri),null);
  assert.equal(exactWorkerHistoryProof(conversation([user("new-msg"),good,user("new-msg")]),url,"new-msg",uri),null);
 });
+
+const linked = (extra: Record<string, unknown> = {}) => ({
+ conversation_id:id,
+ mapping:{
+  root:{parent:null,message:{id:"root",author:{role:"system"}}},
+  previous:{parent:"root",message:user("old-msg")},
+  old_tool:{parent:"previous",message:tool("a".repeat(64))},
+  active:{parent:"old_tool",message:user("new-msg")},
+  analysis:{parent:"active",message:{author:{role:"assistant"},content:{parts:["thinking"]}}},
+  issued:{parent:"analysis",message:tool()},
+  ...extra,
+ },
+});
+test("parent-linked provider mapping accepts only probe underneath the exact active user turn",()=>{
+ const valid=linked();
+ assert.equal(exactWorkerHistoryProof(valid,url,"new-msg",uri),nonce);
+ assert.equal(exactWorkerHistoryProof(valid,url,"old-msg",uri),"a".repeat(64));
+ assert.equal(exactWorkerHistoryProof({...valid,conversation_id:"wrong"},url,"new-msg",uri),null);
+ assert.equal(exactWorkerHistoryProof(valid,url,"absent",uri),null);
+ assert.equal(exactWorkerHistoryProof({...valid,messages:[]},url,"new-msg",uri),null,
+   "contradictory response representations fail closed");
+});
+
+test("mapping denies wrong parent, intervening user, cyclic and missing ancestry",()=>{
+ const disconnected=linked({issued:{parent:"root",message:tool()}});
+ assert.equal(exactWorkerHistoryProof(disconnected,url,"new-msg",uri),null);
+ const interposed=linked({
+   another:{parent:"analysis",message:user("another-msg")},
+   issued:{parent:"another",message:tool()},
+ });
+ assert.equal(exactWorkerHistoryProof(interposed,url,"new-msg",uri),null);
+ const cyclic=linked({
+   issued:{parent:"analysis",message:tool()},
+   analysis:{parent:"issued",message:{author:{role:"assistant"}}},
+ });
+ assert.equal(exactWorkerHistoryProof(cyclic,url,"new-msg",uri),null);
+ const dangling=linked({issued:{parent:"missing",message:tool()}});
+ assert.equal(exactWorkerHistoryProof(dangling,url,"new-msg",uri),null);
+});
+test("mapping does not trust assistant text, tool arguments or competing probes",()=>{
+ const wrongSource=linked({issued:{parent:"analysis",message:{...tool(),author:{role:"assistant"}}}});
+ assert.equal(exactWorkerHistoryProof(wrongSource,url,"new-msg",uri),null);
+ const wrongResource=linked({issued:{parent:"analysis",message:tool(nonce,"/fake/link/devos_worker_probe")}});
+ assert.equal(exactWorkerHistoryProof(wrongResource,url,"new-msg",uri),null);
+ const conflict=linked({other:{parent:"active",message:tool("e".repeat(64))}});
+ assert.equal(exactWorkerHistoryProof(conflict,url,"new-msg",uri),null);
+});
+
+test("mapping uses ancestry regardless of property order and enforces exact conversation identity",()=>{
+ const valid=linked();
+ const shuffled={...valid,mapping:Object.fromEntries(Object.entries(valid.mapping).reverse())};
+ assert.equal(exactWorkerHistoryProof(shuffled,url,"new-msg",uri),nonce);
+ const {conversation_id:ignored,...history}=shuffled;
+ assert.equal(exactWorkerHistoryProof({...history,id},url,"new-msg",uri),nonce,
+   "provider id alias is accepted only when it equals the canonical saved chat");
+ assert.equal(exactWorkerHistoryProof({...shuffled,id:"another-chat"},url,"new-msg",uri),null,
+   "contradictory IDs fail closed");
+});
+test("mapping exact-prompt fallback requires a unique submitted user message",()=>{
+ const prompt="Dedicated worker test\nunique-token=abcdef12345";
+ const exactUser={id:"provider-current",author:{role:"user"},content:{parts:[prompt]}};
+ const valid=linked({active:{parent:"old_tool",message:exactUser}});
+ assert.equal(exactWorkerHistoryProof(valid,url,undefined,uri,prompt),nonce);
+ assert.equal(exactWorkerHistoryProof(valid,url,undefined,uri,prompt+" changed"),null);
+ assert.equal(exactWorkerHistoryProof(linked({active:{parent:"old_tool",message:exactUser},
+   duplicate:{parent:"old_tool",message:exactUser}}),url,undefined,uri,prompt),null);
+});
