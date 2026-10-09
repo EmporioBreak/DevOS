@@ -48,8 +48,12 @@ may be unavailable on some ChatGPT clients; never replay side effects twice.
 Never use `devos_worker_probe` for a manually created main-agent chat: it
 cannot discover the private chat URL, and cannot replace the password/URL
 owner-approval flow. The worker probe is exclusively for DevOS-created workers.
-If not approved, invoke `devos_authorize_chat` only for this MCP workflow to
-show the inline approval form. The owner enters the exact private chat URL and
+When DevOS returns `authorization_pending`, an earlier MCP call already
+created this chat's **one** authorization form. Do not call
+`devos_authorize_chat` again or ask for another confirmation: wait for
+the existing form or show its provided Safari fallback URL. Only call
+`devos_authorize_chat` if no live approval request is pending and the user
+needs an explicit fallback form. The owner enters a supported ChatGPT chat URL and
 the **separate chat-access password** into the widget; the password must
 never appear in prompt text, tool arguments, model output, or GitHub.
 An authenticated local `./devos connector access approve` remains a fallback
