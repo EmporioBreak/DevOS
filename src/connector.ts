@@ -600,6 +600,9 @@ export async function connector(
   action: ConnectorAction,
   root: string,
   ownerLifetime?: Readable,
+  // Direct foreground callers may replace only the retry clock for deterministic
+  // lifecycle tests. The CLI/background runner never supplies this override.
+  supervisorOptions: { sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<void> {
   root = await realpath(root);
   const binary = join(root, ".devos/tools/ngrok"),
@@ -768,6 +771,7 @@ export async function connector(
     await mkdir(dir, { recursive: true, mode: 0o700 });
     await runBoundedConnectorSupervisor({
       signal: abort.signal,
+      ...(supervisorOptions.sleep ? { sleep: supervisorOptions.sleep } : {}),
       onState: persistSupervisorState,
       onHealthy: async ({ publicUrl }) => {
         if (!announcedReady) {
