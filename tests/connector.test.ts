@@ -809,8 +809,8 @@ test("missing auth/runtime, stale version, integrity and early ngrok failure red
       assert.ok(!result.output.includes(fixtureSecret));
       assert.match(result.output, /Missing/);
     }
-    // Keep the real CLI failure, stderr redaction and persisted terminal-state
-    // assertions, but inject an immediate retry clock in this child process.
+    // Keep the real connector failure, subprocess exit status, stderr redaction
+    // and persisted terminal-state assertions, injecting a fast retry clock.
     // The exact five Production delays are asserted without sleeping for 67s.
     const fail = await startWithImmediateRetryClock(f.root).done;
     assert.equal(fail.code, 1);
