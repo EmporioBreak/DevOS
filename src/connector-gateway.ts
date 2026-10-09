@@ -569,8 +569,20 @@ export async function startGateway(options: {
               : undefined;
             const authorized = chatAccess.isApproved(fingerprint) || workerGrants.isGranted(fingerprint);
             if (request.method === "tools/call") {
-              if (request.params?.name === CHAT_NOOP_TOOL.name)
-                return noOpResult(fingerprint, authorized);
+              if (request.params?.name === CHAT_NOOP_TOOL.name) {
+                if (authorized) return {
+                  ...noOpResult(fingerprint, true),
+                  structuredContent: { status: "no_action", approved: true,
+                    ready: false, reason: "already_authorized",
+                    ...(fingerprint ? { chat_reference: fingerprint } : {}) },
+                };
+                const issued = chatApproval.issue(fingerprint);
+                return {
+                  ...noOpResult(fingerprint, false),
+                  structuredContent: { status: "no_action", approved: false,
+                    ...(fingerprint ? { chat_reference: fingerprint } : {}), ...issued },
+                };
+              }
               if (request.params?.name === CHAT_WORKER_PROBE_TOOL.name) {
                 const issued = workerProbe.issue(fingerprint);
                 return { content: [{ type: "text", text: JSON.stringify(issued) }], structuredContent: issued };
@@ -581,8 +593,15 @@ export async function startGateway(options: {
                 return { content: [{ type: "text", text: JSON.stringify(issued) }],
                   structuredContent: issued };
               }
-              if (!authorized)
-                return deniedChatToolResult();
+              if (!authorized) {
+                const issued = chatApproval.issue(fingerprint);
+                return {
+                  ...deniedChatToolResult(),
+                  structuredContent: issued,
+                  _meta: { ui: { resourceUri: CHAT_APPROVAL_WIDGET_URI },
+                    "openai/outputTemplate": CHAT_APPROVAL_WIDGET_URI },
+                };
+              }
             } else if (request.method === "resources/list") {
               return { resources: [{
                 name: "DevOS chat access approval form",

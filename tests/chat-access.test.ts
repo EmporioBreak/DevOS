@@ -64,7 +64,16 @@ test("durable owner-local chat access approval, revocation and tamper protection
     assert.notEqual(ref, registry.fingerprint("oauth-client-B", "opaque-session-123"));
     assert.notEqual(ref, registry.fingerprint("oauth-client-A", "opaque-session-456"));
     assert.equal(registry.isApproved(ref), false);
+    const mobileRef = registry.fingerprint("oauth-client-A", "opaque-mobile-chat-session");
+    const mobileShare = "https://chatgpt.com/share/6ac864aa-fc90-83ed-8d16-91a75fb01000";
+    registry.approve(mobileRef, mobileShare);
+    assert.equal(registry.isApproved(mobileRef), true,
+      "owner-approved mobile share label binds only the actual MCP fingerprint");
+    assert.equal(registry.isApproved(registry.fingerprint("oauth-client-A", "different-chat")), false);
+    assert.equal(registry.list().find(b => b.fingerprint === mobileRef)?.url, mobileShare);
+    assert.equal(registry.revoke(mobileRef), true);
     assert.throws(() => registry.approve(ref, "https://chatgpt.com/share/invalid"));
+    assert.throws(() => registry.approve(ref, "https://chatgpt.com/share/6ac864aa-fc90-83ed-8d16-91a75fb01000?token=bad"));
     assert.equal(await runChatAccessAdmin(root, { action: "list" },
       { DEVOS_CONNECTOR_OWNER_SECRET: secret }).then(x => x.includes("No approved")), true);
     assert.equal(await runChatAccessAdmin(root, { action: "approve", fingerprint: ref, url },

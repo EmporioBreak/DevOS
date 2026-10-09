@@ -115,11 +115,11 @@ small{color:inherit;opacity:.75}
 </style></head>
 <body>
 <h3>DevOS — разрешить этот чат</h3>
-<small>Пароль отправляется напрямую в DevOS по HTTPS и не передаётся модели. Только владелец может разрешать чаты.</small>
+<small>Принимаются ссылки /c/ и /share/ из мобильного ChatGPT. Ссылка /share/ публичная: доступ к Mac определяется паролем и MCP-сессией, а не владением этой ссылкой. Пароль отправляется напрямую в DevOS.</small>
 <form id="auth">
-<label for="chaturl">Приватная ссылка на текущий чат</label>
+<label for="chaturl">Ссылка на чат из ChatGPT</label>
 <input id="chaturl" type="url" inputmode="url" autocomplete="off" spellcheck="false"
-  required placeholder="https://chatgpt.com/c/…" />
+  required placeholder="https://chatgpt.com/share/… или /c/…" />
 <label for="password">Пароль авторизации DevOS</label>
 <input id="password" type="password" autocomplete="off" required />
 <button id="go" type="submit">Разрешить этот чат</button>
@@ -145,6 +145,12 @@ function readToolOutput() {
 function refresh() {
   const result = readToolOutput();
   if (!result) { out.textContent = "Ожидаем ответ DevOS…"; return; }
+  if (result.approved === true || result.reason === "already_authorized") {
+    activeTicket = null;
+    form.hidden = true;
+    out.textContent = "Доступ DevOS уже разрешён для этого чата.";
+    return;
+  }
   if (!result.ready) {
     activeTicket = null;
     form.hidden = true;
@@ -185,7 +191,22 @@ form.addEventListener("submit", async function(event) {
     if (!result.approved) throw new Error("approval failed");
     activeTicket = null;
     form.hidden = true;
-    out.textContent = "Чат разрешён. DevOS-инструменты доступны в этой беседе.";
+    out.textContent = "Чат разрешён. Продолжаем исходную задачу…";
+    // Never send the password or the share URL to the model.
+    // A supported ChatGPT host may automatically continue the user-requested
+    // workflow after the one user confirmation, without another typed turn.
+    if (typeof window.openai?.sendFollowUpMessage === "function") {
+      try {
+        await window.openai.sendFollowUpMessage({
+          prompt: "Авторизация MCP DevOS в этом чате подтверждена. Продолжи мой исходный запрос, который привёл к форме, без повторного запроса пароля или ссылки.",
+          scrollToBottom: true
+        });
+      } catch {
+        out.textContent = "Доступ разрешён. Автопродолжение недоступно в этом клиенте — повтори исходное действие.";
+      }
+    } else {
+      out.textContent = "Доступ разрешён. Этот клиент не поддерживает автоматическое продолжение — повтори исходное действие.";
+    }
   } catch {
     out.textContent = "Нет связи с DevOS. Пароль не сохранён — повтори попытку.";
   } finally { button.disabled = false; }
