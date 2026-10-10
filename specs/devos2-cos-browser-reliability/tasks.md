@@ -33,6 +33,15 @@
 - #224/#226/#228 existing PR and exact chat/session states stay unchanged until separately reconciled; this Issue is not a back door for replay of #226 turn 6.
 - No second Production/Staging MCP, browser profile, custom system daemon or cross-task worker authority.
 
+## Destructive worker-chat cleanup after genuine Issue completion (owner request)
+
+- [ ] T021 RED/GREEN: only accepted, merged-if-applicable, verified GitHub Issue `closed:completed` activates browser-worker chat deletion; active, changes_requested, waiting, cancelled, not_planned and disputed/ambiguous work MUST NOT delete anything.
+- [ ] T022 RED/GREEN: task/worker-bound immutable original provider conversation ID + account/workspace/Project ownership proof required; wrong Issue, missing proof, borrowed URL, owner chat, manually created chat, similar sidebar title, same worker role in another Issue, cross-account navigation all fail closed.
+- [ ] T023 RED/GREEN: one durable per-dialog deletion intent → exclusive destructive claim → actual authorized UI Delete + confirmation → authoritative account-deleted evidence. Simulate pre-click crash, click timeout, lost ACK, restart, duplicate cleanup request and provider account mismatch; never repeatedly click after a possibly successful Delete.
+- [ ] T024 RED/GREEN: broker revokes task-grants and freezes active sends before destructive cleanup; preserve exact GitHub audit artifacts, but no full worker transcripts in local cleanup receipts. Delete only task A chats/window/temporary metadata; task B and shared Camoufox continue uninterrupted. Block cleanup if a possible outstanding send/worker report cannot be reconciled.
+- [ ] T025 Authorized headed E2E: finish a disposable test Issue, verify original worker chats deleted (not archived) from the correct ChatGPT account, new Issue gets new chats, foreign/user/Main Agent chats remain; document provider retention limitations. Do **not** use #214/#224/#226/#232 conversations as disposable test targets.
+- [ ] T026 Independent security review and owner approval for irreversible deletion path before enabling by default. On genuine unavailability show cleanup_pending/blocked and a bounded safe reconciliation procedure, not a misleading success.
+
 ## Preliminary safe preparation evidence (before owner-reviewed production wiring)
 
 - [x] T015 Add isolated transport-neutral identity matcher and TDD RED→GREEN tests (not yet a trusted host observation or authorization oracle): exact project/Issue/worker/runtime/profile/window/tab/document/navigation epoch, A→B→A, signed-turn/command/payload/provider receipt IDs. `src/browser-command-identity.ts` is a pure matcher, not a second outbox, browser executor, signer or proof source.
