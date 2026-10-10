@@ -42,6 +42,15 @@
 - [ ] T025 Authorized headed E2E: finish a disposable test Issue, verify original worker chats deleted (not archived) from the correct ChatGPT account, new Issue gets new chats, foreign/user/Main Agent chats remain; document provider retention limitations. Do **not** use #214/#224/#226/#232 conversations as disposable test targets.
 - [ ] T026 Independent security review and owner approval for irreversible deletion path before enabling by default. On genuine unavailability show cleanup_pending/blocked and a bounded safe reconciliation procedure, not a misleading success.
 
+## Parallel Issue execution and serialized Main Agent review (owner request)
+
+- [ ] T027 RED/GREEN: a project-level scheduler admits multiple **independently owner-signed** one-Issue graphs; per-Issue priority/dependencies, persisted admission status, bounded configurable concurrency, fair waiting queue, no task state lost across process restart; never spawn an undeclared worker or reuse old Issue chats.
+- [ ] T028 RED/GREEN: three-Issue interleaving (A running, B busy/generating, C blocked), same worker names in different Issues, task-local retry/failure, shared profile/one project broker/one window per Issue, no global deadlocks, no cross-Issue MCP/turn/tab ownership or starvation.
+- [ ] T029 RED/GREEN: sole Production checkout **exclusive code-write and branch-switch lease**, with exact task/worker/process identity and safe stale/timeout behavior. Serial conflicting local Codex branch writes without worktrees or second checkout; allow independent browser/read-only/review work concurrently. Cover foreign branch and Issue #232 exclusion.
+- [ ] T030 RED/GREEN: simultaneous distinct `FINAL_REVIEW_REQUIRED` receipts enqueue one Main Agent user-role notification per Issue/reviewRound through the shared outbox; owner busy/generating defers delivery; delayed/out-of-order provider ACK, restart and coalesced status digests cannot lose or duplicate any Issue. Never fabricate a real `system` role or owner approval.
+- [ ] T031 RED/GREEN: A changes_requested resumes its original worker chats while B is final-approved/merged/completed and **only B's verified DevOS-created worker chats** are deleted; C and shared Camoufox remain intact. Full E2E requires genuine headed observations and independent signed status.
+- [ ] T032 Gradual live rollout proof: isolated one-Issue reliability, 2-Issue parallel, 3-Issue + Main Agent busy/owner wake queue, task-local deletion; independently verify throughput/backpressure, bounded memory and one shared browser profile. Without verified signoff do not activate Production parallel sends.
+
 ## Preliminary safe preparation evidence (before owner-reviewed production wiring)
 
 - [x] T015 Add isolated transport-neutral identity matcher and TDD RED→GREEN tests (not yet a trusted host observation or authorization oracle): exact project/Issue/worker/runtime/profile/window/tab/document/navigation epoch, A→B→A, signed-turn/command/payload/provider receipt IDs. `src/browser-command-identity.ts` is a pure matcher, not a second outbox, browser executor, signer or proof source.
