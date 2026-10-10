@@ -112,3 +112,41 @@ test("external review form shows exact scope and never embeds credentials",()=>{
   assert.match(html,/credentials:"omit"/);
   assert.ok(!html.includes(secret)&&!html.includes(password));
 });
+
+test("owner wake-up target is the exact password-signed approval chat, never the first registry binding",async()=>{
+  const f=await fixture();
+  try{
+    const unrelated=f.chats.fingerprint("different-client","other-session");
+    f.chats.approve(unrelated,"https://chatgpt.com/c/9ab799bd-7ffc-83eb-b2b0-15d6a2f558a0");
+    assert.equal(f.store.resolveOwnerChat(review()),null,"chat registry grants are not owner task approval");
+    const issued=f.store.issue(f.owner,review());
+    assert.equal(issued.ready,true);
+    assert.equal(f.store.submit({ticket:issued.ticket,password,confirm:"approve"}),true);
+    assert.deepEqual(f.store.resolveOwnerChat(review()),{
+      fingerprint:f.owner,approvedReference:"https://chatgpt.com/c/6ac799bd-7ffc-83eb-b2b0-15d6a2f558a0",
+      kind:"private",
+    });
+    assert.equal(f.store.resolveOwnerChat({...review(),issue:999}),null,"same chat approval does not bind another Issue");
+    f.chats.revoke(f.owner);
+    assert.equal(f.store.resolveOwnerChat(review()),null,"revoked owner chat cannot receive wake-up");
+  }finally{await rm(f.root,{recursive:true,force:true})}
+});
+
+test("owner wake-up preserves /share as a non-writable label and rejects multiple signed owners",async()=>{
+  const f=await fixture();
+  try{
+    const share="https://chatgpt.com/share/7bc799bd-7ffc-83eb-b2b0-15d6a2f558a0";
+    f.chats.revoke(f.owner);
+    f.chats.approve(f.owner,share);
+    const first=f.store.issue(f.owner,review());
+    assert.equal(f.store.submit({ticket:first.ticket,password,confirm:"approve"}),true);
+    assert.deepEqual(f.store.resolveOwnerChat(review()),{
+      fingerprint:f.owner,approvedReference:share,kind:"share_label",
+    },"public share must not be asserted to be an editable /c conversation");
+    f.chats.approve(f.stranger,"https://chatgpt.com/c/8ac799bd-7ffc-83eb-b2b0-15d6a2f558a0");
+    const second=f.store.issue(f.stranger,review());
+    assert.equal(f.store.submit({ticket:second.ticket,password,confirm:"approve"}),true);
+    assert.throws(()=>f.store.resolveOwnerChat(review()),/ambiguous|multiple/i,
+      "multiple signed chat approvals for exact task must never be chosen arbitrarily");
+  }finally{await rm(f.root,{recursive:true,force:true})}
+});
