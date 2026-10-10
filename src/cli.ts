@@ -36,6 +36,7 @@ import { acquireTaskLock } from "./task-lock.js";
 import type { Workflow } from "./workflow.js";
 import { loadWorkflow } from "./workflow-loader.js";
 import { verifyRunnerSkillGraph } from "./runner-skill-graph.js";
+import {verifyHostBackendUnavailable} from "./host-fallback-evidence.js";
 import { appendTaskAuditEvent } from "./pipeline-diagnostics.js";
 import { parseEnvFile } from "./connector-env.js";
 import { readFile } from "node:fs/promises";
@@ -44,6 +45,16 @@ import {
   ensureSharedBrowserRuntime,
   runBrowserRuntime,
 } from "./shared-browser-runtime.js";
+
+/** Lazy only for a Main-Agent-planned local first stage. The signed
+ * executor of each worker, not the Issue category, decides dispatch. */
+export function deferredTaskBrowserExecutor(ensure:()=>Promise<Executor>):Executor {
+  let executor:Executor|undefined;
+  return {kind:"chatgpt_browser",async run(request){
+    executor ??= await ensure();
+    return executor.run(request);
+  }};
+}
 
 export const cliBrowserRuntimeDeps = {
   ensure: ensureSharedBrowserRuntime,
@@ -173,13 +184,23 @@ export async function runWorkflow(
   const needsBrowser = hasBrowserWorker &&
     !savedState?.completionApproved &&
     !(savedState?.mainAgentReviewPending && mainAgentDecision !== "changes_requested");
-  const chatgpt = needsBrowser
-    ? await cliBrowserRuntimeDeps.ensure(
-        cwd,
-        workflow.task,
-        loadChatGptBrowserConfig(process.env, config?.chatgptProjectUrl),
-      )
+  // The Main Agent may preplan a local first worker. Never occupy the shared
+  // Camoufox profile while that Codex step is still running. Start a browser
+  // only when an actual browser worker is about to execute. Keep eager startup
+  // for existing browser-first tasks and retain their saved conversations.
+  const firstWorkerId = savedState?.mainAgentReviewPending &&
+    mainAgentDecision === "changes_requested"
+    ? workflow.start : savedState?.currentWorkerId ?? workflow.start;
+  const firstIsBrowser = workflow.workers.find(w => w.id === firstWorkerId)
+    ?.executor === "chatgpt_browser";
+  const browserConfig = needsBrowser
+    ? loadChatGptBrowserConfig(process.env,config?.chatgptProjectUrl)
     : undefined;
+  const chatgpt: Executor|undefined = !needsBrowser ? undefined
+    : firstIsBrowser
+      ? await cliBrowserRuntimeDeps.ensure(cwd,workflow.task,browserConfig!)
+      : deferredTaskBrowserExecutor(() =>
+          cliBrowserRuntimeDeps.ensure(cwd,workflow.task,browserConfig!));
 
   const state = await new Orchestrator({
     projectRoot: cwd,
@@ -189,7 +210,25 @@ export async function runWorkflow(
       ...(chatgpt ? [["chatgpt_browser", chatgpt] as const] : []),
     ]),
     stateStore,
-    ...(strictSecret?{verifyAssignedWorkerSkills:async (workerId:string)=>{
+    ...(strictSecret?{verifyHostOnlyFallback:async (context:{
+      task:Workflow["task"];workerId:string;turn:number;nextWorkerId:string;
+      sessionId:string|undefined;signedWorkerReport:boolean;
+    })=>{
+      if(!context.signedWorkerReport||!context.sessionId)return false;
+      const state=await stateStore.load();
+      if(!state||state.currentWorkerId!==context.workerId||
+          state.completedRuns!==context.turn||!state.activeReport||
+          state.activeReport.workerId!==context.workerId||
+          state.activeReport.turn!==context.turn||
+          state.sessions[context.workerId]!==context.sessionId||
+          context.task.repo!==workflow.task.repo||context.task.issue!==workflow.task.issue)
+        return false;
+      return verifyHostBackendUnavailable(cwd,strictSecret,{
+        repo:context.task.repo,issue:context.task.issue,workerId:context.workerId,
+        turn:context.turn,sessionId:context.sessionId,
+        tokenHash:state.activeReport.tokenHash,
+      });
+    },verifyAssignedWorkerSkills:async (workerId:string)=>{
       const exact=await verifyRunnerSkillGraph(cwd,workflow,strictSecret);
       const assigned=exact.workers.find(w=>w.workerId===workerId);
       if(!assigned)throw new Error("Undeclared DevOS Runner worker");

@@ -465,3 +465,22 @@ test("idle owner-review checks leave the browser intact and final-only cleanup c
   assert.equal(ensured, 1, "cleanup-only retry cannot start another browser");
   assert.equal(workerRuns, 1);
 });
+
+test("a Main Agent-planned local first stage defers browser ownership until browser execution",async()=>{
+  const {deferredTaskBrowserExecutor}=await import("../src/cli.js");
+  let ensures=0,requests=0;
+  const browser=deferredTaskBrowserExecutor(async()=>{
+    ensures++;
+    return {kind:"chatgpt_browser" as const,async run(){
+      requests++;return {text:'DEVOS_RESULT {"status":"done"}',sessionId:"https://chatgpt.com/c/planned-review"};
+    }};
+  });
+  assert.equal(ensures,0,"planning a future browser reviewer does not occupy the profile");
+  const base={projectRoot:"/project",prompt:"independent reviewer",workerId:"reviewer"};
+  const first=await browser.run(base);
+  assert.equal(ensures,1);
+  assert.equal(first.sessionId,"https://chatgpt.com/c/planned-review");
+  await browser.run(base);
+  assert.equal(ensures,1,"task reuse must not create a second browser context");
+  assert.equal(requests,2);
+});
