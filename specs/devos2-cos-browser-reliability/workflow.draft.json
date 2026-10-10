@@ -1,39 +1,73 @@
 {
   "version": 1,
-  "task": {"repo": "EmporioBreak/DevOS", "issue": 239, "pr": 240},
-  "owner": {"mode": "main_agent"},
+  "task": {
+    "repo": "EmporioBreak/DevOS",
+    "issue": 239,
+    "pr": 240
+  },
+  "owner": {
+    "mode": "main_agent"
+  },
   "skillsMode": "strict",
   "start": "cos_broker_developer_local",
   "workers": [
     {
-      "id": "cos_broker_developer_local", "executor": "codex",
-      "prompt": "Implement the exact approved #239 original Spec Kit on the sole Production checkout. Worker chat/context/grant lives only for the current Issue: reuse on changes_requested, retire after signed completion, never reuse for another Issue. Start with TDD RED for durable command claims/receipt, document epochs and two-Issue ownership. Reuse source patterns from pinned CoS only with MIT attribution and compatibility review; never start another Camoufox/profile, replay #226 turn 6, modify #232 or self-approve. Work in the same Draft PR #240 and write real test evidence.",
-      "on": {"done": "cos_security_auditor_local", "failed": null}
+      "id": "cos_broker_developer_local",
+      "executor": "codex",
+      "prompt": "Implement the exact approved #239 original Spec Kit on the sole Production checkout. Worker chat/context/grant lives only for the current Issue: reuse on changes_requested, after final Main Agent acceptance, PR merge and verified Issue closed:completed, broker deletes each exact DevOS-created worker ChatGPT conversation from account with provider-confirmed durable one-attempt deletion; keep GitHub audit, never delete unrelated/owner/user chats; do not retain/reuse between Issues, never reuse for another Issue. Start with TDD RED for durable command claims/receipt, document epochs and two-Issue ownership. Reuse source patterns from pinned CoS only with MIT attribution and compatibility review; never start another Camoufox/profile, replay #226 turn 6, modify #232 or self-approve. Work in the same Draft PR #240 and write real test evidence.",
+      "on": {
+        "done": "cos_security_auditor_local",
+        "failed": null
+      }
     },
     {
-      "id": "cos_security_auditor_local", "executor": "codex",
-      "prompt": "Independent security and concurrency audit of #239 exact PR and original scope: cross-Issue grants, signed worker identity, stale A-B-A document, command lease/ACK, crash after Send, provider receipt and old live profile safety. Return evidence and requested corrections to the SAME developer/PR, not a new task; do not modify production state.",
-      "on": {"approved": "cos_host_process_qa_local", "changes_requested": "cos_broker_developer_local", "failed": null}
+      "id": "cos_security_auditor_local",
+      "executor": "codex",
+      "prompt": "Independent security and concurrency audit of #239 exact PR and original scope: cross-Issue grants, signed worker identity, stale A-B-A document, command lease/ACK, crash after Send, provider receipt and old live profile safety. Return evidence and requested corrections to the SAME developer/PR, not a new task; do not modify production state. Audit irreversible worker-chat deletion only after verified completed, unique provider conversation/account ownership, durable no-replay Delete, retained signed audit, and protection of other Issues and Main Agent chats.",
+      "on": {
+        "approved": "cos_host_process_qa_local",
+        "changes_requested": "cos_broker_developer_local",
+        "failed": null
+      }
     },
     {
-      "id": "cos_host_process_qa_local", "executor": "codex",
+      "id": "cos_host_process_qa_local",
+      "executor": "codex",
       "prompt": "Run native host/IPC/process failure-injection tests for #239: two Issues, preserved windows, crashes at each durable stage, exact profile ownership, zero double-sends, signed grants and browser E2E preflight. Do not kill/restart existing #214/#226 browser runtimes or alter #232. If tests expose defects return changes_requested to same developer.",
-      "on": {"done": "cos_browser_worker_e2e", "changes_requested": "cos_broker_developer_local", "failed": null}
+      "on": {
+        "done": "cos_browser_worker_e2e",
+        "changes_requested": "cos_broker_developer_local",
+        "failed": null
+      }
     },
     {
-      "id": "cos_browser_worker_e2e", "executor": "chatgpt_browser",
-      "prompt": "Use ONLY the original authorized Production DevOS browser tools. Independently verify a genuinely signed-in ChatGPT worker flow in the existing approved shared profile, real Project chats, headed two-window ownership, actual provider message IDs and no resend, Main Agent owner wake-up, rework and task-scoped teardown. Never treat synthetic Playwright tests or text-only status as live PASS. If genuine capability is absent, signed needs_local_worker only with independent host outage proof; do not open duplicate browser or copy profile.",
-      "on": {"done": "cos_independent_reviewer", "needs_local_worker": "cos_browser_e2e_local", "failed": null}
+      "id": "cos_browser_worker_e2e",
+      "executor": "chatgpt_browser",
+      "prompt": "Use ONLY the original authorized Production DevOS browser tools. Independently verify a genuinely signed-in ChatGPT worker flow in the existing approved shared profile, real Project chats, headed two-window ownership, actual provider message IDs and no resend, Main Agent owner wake-up, rework and task-scoped teardown. Never treat synthetic Playwright tests or text-only status as live PASS. If genuine capability is absent, signed needs_local_worker only with independent host outage proof; do not open duplicate browser or copy profile. For an authorized disposable test Issue only, verify actual per-chat deletion (not archiving) after final completion and confirm unrelated chats survive; otherwise return a signed blocker. Never delete existing #214/#224/#226/#232 chats.",
+      "on": {
+        "done": "cos_independent_reviewer",
+        "needs_local_worker": "cos_browser_e2e_local",
+        "failed": null
+      }
     },
     {
-      "id": "cos_browser_e2e_local", "executor": "codex",
+      "id": "cos_browser_e2e_local",
+      "executor": "codex",
       "prompt": "Predeclared local-only E2E fallback for an independently proven unavailable browser-worker tool, NOT a default alternate. Inspect existing signed Issue and #239 current PR, perform only authorized native host evidence/visual screenshots with actual browser UI and safe profile process ownership. No #226 ambiguous turn replay or #232 work. Return true results and blockers to independent review.",
-      "on": {"done": "cos_independent_reviewer", "failed": null}
+      "on": {
+        "done": "cos_independent_reviewer",
+        "failed": null
+      }
     },
     {
-      "id": "cos_independent_reviewer", "executor": "chatgpt_browser",
+      "id": "cos_independent_reviewer",
+      "executor": "chatgpt_browser",
       "prompt": "Independent final source/evidence/product REVIEW on the same #239 PR. Verify actual diff, pinned CoS MIT provenance, Spec Kit, developer/adversarial tests, native two-window E2E, real messages, signed reports and no #232/#226 state loss. Return approved only with verifiable real evidence; otherwise changes_requested to SAME developer/PR. Do not self-authorize Main Agent acceptance.",
-      "on": {"approved": null, "changes_requested": "cos_broker_developer_local", "failed": null}
+      "on": {
+        "approved": null,
+        "changes_requested": "cos_broker_developer_local",
+        "failed": null
+      }
     }
   ]
 }
