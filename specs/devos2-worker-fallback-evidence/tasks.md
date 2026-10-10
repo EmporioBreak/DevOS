@@ -26,3 +26,11 @@ No worker may self-authorize owner or downgrade security to work around this def
 - [ ] T012 RED/GREEN: Main Agent may seal a capability-justified Codex-first graph with independent reviewer; unreachable/unsigned workers still rejected.
 - [ ] T013 RED/GREEN: unscheduled model-chosen `needs_local_worker` cannot bypass independently verified missing host capability proof.
 - [ ] T014 Verify requirements/skill assignment distinguish code or shell checks from actual visual interaction when the task demands it, without hard-coded categories inside Runner.
+
+
+## Direct Main Agent acceptance gaps after merged PR #229 (#228 completion)
+
+- [ ] T015 RED/GREEN: differentiate evidence modalities of **actual** native desktop screen observation+pointer interaction, iOS Simulator screen+tap, and scripted shell UI without interpreting task category as executor; missing trusted host verifier or shell-only evidence must block visual acceptance.
+- [ ] T016 RED/GREEN: acceptance criterion → concrete action ID → exact predeclared worker/executor capability requirement is bound to original signed Main Agent plan digest; deny stale plan, wrong Issue/worker/action/executor/session, duplicate and unverifiable actions. Already-running legacy graphs without this new optional contract remain unmodified.
+- [ ] T017 Verify through actual trusted host tool inventory/probe and genuine visually observed UI/Simulator where the owner requires them. Tests of a fake capability verifier do **not** constitute E2E.
+- [ ] T018 Perform independent post-merge source/security review of #229 + completion PR, broad regression and real signed browser→Codex proof where genuinely possible, then Main Agent final acceptance/Issue closure. Do not self-certify from code tests alone.

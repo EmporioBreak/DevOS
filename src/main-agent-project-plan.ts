@@ -7,6 +7,58 @@ import { embedSpecKitContract, validateSpecKitDependencyGraph,
 import { parseWorkflow } from "./workflow-loader.js";
 import type { Workflow } from "./workflow.js";
 
+/** Concrete action needs, selected by Main Agent from actual acceptance.
+ * These are evidence modalities, NOT task-category-to-executor routing rules.
+ * The signed owner-approved plan freezes the exact worker/action assignment.
+ */
+export type WorkerActionCapability =
+  "host_command" | "scripted_ui_test" | "visual_desktop_test" | "ios_simulator_visual_test";
+export interface WorkerActionRequirement {
+  id:string;
+  acceptanceIndex:number;
+  workerId:string;
+  capability:WorkerActionCapability;
+}
+export interface VerifiedWorkerActionEvidence {
+  task:{repo:string;issue:number};
+  workerId:string;
+  actionId:string;
+  executor:"codex"|"chatgpt_browser";
+  /** Obtained by an independent trusted host/tool capability probe,
+   * never from worker text, screenshot filenames or role labels. */
+  observed:readonly string[];
+  sessionBound:boolean;
+}
+export type TrustedWorkerActionVerifier = (requirement:{
+  task:{repo:string;issue:number};workerId:string;executor:"codex"|"chatgpt_browser";
+  actionId:string;capability:WorkerActionCapability;acceptance:string;
+})=>Promise<VerifiedWorkerActionEvidence|null>;
+
+const CAPABILITY_EVIDENCE:Record<WorkerActionCapability,readonly string[]>={
+  host_command:["shell_command"],
+  scripted_ui_test:["shell_command"],
+  visual_desktop_test:["visual_screen","visual_pointer"],
+  ios_simulator_visual_test:["ios_screen","ios_tap"],
+};
+const ACTION_ID=/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
+function checkedWorkerActions(plan:ProjectIssuePlan):WorkerActionRequirement[] {
+  if(plan.workerActions===undefined)return [];
+  if(!Array.isArray(plan.workerActions)||plan.workerActions.length===0||plan.workerActions.length>60)
+    throw new Error("Invalid Main Agent worker capability action list");
+  const graph=parseWorkflow(plan.workflow);
+  const workers=new Set(graph.workers.map(w=>w.id)),seen=new Set<string>();
+  return plan.workerActions.map(action=>{
+    if(!action || !ACTION_ID.test(action.id) || action.id.length>120 ||
+       seen.has(action.id) || !workers.has(action.workerId) ||
+       !Number.isSafeInteger(action.acceptanceIndex) ||
+       action.acceptanceIndex<0 || action.acceptanceIndex>=plan.intent.acceptance.length ||
+       !Object.hasOwn(CAPABILITY_EVIDENCE,action.capability))
+      throw new Error("Invalid or duplicated Main Agent worker capability assignment");
+    seen.add(action.id);
+    return action;
+  });
+}
 export interface ProjectIssuePlan {
   key:string;
   issue:number;
@@ -19,6 +71,7 @@ export interface ProjectIssuePlan {
   /** GitHub's existing linked PR (if confirmed), not a new PR opened by Runner. */
   linkedPr?:number;
   workerReports?:string[];
+  workerActions?:WorkerActionRequirement[];
   workflow:Workflow;
 }
 export interface MainAgentProjectPlan {
@@ -64,7 +117,8 @@ function digest(x:unknown):string {
 export function projectGraphDigest(plan:ProjectIssuePlan, epic?:number):string {
   return digest({graph:taskGraph(plan.workflow),dependsOn:plan.dependsOn.map(x=>x),
     linkedPr:plan.linkedPr??null,parentEpic:epic??null,
-    ownerScope:intakeDigest(plan.intent)});
+    ownerScope:intakeDigest(plan.intent),
+    ...(plan.workerActions!==undefined?{workerActions:checkedWorkerActions(plan)}:{})});
 }
 function text(x:unknown,label:string):string {
   if (typeof x!=="string"||!x.trim()||x.length>2000 ||
@@ -126,7 +180,8 @@ function topological(plans:ProjectIssuePlan[]):ProjectIssuePlan[] {
 }
 export async function prepareApprovedProjectPlan(
   value:MainAgentProjectPlan,
-  options:{ projectRoot:string;verifyApproval:TrustedApprovalVerifier },
+  options:{ projectRoot:string;verifyApproval:TrustedApprovalVerifier;
+    verifyWorkerAction?:TrustedWorkerActionVerifier },
 ):Promise<VerifiedProjectPlan> {
   if(!value || value.version!==1 || !REPO.test(value.repo) ||
       (value.epic!==undefined &&
@@ -197,6 +252,30 @@ export async function prepareApprovedProjectPlan(
     if(approved.reviewedDigest!==graphHash || !approved.userMessageRef ||
         !await options.verifyApproval(approved,{kind:"plan",digest:graphHash}))
       throw new Error("Predeclared full worker graph and Issue dependencies lack trusted owner approval");
+    const workerActions=checkedWorkerActions(plan);
+    const actionEvidence:string[]=[];
+    if(workerActions.length&&!options.verifyWorkerAction)
+      throw new Error("Missing independent host worker capability verifier");
+    for(const action of workerActions){
+      const worker=graph.workers.find(w=>w.id===action.workerId)!;
+      const accepted=await options.verifyWorkerAction!({
+        task:{repo:value.repo,issue:plan.issue},workerId:worker.id,
+        executor:worker.executor,actionId:action.id,capability:action.capability,
+        acceptance:plan.intent.acceptance[action.acceptanceIndex]!,
+      });
+      const expected=CAPABILITY_EVIDENCE[action.capability];
+      if(!accepted||accepted.sessionBound!==true||
+         accepted.task.repo!==value.repo||accepted.task.issue!==plan.issue||
+         accepted.actionId!==action.id||accepted.workerId!==worker.id||
+         accepted.executor!==worker.executor||!Array.isArray(accepted.observed)||
+         accepted.observed.some((x:string)=>typeof x!=="string")||
+         !expected.every(x=>accepted.observed.includes(x))){
+        throw new Error("Required worker capability not independently proven: "+
+          action.id+" ("+action.capability+")");
+      }
+      actionEvidence.push("- "+action.id+" → "+worker.id+" ("+worker.executor+") / "+
+        action.capability+"; trusted host evidence: "+expected.join(" + "));
+    }
     const metadata={
       version:1,repo:value.repo,issue:plan.issue,approvalDigest:intakeDigest(plan.intent),
       workerGraphDigest:graphHash,taskKey:plan.key,
@@ -209,6 +288,8 @@ export async function prepareApprovedProjectPlan(
       "### Non-goals",list(plan.intent.nonGoals),
       "### Acceptance criteria",list(plan.intent.acceptance),
       "### Scenarios",list(plan.intent.userScenarios),
+      ...(actionEvidence.length?["### Independently verified worker action capabilities",
+        actionEvidence.join("\n")]:[]),
       "### Depends on",dependsOn.length?dependsOn.map(x=>"- #"+x).join("\n"):"None",
       "### Implementation references",
       "- Exact original Spec Kit commit: `"+contract.commit+"`",

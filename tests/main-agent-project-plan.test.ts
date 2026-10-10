@@ -288,3 +288,108 @@ test("Main Agent rejects unreachable extra workers even if their IDs are listed"
     assert.throws(()=>projectGraphDigest(p),/unreachable worker/);
   }finally{await rm(root,{recursive:true,force:true})}
 });
+
+test("visual user acceptance cannot be delegated to shell-only evidence or an unverifiable executor",async()=>{
+  const {root,contracts}=await rootFixture([594]);
+  try{
+    const p=issue(contracts.get(594)!,[],"visual-acceptance-594");
+    p.intent.acceptance=["Observe rendered desktop and click through the real login flow"];
+    p.workerActions=[{id:"visually-check-login",acceptanceIndex:0,workerId:"developer",capability:"visual_desktop_test"}];
+    p.ownerEvidence=[{kind:"scope",userMessageRef:"verified-host-event",reviewedDigest:intakeDigest(p.intent)},
+      {kind:"spec",userMessageRef:"verified-host-event",reviewedDigest:intakeDigest(p.intent)},
+      {kind:"plan",userMessageRef:"verified-host-event",reviewedDigest:intakeDigest(p.intent)}];
+    p.graphApproval.reviewedDigest=projectGraphDigest(p,121);
+    await assert.rejects(prepareApprovedProjectPlan(plan([p]),{projectRoot:root,verifyApproval:verifier}),
+      /capability|visual|verifier/i,"no independent host proof must fail closed");
+    const shellOnly=async()=>({task:{repo,issue:594},workerId:"developer",actionId:"visually-check-login",
+      executor:"chatgpt_browser" as const,observed:["shell_command"],sessionBound:true});
+    await assert.rejects(prepareApprovedProjectPlan(plan([p]),{
+      projectRoot:root,verifyApproval:verifier,verifyWorkerAction:shellOnly,
+    }),/capability|visual/i,"executing shell/Playwright is not a visible human-style desktop interaction");
+    const actuallyVerified=async()=>({task:{repo,issue:594},workerId:"developer",actionId:"visually-check-login",
+      executor:"chatgpt_browser" as const,observed:["visual_screen","visual_pointer"],sessionBound:true});
+    const ready=await prepareApprovedProjectPlan(plan([p]),{
+      projectRoot:root,verifyApproval:verifier,verifyWorkerAction:actuallyVerified,
+    });
+    assert.match(ready.issues[0]!.body,/visually-check-login/);
+    const changed=structuredClone(p);
+    changed.workerActions![0]!.capability="scripted_ui_test";
+    await assert.rejects(prepareApprovedProjectPlan(plan([changed]),{
+      projectRoot:root,verifyApproval:verifier,verifyWorkerAction:actuallyVerified,
+    }),/full worker graph/i,"changing evidence strength invalidates exact owner-approved plan digest");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("iOS visual action needs screen plus actual native taps, not simctl or shell",async()=>{
+  const {root,contracts}=await rootFixture([595]);
+  try{
+    const p=issue(contracts.get(595)!,[],"ios-visual-595");
+    p.workerActions=[{id:"tap-settings",acceptanceIndex:0,workerId:"local_developer",capability:"ios_simulator_visual_test"}];
+    p.graphApproval.reviewedDigest=projectGraphDigest(p,121);
+    for(const observed of [["shell_command"],["ios_screen"],["ios_tap"],["visual_screen","visual_pointer"]]){
+      await assert.rejects(prepareApprovedProjectPlan(plan([p]),{
+        projectRoot:root,verifyApproval:verifier,
+        verifyWorkerAction:async()=>({task:{repo,issue:595},workerId:"local_developer",
+          actionId:"tap-settings",executor:"codex",observed,sessionBound:true}),
+      }),/capability|ios/i);
+    }
+    const verified=await prepareApprovedProjectPlan(plan([p]),{
+      projectRoot:root,verifyApproval:verifier,
+      verifyWorkerAction:async()=>({task:{repo,issue:595},workerId:"local_developer",
+        actionId:"tap-settings",executor:"codex",observed:["ios_screen","ios_tap"],sessionBound:true}),
+    });
+    assert.equal(verified.issues.length,1);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("worker action proof is exact-task, worker, executor and session bound",async()=>{
+  const {root,contracts}=await rootFixture([596]);
+  try{
+    const p=issue(contracts.get(596)!,[],"host-identity-596");
+    p.workerActions=[{id:"desktop-flow",acceptanceIndex:0,workerId:"reviewer",capability:"visual_desktop_test"}];
+    p.graphApproval.reviewedDigest=projectGraphDigest(p,121);
+    const proof={task:{repo,issue:596},workerId:"reviewer",actionId:"desktop-flow",
+      executor:"chatgpt_browser" as const,observed:["visual_screen","visual_pointer"],sessionBound:true};
+    const args={projectRoot:root,verifyApproval:verifier};
+    const bad=[
+      {...proof,task:{repo,issue:597}},
+      {...proof,workerId:"developer"},
+      {...proof,actionId:"unrelated-flow"},
+      {...proof,executor:"codex" as const},
+      {...proof,sessionBound:false},
+      {...proof,observed:["visual_screen","shell_command"]},
+    ];
+    for(const counterfeit of bad){
+      await assert.rejects(prepareApprovedProjectPlan(plan([p]),{
+        ...args,verifyWorkerAction:async()=>counterfeit,
+      }),/Required worker capability not independently proven/);
+    }
+    const good=await prepareApprovedProjectPlan(plan([p]),{
+      ...args,verifyWorkerAction:async()=>proof,
+    });
+    assert.match(good.issues[0]!.body,/Independently verified worker action capabilities/);
+    const malformed=structuredClone(p);
+    malformed.workerActions!.push({...malformed.workerActions![0]!});
+    assert.throws(()=>projectGraphDigest(malformed),/duplicated Main Agent worker capability/i);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("capability modality is independent of named role and chosen executor",async()=>{
+  const {root,contracts}=await rootFixture([597]);
+  try{
+    const p=issue(contracts.get(597)!,[],"capability-executor-597");
+    p.workerActions=[{id:"native-desktop-inspection",acceptanceIndex:0,
+      workerId:"local_developer",capability:"visual_desktop_test"}];
+    p.graphApproval.reviewedDigest=projectGraphDigest(p,121);
+    const r=await prepareApprovedProjectPlan(plan([p]),{
+      projectRoot:root,verifyApproval:verifier,
+      verifyWorkerAction:async()=>({task:{repo,issue:597},workerId:"local_developer",
+        actionId:"native-desktop-inspection",executor:"codex",
+        observed:["visual_screen","visual_pointer"],sessionBound:true}),
+    });
+    assert.match(r.issues[0]!.body,/native-desktop-inspection.*local_developer.*codex/);
+    const impossible=structuredClone(p);
+    impossible.workerActions![0]!.workerId="unplanned_agent";
+    assert.throws(()=>projectGraphDigest(impossible),/worker capability assignment/i);
+  }finally{await rm(root,{recursive:true,force:true})}
+});

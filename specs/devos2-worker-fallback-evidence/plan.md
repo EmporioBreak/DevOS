@@ -29,3 +29,10 @@ No change to #226 runtime or #224 wake-up; no second connector, profile, worktre
 - Keep `needs_local_worker → codex` as a different, exceptional dynamic path, guarded by independent host-side evidence; it does not replace preplanning and is not an implicit approval.
 - Reject unreachable extra workers and unsanctioned graph changes; retain exact HMAC, original Spec Kit assignments, worker MCP grants and independent reviewer.
 - Distinguish observable UI/Simulator actions from shell automation in requirements. UI, security or any other category is an example, not a routing switch inside Runner.
+
+
+## Capability evidence follow-up after #229 (owner request to finish #228)
+
+Bind optional explicit `workerActions` to the original acceptance index and frozen declared worker ID in the **owner-reviewed project graph digest**. Each action declares an evidence modality rather than a named specialist category. The capability check is an injected **independently trusted host/tool verifier**; without that verifier, fail closed. A script/shell output is never equivalent to native screen observation AND pointing action on the same session, or iOS Simulator screen AND native tap. Do not auto-route by action category or let a model-supplied evidence record count as a host receipt.
+
+These checks are pre-dispatch **capability** verification only. They do not complete the QA action, prove a real GUI journey passed, or infer risks the Main Agent omitted from its acceptance list. Future workflows can use this schema; existing owner-signed running graphs retain their original exact signatures. Independent actual GUI/tool-inventory evidence and separate end-to-end review remain mandatory.
