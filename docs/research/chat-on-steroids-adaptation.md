@@ -34,6 +34,10 @@ The highest-value shift is from **worker executor owns a page and submits a prom
 | Browser recovery cleanup | In #226 branch (`src/chatgpt-browser-executor.ts`), `workerPages` is keyed by composite Issue+worker, but recovery cleanup still looks up bare `request.workerId` in two branches | Stale page ownership may survive a failure and later confuse reuse or cleanup | Add exact composite worker-key and current document epoch across EVERY recovery branch, with regression and no cross-Issue deletion |
 | Real UI validation | Playwright DOM tests; MCP has no native screen/pointer tools | Green tests do not establish actual human-like GUI | Explicit evidence modality adapter and supervised headed E2E; no shell substitution |
 
+### Deliberate DevOS worker-lifetime difference
+
+CoS deliberately retains sleeping workers for future unrelated assignments. DevOS **does not**: the Main Agent holds the durable project history, while each worker and its ChatGPT conversation exist only for one GitHub Issue. Within an unfinished Issue, developer/reviewer can resume their **same** exact conversations on `changes_requested`. Once Main Agent has actually accepted and the Issue is `completed`, the worker's task-bound grant, browser-tab ownership and executable conversation routing are retired; no future Issue can reuse or inherit that worker's conversation/context. Historical signed reports, PR comments and code remain auditable and may be selectively summarized by Main Agent for a fresh worker; this is not worker-to-worker memory transfer. CoS's **durable outbox/tab-command protocol** is the inspiration; its **cross-task reusable sleeping-agent model is explicitly rejected**. The shared browser process/profile is a separate resource and may survive completed Issue A while Issue B continues.
+
 ### Four identities that must not collapse
 
 ```
@@ -89,7 +93,7 @@ No one can call `claim` twice; after one successful claim, non-confirmed actions
 ### Explicit things NOT to copy
 
 - Electron UI/session-store as a second source of truth alongside DevOS.
-- CoS runtime dynamic prime/worker spawning, worker-to-worker free messaging or automatic account/model switching.
+- CoS runtime dynamic prime/worker spawning, **cross-Issue reusable/sleeping worker agents**, worker-to-worker free messaging or automatic account/model switching.
 - Chrome debugger/MV3 extension, Chromium cookie transfer or account capture into the Firefox profile.
 - Hidden/unbounded browser recovery, transcript scraping, undocumented provider API as a stable contract or any bypass for refused tool/usage access.
 - A second persistent profile, Staging plugin, shadow Runner, global login daemon or new host-level watcher.
