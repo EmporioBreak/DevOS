@@ -86,6 +86,10 @@ The owner requires **actual removal of each completed Issue's DevOS-created work
 
 This explicitly **replaces** the earlier research assumption “historical worker chat remains on account after Issue completion.” The authoritative long-term record is Main Agent + GitHub artifacts, not worker chat history.
 
+### Parallel Issues are a DevOS core invariant, not a phase-two feature
+
+The owner requires multiple separately approved GitHub Issues to progress **at the same time**, without Main Agent needing to remain online and without reusing worker contexts. This maps CoS's concurrent command handling to DevOS's distinct one-Issue signed graph instances: durable per-Issue scheduler slots, fair/bounded backpressure, task-specific worker chats and MCP grants, and exact windows/tabs inside **one** project Camoufox profile process. If B blocks awaiting ChatGPT, A and C still progress. Two simultaneous final-review events become independent durable notices serialized into the **single Main Agent chat**; no lost notification or false second `system` role. An accepted completed A triggers only A's irrevocable worker-chat deletion; B/C continue. This concurrency cannot permit simultaneous conflicting local code edits in DevOS's owner-mandated one Production checkout/no-worktrees setup: project-level Git/checkout writes require an exclusive lease, while browser and independent read-only actions overlap. Admission remains conditional on each exact Issue's signed owner-approved graph, not a generic autonomous swarm.
+
 ### Migration order
 
 1. Confirm exact original #226 signed browser turn and legacy PID ownership **without sending or terminating anything**. Produce read-only inventory before adoption.
