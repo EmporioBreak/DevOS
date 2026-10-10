@@ -116,7 +116,7 @@ test("no fake human consent, and no changed scope or worker graph after signoff"
       id:"extra_agent",executor:"chatgpt_browser",prompt:"Newly invented agent",
       on:{done:null}});
     await assert.rejects(prepareApprovedProjectPlan(plan([changed]),{
-      projectRoot:root,verifyApproval:verifier}),/full worker graph/);
+      projectRoot:root,verifyApproval:verifier}),/(?:full worker graph|unreachable worker)/);
     const diff=structuredClone(proposed);
     diff.intent.scope=["Entirely new feature not previously authorized"];
     await assert.rejects(prepareApprovedProjectPlan(plan([diff]),{
@@ -124,11 +124,11 @@ test("no fake human consent, and no changed scope or worker graph after signoff"
     const fake=structuredClone(proposed);
     fake.graphApproval.userMessageRef="tool-supplied-lie";
     await assert.rejects(prepareApprovedProjectPlan(plan([fake]),{
-      projectRoot:root,verifyApproval:verifier}),/full worker graph/);
+      projectRoot:root,verifyApproval:verifier}),/(?:full worker graph|unreachable worker)/);
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
-test("rejects cycle, duplicates, wrong dependencies, spoofed PR and direct Codex launch",async()=>{
+test("rejects cycles, wrong dependencies, spoofed PR and unauthorized graph changes",async()=>{
   const {root,contracts}=await rootFixture([541,542],{541:[542],542:[541]});
   try{
     const a=issue(contracts.get(541)!,["issue-542"]);
@@ -149,7 +149,7 @@ test("rejects cycle, duplicates, wrong dependencies, spoofed PR and direct Codex
     const skip=structuredClone(independent);
     skip.workflow.start="local_developer";
     await assert.rejects(prepareApprovedProjectPlan(plan([skip]),{
-      projectRoot:root,verifyApproval:verifier}),/Browser-first/);
+      projectRoot:root,verifyApproval:verifier}),/(?:full worker graph|unreachable worker)/);
     const noReviewer=structuredClone(independent);
     noReviewer.workflow.workers=noReviewer.workflow.workers.filter(x=>x.id!=="reviewer");
     noReviewer.workflow.workers[0]!.on.done=null;
@@ -242,7 +242,49 @@ test("GitHub publisher rejects fabricated approvals, unverified linked PR and ch
     });
     await assert.rejects(publishApprovedIssue(bad,571,expected,provider,{
       projectRoot:root,verifyApproval:verifier,
-    }),/full worker graph/);
+    }),/(?:full worker graph|unreachable worker)/);
     assert.equal(writes,0);
   } finally {await rm(root,{recursive:true,force:true})}
+});
+
+
+test("Main Agent owner-signed review-only project graph may start with local Codex",async()=>{
+  const {root,contracts}=await rootFixture([591]);
+  try{
+    const p=issue(contracts.get(591)!,[],"postmerge-review-591");
+    p.workflow.start="local_reviewer";
+    p.workflow.workers=[{id:"local_reviewer",executor:"codex",
+      prompt:"Independently review the merged PR; no implementation",
+      on:{approved:null,changes_requested:null,failed:null}}];
+    p.graphApproval.reviewedDigest=projectGraphDigest(p,121);
+    const approved=await prepareApprovedProjectPlan(plan([p]),{
+      projectRoot:root,verifyApproval:verifier});
+    assert.deepEqual(approved.ordering,[591]);
+    assert.match(approved.issues[0]!.workerGraphDigest,/^[0-9a-f]{64}$/);
+    const spoof=structuredClone(p);
+    spoof.workflow.workers[0]!.prompt="Unapproved changed instructions";
+    await assert.rejects(prepareApprovedProjectPlan(plan([spoof]),{
+      projectRoot:root,verifyApproval:verifier}),/(?:full worker graph|unreachable worker)/);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Main Agent signs planned browser done to local Codex, not fake host escalation",async()=>{
+  const {root,contracts}=await rootFixture([592]);
+  try{
+    const p=issue(contracts.get(592)!,[],"capability-plan-592");
+    p.workflow.workers[0]!.on={done:"local_developer",failed:null};
+    p.graphApproval.reviewedDigest=projectGraphDigest(p,121);
+    const result=await prepareApprovedProjectPlan(plan([p]),{
+      projectRoot:root,verifyApproval:verifier});
+    assert.deepEqual(result.ordering,[592]);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Main Agent rejects unreachable extra workers even if their IDs are listed",async()=>{
+  const {root,contracts}=await rootFixture([593]);
+  try{
+    const p=issue(contracts.get(593)!,[],"orphan-worker-593");
+    p.workflow.workers[0]!.on={done:"reviewer",failed:null};
+    assert.throws(()=>projectGraphDigest(p),/unreachable worker/);
+  }finally{await rm(root,{recursive:true,force:true})}
 });

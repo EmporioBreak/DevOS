@@ -117,6 +117,6 @@ test("fake approval, altered roster, absent source and altered Issue graph never
     invalid.issues[0]!.workflow.workers.push({id:"surprise",
       executor:"chatgpt_browser",prompt:"Unapproved agent",on:{done:null}});
     await assert.rejects(prepareApprovedRunnerSkills({...f.args(),project:invalid}),
-      /full worker graph/);
+      /(?:full worker graph|unreachable worker)/);
   }finally{await rm(f.root,{recursive:true,force:true})}
 });

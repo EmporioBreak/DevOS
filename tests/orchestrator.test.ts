@@ -114,7 +114,7 @@ test("starts without a pull request or existing sessions", async () => {
 });
 
 
-test("routes needs_local_worker from ChatGPT to local Codex mechanically", async () => {
+test("routes needs_local_worker only after independent trusted host capability verification", async () => {
   const workflow: Workflow = {
     version: 1,
     task: { repo: "owner/product", issue: 99 },
@@ -147,6 +147,8 @@ test("routes needs_local_worker from ChatGPT to local Codex mechanically", async
     workflow,
     executors: new Map([["chatgpt_browser", chat], ["codex", codex]]),
     stateStore: new MemoryStore(),
+    verifyHostOnlyFallback: async context => context.workerId === "primary" &&
+      context.nextWorkerId === "host" && context.task.issue === 99,
   }).run();
 
   assert.equal(result.completedRuns, 2);
@@ -781,4 +783,60 @@ test("wall-clock budget uses persisted startedAt across resume", async () => {
     now: () => 1_000 + 6 * 60 * 60_000 + 1,
   }).run(), /maxWallClockDurationMs/);
   assert.equal(executor.requests.length, 0);
+});
+
+test("unsubstantiated browser fallback fails closed without dispatching Codex", async () => {
+  const workflow: Workflow = {version:1,task:{repo:"owner/product",issue:992},
+    owner:{mode:"main_agent"},start:"browser",workers:[
+      {id:"browser",executor:"chatgpt_browser",prompt:"Implement safely",
+        on:{needs_local_worker:"local",done:null}},
+      {id:"local",executor:"codex",prompt:"Fallback",on:{done:null}},
+    ]};
+  const store=new MemoryStore();
+  const browser=new QueueExecutor("chatgpt_browser",[
+    {text:'DEVOS_RESULT {"status":"needs_local_worker"}',sessionId:"https://chatgpt.com/c/original"},
+  ]);
+  const local=new QueueExecutor("codex",[{text:'DEVOS_RESULT {"status":"done"}',sessionId:"host"}]);
+  const events:OrchestrationEvent[]=[];
+  await assert.rejects(new Orchestrator({projectRoot:"/project",workflow,
+    stateStore:store,executors:new Map([["chatgpt_browser",browser],["codex",local]]),
+    onEvent:event=>{events.push(event)},
+  }).run(),/host-only capability evidence|fallback verification/i);
+  assert.equal(local.requests.length,0);
+  assert.equal(store.state?.currentWorkerId,"browser");
+  assert.equal(store.state?.completedRuns,0);
+  assert.equal(store.state?.sessions.browser,"https://chatgpt.com/c/original");
+  assert.ok(events.some(x=>x.type==="task_status"&&x.status==="blocked"));
+});
+
+test("native Codex and browser use distinct strict skill instructions", async () => {
+  const {buildStrictWorkerSkillInstructions}=await import("../src/orchestrator.js");
+  const skill={stage:"implement" as const,manifestSha256:"a".repeat(64)};
+  const local=buildStrictWorkerSkillInstructions("codex",skill);
+  assert.match(local,/local|native|\.agents\/skills/i);
+  assert.doesNotMatch(local,/devos_skill_manifest|devos_skill_read|devos_worker_probe|authorize_chat/);
+  const browser=buildStrictWorkerSkillInstructions("chatgpt_browser",skill);
+  assert.match(browser,/devos_skill_manifest/);
+  assert.match(browser,/devos_skill_read/);
+});
+
+test("host verifier exceptions never auto-route a browser worker to Codex",async()=>{
+  const workflow:Workflow={version:1,task:{repo:"owner/product",issue:993},
+    start:"browser",workers:[
+      {id:"browser",executor:"chatgpt_browser",prompt:"Attempt host",
+        on:{needs_local_worker:"local"}},
+      {id:"local",executor:"codex",prompt:"Host fallback",on:{done:null}},
+    ]};
+  const store=new MemoryStore();
+  const browser=new QueueExecutor("chatgpt_browser",[
+    {text:'DEVOS_RESULT {"status":"needs_local_worker"}',sessionId:"https://chatgpt.com/c/source"},
+  ]);
+  const codex=new QueueExecutor("codex",[]);
+  await assert.rejects(new Orchestrator({projectRoot:"/project",workflow,
+    stateStore:store,executors:new Map([["chatgpt_browser",browser],["codex",codex]]),
+    verifyHostOnlyFallback:async()=>{throw new Error("lost host audit")},
+  }).run(),/host-only capability evidence/);
+  assert.equal(codex.requests.length,0);
+  assert.equal(store.state?.currentWorkerId,"browser");
+  assert.equal(store.state?.completedRuns,0);
 });
