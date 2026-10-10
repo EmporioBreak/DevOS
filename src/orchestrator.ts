@@ -330,6 +330,10 @@ export class Orchestrator {
             ? {
                 knownBrowserSessions: knownBrowserSessions!,
                 browserTurnId: `${state.completedRuns}:${worker.id}${browserTurnToken ? ":" + state.activeReport!.tokenHash : ""}`,
+                ...(browserTurnToken && state.activeReport ? { sendQueueTurn: {
+                  task: activeWorkflow.task, workerId: worker.id,
+                  turn: state.completedRuns, turnTokenHash: state.activeReport.tokenHash,
+                } } : {}),
                 ...(workerReportToken ? {
                   allowToolReportedStatus: true,
                   reportTurn: { task: activeWorkflow.task, active: state.activeReport! },

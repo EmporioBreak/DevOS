@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright-core";
-import { isSameChatGptConversation, waitForConversationUrl, extractSubmittedTurn } from "../src/chatgpt-browser-executor.js";
+import { isSameChatGptConversation, waitForConversationUrl, extractSubmittedTurn, submitOnly, BrowserPreSubmitFailureError } from "../src/chatgpt-browser-executor.js";
 
 test("recognizes only the saved Project conversation after browser resume", () => {
   const saved = "https://chatgpt.com/g/g-p-project/c/conversation-1";
@@ -12,6 +12,21 @@ test("recognizes only the saved Project conversation after browser resume", () =
   );
   assert.equal(isSameChatGptConversation(saved, "https://chatgpt.com/g/g-p-project/project"), false);
   assert.equal(isSameChatGptConversation(saved, "https://chatgpt.com/c/conversation-1"), false);
+});
+
+test("a visible disabled send control fails before arming or clicking", async () => {
+  let armed = 0;
+  let clicks = 0;
+  const composer = { first() { return this; }, async fill() {}, async isVisible() { return true; }, async isEnabled() { return true; }, async press() { clicks++; } };
+  const send = { first() { return this; }, async isVisible() { return true; }, async isEnabled() { return false; }, async click() { clicks++; } };
+  const absent = { first() { return this; }, async isVisible() { return false; } };
+  const page = {
+    locator(selector: string) { return selector.includes("prompt-textarea") ? composer : selector.includes("stop") ? absent : selector.includes("dialog") ? absent : send; },
+    async evaluate() { return 1; },
+  } as unknown as Page;
+  await assert.rejects(submitOnly(page, "queued turn", 100, () => { armed++; }), BrowserPreSubmitFailureError);
+  assert.equal(armed, 0);
+  assert.equal(clicks, 0);
 });
 
 test("waits for ChatGPT to replace its provisional conversation URL", async () => {
@@ -44,8 +59,7 @@ import { ChatGptBrowserExecutor, BrowserResumeUnavailableError } from "../src/ch
 function browserFixture(projectUrl: string, navigation: string, moveDuringFill?: string, moveAfterSend?: string) {
   let url = projectUrl;
   let sends = 0;
-  const locator = { first() { return this; }, async waitFor() {}, async fill() { if (moveDuringFill) url = moveDuringFill; }, async isVisible() { return true; }, async click() { sends++; if (moveAfterSend) url = moveAfterSend; }, async press() { sends++; } };
-  const page = { on() {}, url: () => url, async goto() { url = navigation; }, locator: () => locator, async evaluate() { return { text: 'DEVOS_RESULT {"status":"done"}', failed: false }; }, async waitForFunction() {}, async close() {} };
+  const page = { on() {}, url: () => url, async goto() { url = navigation; }, locator: (selector: string) => ({ first() { return this; }, async waitFor() {}, async fill() { if (moveDuringFill) url = moveDuringFill; }, async isVisible() { return !selector.includes("stop") && !selector.includes("dialog") && !selector.includes("captcha") && !selector.includes("challenge"); }, async isEnabled() { return true; }, async click() { sends++; if (moveAfterSend) url = moveAfterSend; }, async press() { sends++; } }), async evaluate() { return { text: 'DEVOS_RESULT {"status":"done"}', failed: false }; }, async waitForFunction() {}, async close() {} };
   const executor = new ChatGptBrowserExecutor({ projectUrl, profileDir: "/unused", headless: false }, 50);
   Object.assign(executor, { context: { async newPage() { return page; }, async close() {} } });
   return { executor, sends: () => sends };
@@ -98,12 +112,11 @@ test("fresh response failure still persists a conversation created during submis
   const created = "https://chatgpt.com/g/one/c/created";
   let url = project;
   let saved: string | undefined;
-  const locator = {
-    first() { return this; }, async waitFor() {}, async fill() {}, async isVisible() { return true; },
-    async click() { url = created; }, async press() { url = created; },
-  };
   const page = {
-    on() {}, url: () => url, async goto() {}, locator: () => locator,
+    on() {}, url: () => url, async goto() {}, locator: (selector: string) => ({
+      first() { return this; }, async waitFor() {}, async fill() {}, async isVisible() { return !selector.includes("stop") && !selector.includes("dialog") && !selector.includes("captcha") && !selector.includes("challenge"); }, async isEnabled() { return true; },
+      async click() { url = created; }, async press() { url = created; },
+    }),
     async evaluate() { return 1; }, async waitForFunction() { throw new Error("response failed after submission"); }, async close() {},
   };
   const executor = new ChatGptBrowserExecutor({ projectUrl: project, profileDir: "/unused", headless: false }, 1000);

@@ -63,7 +63,7 @@ function fixture(options: {
         status: () => reads ? (options.navigationStatus ?? 200) : 200
       };
     },
-    locator() {
+    locator(selector: string) {
       return {
         first() {
           return this;
@@ -72,6 +72,8 @@ function fixture(options: {
             throw Error('ChatGPT authentication required');
         }, async fill() {
         }, async isVisible() {
+          return !selector.includes("stop") && !selector.includes("dialog") && !selector.includes("captcha") && !selector.includes("challenge");
+        }, async isEnabled() {
           return true;
         }, async click() {
           sends++;
@@ -266,7 +268,7 @@ test('continued stream progress across old ten-minute boundary does not expire; 
   const locator = {
     first() {
       return this;
-    }, async click() {
+    }, async isVisible() { return true; }, async isEnabled() { return true; }, async click() {
     }, async press() {
     }
   };

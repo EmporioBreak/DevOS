@@ -22,6 +22,9 @@ import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { observeWorkerAuthorization } from "./chat-worker-observer.js";
 import { localWorkerAuthorization } from "./chat-worker-grants.js";
 import { classifyBrowserFailure, browserRecoveryDelayMs } from "./browser-recovery-policy.js";
+import { waitForStableReadiness, type ReadinessSnapshot } from "./chat-readiness.js";
+import { createHash } from "node:crypto";
+import { ChatSendQueueStore } from "./chat-send-queue.js";
 
 export class BrowserResumeUnavailableError extends Error {
   constructor(readonly sessionId: string, message: string) {
@@ -63,6 +66,12 @@ const SEND = [
   'button[data-testid="send-button"]:visible',
   'button[aria-label*="Send"]:visible',
   'button[type="submit"][aria-label="Отправить"]:visible',
+].join(",");
+
+const STOP = [
+  'button[data-testid*="stop"]:visible',
+  'button[aria-label*="Stop"]:visible',
+  'button[aria-label*="Остановить"]:visible',
 ].join(",");
 
 export const chatGptBrowserDeps = {
@@ -115,16 +124,29 @@ export class ChatGptBrowserExecutor implements Executor {
     if (projectScope && request.sessionId) {
       assertChatGptProjectScope(this.config.projectUrl, request.sessionId, true);
     }
+    const sendQueue = request.sendQueueTurn ? new ChatSendQueueStore(request.projectRoot, {
+      repo: request.sendQueueTurn.task.repo, issue: request.sendQueueTurn.task.issue,
+      workerId: request.sendQueueTurn.workerId, turn: request.sendQueueTurn.turn,
+      turnTokenHash: request.sendQueueTurn.turnTokenHash,
+      promptSha256: createHash("sha256").update(request.prompt).digest("hex"),
+      conversationSha256: createHash("sha256").update(request.sessionId ?? url).digest("hex"),
+    }) : undefined;
+    const queueRecord = await sendQueue?.begin();
+    if (queueRecord?.status === "submitted_confirmed")
+      throw new Error("Exact worker turn already has a confirmed send receipt; refusing another send");
+    if (queueRecord?.status === "blocked")
+      throw new Error("Exact worker turn exceeded its persisted readiness deadline; refusing another send");
     debugLog("browser.session", { decision: request.sessionId ? "resume" : "fresh", requestedUrl: url, projectRoot: request.projectRoot });
     const {
       page,
       prepared: preparedMessage,
       getBackendFailure,
       detachBackendListener,
-    } = await this.prepare(request, !!projectScope);
+    } = await this.prepare(request, !!projectScope, sendQueue, queueRecord?.deadlineAt);
     let mayHaveSubmitted = false;
     let submitted: SubmittedTurn | undefined;
     let submissionAmbiguous = false;
+    let receiptPersist: Promise<unknown> | undefined;
     let durableSession = request.sessionId;
     // The terminal MCP tool is the control plane: receipt of its authenticated,
     // turn-scoped report can finish this run even if the SSE observer hangs.
@@ -159,7 +181,10 @@ export class ChatGptBrowserExecutor implements Executor {
         const candidate = extractSubmittedTurn(payload, request.prompt);
         debugLog("browser.submission.shape", conversationRequestShape(payload));
         if (!candidate || submitted) {
-          if (submitted) submissionAmbiguous = true;
+          if (submitted) {
+            submissionAmbiguous = true;
+            receiptPersist = sendQueue?.markAmbiguous("duplicate_post");
+          }
           // Missing/inaccessible identity in the network observer is not proof
           // of a conflicting request: the exact-prompt page-world fetch
           // interceptor can still independently supply the single ID.
@@ -167,6 +192,7 @@ export class ChatGptBrowserExecutor implements Executor {
           return;
         }
         submitted = candidate;
+        receiptPersist = sendQueue?.confirm(candidate.messageId);
         // Log only whether identifiers are present; never persist prompt, IDs,
         // OAuth headers or a raw request payload in diagnostics.
         debugLog("browser.submission", { phase: "post-submit", captured: true, hasConversationId: !!submitted.conversationId, hasMessageId: true });
@@ -180,12 +206,13 @@ export class ChatGptBrowserExecutor implements Executor {
     try {
       let submissionStarted!: () => void;
       const submission = new Promise<void>(resolve => { submissionStarted = resolve; });
-      const assertSubmissionScope = () => {
+      const assertSubmissionScope = async () => {
         try {
           const backendFailure = getBackendFailure();
           if (backendFailure) throw backendFailure;
           if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), request.sessionId !== undefined);
           if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation before submission");
+          await sendQueue?.arm();
           mayHaveSubmitted = true;
           submissionStarted();
         } catch (error) {
@@ -208,6 +235,7 @@ export class ChatGptBrowserExecutor implements Executor {
             new DevosToolRegistry(request.projectRoot).waitForReport(
               request.reportTurn.task, request.reportTurn.active, reportAbort.signal,
             ).then(status => {
+              receiptPersist = sendQueue?.confirmMcp();
               debugLog("browser.report", { workerId: request.workerId, turn: request.reportTurn!.active.turn, status, decision: "mcp-terminal" });
               // Settle the old Playwright waiter without altering the ChatGPT
               // network request or UI. Guard by token so it cannot affect a
@@ -226,6 +254,7 @@ export class ChatGptBrowserExecutor implements Executor {
       if (request.sessionId) {
         const outcome = await response;
         if ("error" in outcome) throw outcome.error;
+        await receiptPersist;
         if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
         if (!isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation after submission");
         debugLog("browser.session.ready", { sessionId: request.sessionId, actualUrl: page.url() });
@@ -249,6 +278,7 @@ export class ChatGptBrowserExecutor implements Executor {
 
       const outcome = await response;
       if ("error" in outcome) throw outcome.error;
+      await receiptPersist;
       if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
       if (!isSameChatGptConversation(sessionId, page.url())) throw new Error("ChatGPT changed fresh conversation after submission");
       debugLog("browser.response", { sessionId, textLength: outcome.text.length });
@@ -256,6 +286,15 @@ export class ChatGptBrowserExecutor implements Executor {
     } catch (error) {
       const cause = error instanceof Error ? error.message.split("\n")[0]! : "Browser operation failed";
       if (mayHaveSubmitted) {
+        try { await receiptPersist; } catch { /* the persisted pending state remains fail-closed */ }
+        if (sendQueue) {
+          try {
+            const queueState = await sendQueue.load();
+            if (queueState?.status === "submission_pending")
+              await sendQueue.markAmbiguous(submissionAmbiguous ? "duplicate_post" : /timeout|click/i.test(cause) ? "click_timeout" : "receipt_lost");
+          }
+          catch { /* an exact receipt may already have committed */ }
+        }
         // Optional read-only DOM evidence: one exact submitted user turn and
         // one stable assistant final bearing a machine-valid DEVOS_RESULT.
         // This does not depend on outgoing network user IDs or extra MCP calls.
@@ -377,6 +416,8 @@ export class ChatGptBrowserExecutor implements Executor {
   private async prepare(
     request: WorkerRequest,
     enforceScope: boolean,
+    sendQueue?: ChatSendQueueStore,
+    queueDeadlineAt?: string,
   ): Promise<{
     page: Page;
     prepared: PreparedMessage;
@@ -384,7 +425,7 @@ export class ChatGptBrowserExecutor implements Executor {
     detachBackendListener: () => void;
   }> {
     const url = request.sessionId ?? this.config.projectUrl;
-    const deadline = Date.now() + Math.min(this.timeoutMs, 45_000);
+    const deadline = queueDeadlineAt ? Date.parse(queueDeadlineAt) : Date.now() + Math.min(this.timeoutMs, 45_000);
     for (let attempt = 1; attempt <= 3; attempt++) {
       let page: Page | undefined;
       let phase = "context";
@@ -392,7 +433,7 @@ export class ChatGptBrowserExecutor implements Executor {
       let timedOut = false;
       let backendFailure: Error | undefined;
       let detachBackendListener = () => {};
-      const budget = Math.min(15_000, deadline - Date.now());
+      const budget = Math.max(0, Math.min(queueDeadlineAt ? deadline - Date.now() : 15_000, deadline - Date.now()));
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         if (budget <= 0) throw new Error("Timeout: preparation deadline exhausted");
@@ -476,7 +517,9 @@ export class ChatGptBrowserExecutor implements Executor {
           this.assertIdentity(request, currentPage, enforceScope);
           phase = "prepare-message";
           if (expired) throw new Error("Timeout: preparation deadline exhausted");
-          const prepared = await prepareMessage(currentPage, request.prompt, budget, !request.reportTurn);
+          const prepared = await prepareMessage(currentPage, request.prompt, budget, !request.reportTurn, () =>
+            this.assertIdentity(request, currentPage, enforceScope), sendQueue,
+            queueDeadlineAt ? Math.max(1, deadline - Date.now()) : Math.min(budget, 10_000));
           if (backendFailure) throw backendFailure;
           this.assertIdentity(request, currentPage, enforceScope);
           return {
@@ -753,15 +796,53 @@ interface PreparedMessage { token: number; useButton: boolean }
 
 async function prepareMessage(
   page: Page, prompt: string, timeoutMs: number, needsStream = true,
+  assertIdentity?: () => void, sendQueue?: ChatSendQueueStore, queueTimeoutMs = Math.min(timeoutMs, 10_000),
 ): Promise<PreparedMessage> {
+  const observe = async (requireSendEnabled: boolean): Promise<ReadinessSnapshot> => {
+    assertIdentity?.();
+    const composer = page.locator(COMPOSER).first();
+    const send = page.locator(SEND).first();
+    const stop = page.locator(STOP).first();
+    const overlay = page.locator('[role="dialog"]:visible, [data-testid*="captcha"]:visible, [data-testid*="challenge"]:visible').first();
+    const composerEnabled = await composer.isVisible() && await composer.isEnabled();
+    const sendVisible = await send.isVisible();
+    return {
+      conversationMatches: true,
+      projectMatches: true,
+      composerEnabled,
+      sendVisible,
+      sendEnabled: requireSendEnabled ? sendVisible && await send.isEnabled() : true,
+      generating: await stop.isVisible(),
+      blockingOverlay: await overlay.isVisible(),
+    };
+  };
+  const readinessTimeoutMs = Math.max(1, Math.min(timeoutMs, queueTimeoutMs));
+  const readinessIntervalMs = sendQueue ? 25 : Math.min(5, Math.max(1, Math.floor(readinessTimeoutMs / 4)));
+  await waitForStableReadiness(() => observe(false), {
+    timeoutMs: readinessTimeoutMs, intervalMs: readinessIntervalMs, maxIntervalMs: 1_000, stableSamples: 2,
+  }).catch(error => {
+    throw new BrowserPreSubmitFailureError(error instanceof Error ? error.message : "Chat readiness is unknown");
+  });
+  await sendQueue?.markReady();
   await page.locator(COMPOSER).first().fill(prompt, { timeout: timeoutMs });
+  await waitForStableReadiness(() => observe(true), {
+    timeoutMs: readinessTimeoutMs, intervalMs: readinessIntervalMs, maxIntervalMs: 1_000, stableSamples: 2,
+  }).catch(error => {
+    throw new BrowserPreSubmitFailureError(error instanceof Error ? error.message : "Chat send readiness is unknown");
+  });
+  await sendQueue?.markReady();
   if (!needsStream) return { token: 0, useButton: await page.locator(SEND).first().isVisible() };
   const token = await page.evaluate(() => {
     const arm = (window as unknown as { __DEVOS_ARM_STREAM__?: (prompt: string) => number }).__DEVOS_ARM_STREAM__;
     if (!arm) throw new Error("ChatGPT response loader is not installed");
     return arm(prompt);
   });
-  return { token, useButton: await page.locator(SEND).first().isVisible() };
+  const send = page.locator(SEND).first();
+  const visible = await send.isVisible();
+  if (visible && !(await send.isEnabled())) {
+    throw new BrowserPreSubmitFailureError("Chat send control is visible but disabled; no submission was attempted");
+  }
+  return { token, useButton: visible };
 }
 
 export function isTransientBrowserFailure(error: unknown): boolean {
@@ -770,13 +851,17 @@ export function isTransientBrowserFailure(error: unknown): boolean {
 
 export async function submitOnly(
   page: Page, prompt: string, timeoutMs: number,
-  beforeSubmit?: () => void, prepared?: PreparedMessage,
+  beforeSubmit?: () => void | Promise<void>, prepared?: PreparedMessage,
 ): Promise<void> {
   const message = prepared ?? await prepareMessage(page, prompt, timeoutMs);
-  beforeSubmit?.();
   if (message.useButton) {
-    await page.locator(SEND).first().click({ timeout: Math.min(timeoutMs, 15_000) });
+    const send = page.locator(SEND).first();
+    if (!(await send.isVisible()) || !(await send.isEnabled()))
+      throw new BrowserPreSubmitFailureError("Chat send control became unavailable before click; no click was attempted");
+    await beforeSubmit?.();
+    await send.click({ timeout: Math.min(timeoutMs, 1_000) });
   } else {
+    await beforeSubmit?.();
     await page.locator(COMPOSER).first().press("Enter", { timeout: Math.min(timeoutMs, 15_000) });
   }
 }
@@ -785,7 +870,7 @@ export async function sendAndRead(
   page: Page,
   prompt: string,
   timeoutMs: number,
-  beforeSubmit?: () => void,
+  beforeSubmit?: () => void | Promise<void>,
   prepared?: PreparedMessage,
 ): Promise<string> {
   const message = prepared ?? await prepareMessage(page, prompt, timeoutMs);
@@ -793,10 +878,12 @@ export async function sendAndRead(
   const composer = page.locator(COMPOSER).first();
   const send = page.locator(SEND).first();
   if (message.useButton) {
-    beforeSubmit?.();
-    await send.click({ timeout: Math.min(timeoutMs, 15_000) });
+    if (!(await send.isVisible()) || !(await send.isEnabled()))
+      throw new BrowserPreSubmitFailureError("Chat send control became unavailable before click; no click was attempted");
+    await beforeSubmit?.();
+    await send.click({ timeout: Math.min(timeoutMs, 1_000) });
   } else {
-    beforeSubmit?.();
+    await beforeSubmit?.();
     await composer.press("Enter", { timeout: Math.min(timeoutMs, 15_000) });
   }
 

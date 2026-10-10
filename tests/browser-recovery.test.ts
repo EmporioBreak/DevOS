@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JsonStateStore } from "../src/json-state-store.js";
 import { runInNewContext } from "node:vm";
@@ -23,6 +24,7 @@ function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failur
     headers: () => ({ "content-type": "text/html" }),
   });
   const locator = {
+    selector: "",
     first() { return this; },
     async waitFor() {
       if (options.backendDeniedDuringWait) {
@@ -36,7 +38,8 @@ function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failur
       if (options.backendDeniedDuringFill) denied();
       if (options.phase === "fill") fail();
     },
-    async isVisible() { return true; },
+    async isVisible() { return !this.selector.includes("stop") && !this.selector.includes("dialog") && !this.selector.includes("captcha") && !this.selector.includes("challenge"); },
+    async isEnabled() { return true; },
     async click() { sends++; url = options.noConversation ? project : url === saved ? saved : created; if (options.sendError) throw new Error("Target page crashed during click"); },
     async press() { await this.click(); },
   };
@@ -56,7 +59,7 @@ function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failur
       return { status: () => options.statusSequence?.[Math.min(urls.length - 1, options.statusSequence.length - 1)] ?? options.status ?? 200,
         headers: () => options.responseHeaders ?? {} };
     },
-    locator: () => locator,
+    locator: (selector: string) => Object.assign(Object.create(locator), { selector }),
     async evaluate(fn: Function) {
       if (fn.toString().includes("document.body")) {
         const body = options.bodySequence?.[Math.min(urls.length - 1, options.bodySequence.length - 1)] ?? options.body ?? "";
@@ -274,7 +277,14 @@ function recoveryWorkflow(): Workflow {
   };
 }
 
-test("orchestrator ordinary run retries a proven first-turn pre-submit 403 without replacing task state", async () => {
+async function isolatedProjectRoot(t: import("node:test").TestContext): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "devos-browser-recovery-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  return root;
+}
+
+test("orchestrator ordinary run retries a proven first-turn pre-submit 403 without replacing task state", async t => {
+  const root = await isolatedProjectRoot(t);
   const options = { status: 403 };
   const f = fixture(options);
   const workflow = recoveryWorkflow();
@@ -288,7 +298,7 @@ test("orchestrator ordinary run retries a proven first-turn pre-submit 403 witho
 
   await assert.rejects(
     new Orchestrator({
-      projectRoot: "/project",
+      projectRoot: root,
       workflow,
       executors: new Map([["chatgpt_browser", f.executor]]),
       stateStore: store,
@@ -304,7 +314,7 @@ test("orchestrator ordinary run retries a proven first-turn pre-submit 403 witho
   f.reopen();
   options.status = 200;
   const result = await new Orchestrator({
-    projectRoot: "/project",
+    projectRoot: root,
     workflow,
     executors: new Map([["chatgpt_browser", f.executor]]),
     stateStore: store,
@@ -317,7 +327,8 @@ test("orchestrator ordinary run retries a proven first-turn pre-submit 403 witho
   assert.equal(f.sends(), 1);
 });
 
-test("orchestrator ordinary run retries a proven first-turn transient exhaustion", async () => {
+test("orchestrator ordinary run retries a proven first-turn transient exhaustion", async t => {
+  const root = await isolatedProjectRoot(t);
   const options: { phase?: "wait"; failures?: number } = { phase: "wait", failures: 99 };
   const f = fixture(options);
   const workflow = recoveryWorkflow();
@@ -325,7 +336,7 @@ test("orchestrator ordinary run retries a proven first-turn transient exhaustion
 
   await assert.rejects(
     new Orchestrator({
-      projectRoot: "/project",
+      projectRoot: root,
       workflow,
       executors: new Map([["chatgpt_browser", f.executor]]),
       stateStore: store,
@@ -338,7 +349,7 @@ test("orchestrator ordinary run retries a proven first-turn transient exhaustion
   f.reopen();
   options.failures = 0;
   const result = await new Orchestrator({
-    projectRoot: "/project",
+    projectRoot: root,
     workflow,
     executors: new Map([["chatgpt_browser", f.executor]]),
     stateStore: store,
@@ -390,14 +401,15 @@ test("unknown fresh browser failure clears safe retry permission and cannot star
   assert.equal(store.state?.activeReport?.workerId, "browser", "ambiguous attempt must remain persisted");
 });
 
-test("ambiguous post-submit fresh failure preserves created identity instead of authorizing fresh replacement", async () => {
+test("ambiguous post-submit fresh failure preserves created identity instead of authorizing fresh replacement", async t => {
+  const root = await isolatedProjectRoot(t);
   const f = fixture({ sendError: true });
   const workflow = recoveryWorkflow();
   const store = new RecoveryStateStore();
 
   await assert.rejects(
     new Orchestrator({
-      projectRoot: "/project",
+      projectRoot: root,
       workflow,
       executors: new Map([["chatgpt_browser", f.executor]]),
       stateStore: store,
@@ -411,7 +423,8 @@ test("ambiguous post-submit fresh failure preserves created identity instead of 
 });
 
 
-test("saved conversation remains identical across a pre-submit failure and ordinary retry", async () => {
+test("saved conversation remains identical across a pre-submit failure and ordinary retry", async t => {
+  const root = await isolatedProjectRoot(t);
   const options = { status: 403 };
   const f = fixture(options);
   const workflow = recoveryWorkflow();
@@ -425,7 +438,7 @@ test("saved conversation remains identical across a pre-submit failure and ordin
 
   await assert.rejects(
     new Orchestrator({
-      projectRoot: "/project",
+      projectRoot: root,
       workflow,
       executors: new Map([["chatgpt_browser", f.executor]]),
       stateStore: store,
@@ -438,7 +451,7 @@ test("saved conversation remains identical across a pre-submit failure and ordin
   f.reopen();
   options.status = 200;
   const result = await new Orchestrator({
-    projectRoot: "/project",
+    projectRoot: root,
     workflow,
     executors: new Map([["chatgpt_browser", f.executor]]),
     stateStore: store,
@@ -492,12 +505,13 @@ test("safe fresh retry permission is consumed before another executor attempt ca
   assert.equal(permissionAtEntry, false, "a process interruption cannot leave permission to replay an ambiguous attempt");
 });
 
-test("possible submission without a saved URL revokes safe retry and cannot create a replacement", async () => {
+test("possible submission without a saved URL revokes safe retry and cannot create a replacement", async t => {
+  const root = await isolatedProjectRoot(t);
   const options = { status: 403, sendError: true, noConversation: true };
   const f = fixture(options);
   const workflow = recoveryWorkflow();
   const store = new RecoveryStateStore();
-  const runOptions = { projectRoot: "/project", workflow, executors: new Map([["chatgpt_browser", f.executor]]), stateStore: store };
+  const runOptions = { projectRoot: root, workflow, executors: new Map([["chatgpt_browser", f.executor]]), stateStore: store };
   await assert.rejects(new Orchestrator(runOptions).run(), /HTTP 403/);
   f.reopen();
   options.status = 200;
