@@ -57,19 +57,34 @@ export async function sealRunnerSkillGraph(
   upstreamRoot=process.env.DEVOS_UPSTREAM_ROOT??join(homedir(),".devos-staging","upstream"),
 ):Promise<string>{
   const root=await realpath(projectRoot),valid=parseWorkflow(workflow);
-  if(valid.skillsMode!=="strict"||valid.owner?.mode!=="main_agent"||
-      valid.workers.find(w=>w.id===valid.start)?.executor!=="chatgpt_browser")
-    throw new Error("Only pre-approved browser-first Main Agent graphs may be sealed");
+  if(valid.skillsMode!=="strict"||valid.owner?.mode!=="main_agent")
+    throw new Error("Only pre-approved Main Agent graphs may be sealed");
   if(!await assertOwnerApproved())
     throw new Error("Missing verified owner approval for frozen Runner graph");
   const review=valid.workers.filter(w=>/review|qa/i.test(w.id));
   const developers=valid.workers.filter(w=>/develop|implement/i.test(w.id));
   if(developers.length && !review.length)
     throw new Error("Strict Runner requires a predeclared independent reviewer");
-  for(const worker of valid.workers.filter(w=>w.executor==="codex")){
-    if(!valid.workers.some(b=>b.executor==="chatgpt_browser" &&
-        b.on.needs_local_worker===worker.id))
-      throw new Error("Codex fallback must be predeclared behind browser needs_local_worker");
+  // Main Agent chooses concrete executors for each action during planning.
+  // A signed, predeclared Codex worker may be an initial worker or the next
+  // planned step after `done`; it is NOT necessarily an emergency fallback.
+  // Runtime-only `needs_local_worker` still requires independently verified
+  // host evidence. Unreachable workers cannot be silently added to the graph.
+  const reachable=new Set<string>([valid.start]);
+  const pending=[valid.start];
+  const byId=new Map(valid.workers.map(worker=>[worker.id,worker]));
+  while(pending.length){
+    const id=pending.shift()!;
+    for(const next of Object.values(byId.get(id)!.on)){
+      if(next && !reachable.has(next)){
+        reachable.add(next);
+        pending.push(next);
+      }
+    }
+  }
+  for(const worker of valid.workers){
+    if(!reachable.has(worker.id))
+      throw new Error(`Signed Runner graph has unreachable worker: ${worker.id}`);
   }
   const manifest=frozen(valid,await checkedWorkers(root,valid,ownerSecret,upstreamRoot));
   const signed:SignedRunnerGraph={version:2,graph:manifest,mac:sign(manifest,ownerSecret)};

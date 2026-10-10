@@ -20,3 +20,9 @@
 - [ ] T010 Trusted DEVOS_OWNER_HANDOFF / FINAL_REVIEW_REQUIRED; only Main Agent accepts or requests changes.
 
 No worker may self-authorize owner or downgrade security to work around this defect.
+
+## Owner-planned capability assignment, not rigid category routing
+- [ ] T011 RED/GREEN: signed ordinary `done → codex` dispatches its already declared local worker without fake `needs_local_worker`; preserve reviewer, PR and skill assignment.
+- [ ] T012 RED/GREEN: Main Agent may seal a capability-justified Codex-first graph with independent reviewer; unreachable/unsigned workers still rejected.
+- [ ] T013 RED/GREEN: unscheduled model-chosen `needs_local_worker` cannot bypass independently verified missing host capability proof.
+- [ ] T014 Verify requirements/skill assignment distinguish code or shell checks from actual visual interaction when the task demands it, without hard-coded categories inside Runner.

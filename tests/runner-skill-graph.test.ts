@@ -416,3 +416,60 @@ test("strict signed MCP blocker plus trusted host proof routes only predeclared 
     assert.equal(state.mainAgentReviewPending,true);
   }finally{await rm(f.root,{recursive:true,force:true})}
 });
+
+test("Main Agent planned Codex action after browser done needs no fake host fallback", async()=>{
+  const f=await fixture();
+  try{
+    f.w.workers[0]!.on={done:"host",failed:null};
+    await sealRunnerSkillGraph(f.root,f.w,secret,async()=>true,upstreamRoot);
+    const requests:string[]=[];
+    const browser:Executor={kind:"chatgpt_browser",async run(request){
+      requests.push(request.workerId!);
+      return {text:request.workerId==="reviewer"
+        ? 'DEVOS_RESULT {"status":"approved"}'
+        : 'DEVOS_RESULT {"status":"done"}',
+        sessionId:"https://chatgpt.com/c/"+request.workerId};
+    }};
+    const codex:Executor={kind:"codex",async run(request){
+      requests.push(request.workerId!);
+      assert.equal(request.codexSkills?.mandatory,true);
+      assert.doesNotMatch(request.prompt,/devos_skill_manifest|devos_skill_read/);
+      return {text:'DEVOS_RESULT {"status":"done"}',sessionId:"codex-local-planned"};
+    }};
+    const result=await new Orchestrator({projectRoot:f.root,workflow:f.w,
+      executors:new Map([["chatgpt_browser",browser],["codex",codex]]),
+      stateStore:new FakeStore(),
+      verifyAssignedWorkerSkills:async id=>{
+        const graph=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
+        const assigned=graph.workers.find(w=>w.workerId===id)!;
+        return {stage:assigned.stage,manifestSha256:assigned.manifestSha256};
+      },
+    }).run();
+    assert.deepEqual(requests,["developer","host","reviewer"]);
+    assert.equal(result.sessions.host,"codex-local-planned");
+    assert.equal(result.mainAgentReviewPending,true);
+    assert.equal(result.task?.pr,917);
+  }finally{await rm(f.root,{recursive:true,force:true})}
+});
+
+test("only the owner-signed graph may start with an explicitly planned local worker", async()=>{
+  const f=await fixture();
+  try{
+    f.w.start="host";
+    const hash=await sealRunnerSkillGraph(f.root,f.w,secret,async()=>true,upstreamRoot);
+    assert.match(hash,/^[a-f0-9]{64}$/);
+    const actual=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
+    assert.equal(actual.workers.find(w=>w.workerId==="host")?.executor,"codex");
+    const mutated={...f.w,start:"developer"};
+    await assert.rejects(verifyRunnerSkillGraph(f.root,mutated,secret,upstreamRoot),/graph does not match/);
+  }finally{await rm(f.root,{recursive:true,force:true})}
+});
+
+test("a frozen graph cannot contain undeclared unreachable local workers",async()=>{
+  const f=await fixture();
+  try{
+    f.w.workers[0]!.on={done:"reviewer",failed:null};
+    await assert.rejects(sealRunnerSkillGraph(f.root,f.w,secret,async()=>true,upstreamRoot),
+      /unreachable worker: host/);
+  }finally{await rm(f.root,{recursive:true,force:true})}
+});

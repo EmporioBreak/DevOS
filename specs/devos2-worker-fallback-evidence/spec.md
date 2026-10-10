@@ -22,3 +22,11 @@
 - RED/GREEN: browser worker with available authorized Mac capability cannot auto-delegate merely on subjective risk.
 - Real independently evidenced inaccessible host-only tool can use exact signed fallback, and unauthorized/malformed proof cannot.
 - Regression: existing DevOS statuses, review, same-conversation continuity, owner approval boundary and worker report security stay valid.
+
+## Main-Agent-planned capability routing (owner clarification)
+- Main Agent decomposes each Issue into concrete actions and selects a capable executor for every worker **before** sealing the owner-approved graph. The algorithm does not hard-code issue categories such as UI, iOS, security, tests or coding to executors.
+- Assign browser workers wherever actual authorized Desktop Commander MCP operations and verified browser capabilities suffice for the required action. Assign predeclared local Codex workers when the particular required operation exceeds those tools, provided the local executor actually has the capability.
+- Human-observed native UI testing, iOS Simulator interactions, security investigations and other scenarios are only examples of capability differences, not rigid routing categories. A shell command is not by itself proof of human-style screen observation.
+- The exact Main Agent graph is owner-approved and HMAC-sealed with every node's executor, prompt, skills and transitions. A **planned** Codex stage may be the initial stage or follow a prior worker's ordinary `done`; this is not a speculative runtime `needs_local_worker` fallback.
+- The Runner must deterministically execute the signed graph. It cannot reassign an action from browser to Codex by interpreting the Issue title, task risk or worker preference. Unplanned `needs_local_worker` still requires genuine independently verified host-only evidence, and routes only to the predeclared fallback. No duplicate browser submits or session replacement.
+- If neither available environment can perform a required action, the Main Agent must surface the capability gap; do not claim success, downgrade the acceptance test or invent additional workers.
