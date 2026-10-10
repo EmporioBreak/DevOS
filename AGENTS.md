@@ -96,6 +96,18 @@ closed and explain the block. Do not use marker/sidebar UI traversal.
 - Final task acceptance is not a worker role. The main agent decides `approved` or `changes_requested`.
 - If the main agent requests changes, continue the same task and preserve task-scoped worker sessions and the existing PR.
 
+### Task-specific production-ready worker teams
+
+**Do not default to the smallest developer → reviewer graph or a fixed roster of specialist roles.** Before freezing each new Issue worker graph, Main Agent must derive the necessary production-readiness evidence **from that task's actual requirements, changed surfaces, user journeys, failure modes and risks**. An independent code reviewer is a minimum for implementation, **not** the whole QA plan.
+
+For each relevant risk or acceptance criterion, record an executable verification scenario, environment and tools, expected observable evidence, responsible predeclared worker, and what happens on failure. Consider, as applicable, functional/unit and integration checks, genuine user-facing UI/E2E (including visual desktop or Simulator interaction when expressly required), authorization/security/isolation, concurrency and crash/recovery, performance, accessibility, data migrations, deploy/rollback, compatibility and observability. Explicitly mark non-applicable checks with the task-specific reason; do not require all categories or invent a universal checklist of mandatory workers. Pure scripted/headless tests or shell control do not satisfy an acceptance criterion requiring real visual Computer Use.
+
+**Choose the team after choosing the evidence, not the other way around.** Assign each action to a worker with verified available capabilities and suitable skills; choose `chatgpt_browser` where its authorized MCP tools suffice, and preplan `codex` only for specific operations needing local capabilities. A worker can own several compatible tests, but must not independently certify its own implementation when independence is required. Add separate security, UI/E2E, reliability, performance or other specialists **only when their distinct checks are necessary**; a small safe change may correctly need only developer plus independent reviewer. Neither developer/reviewer labels nor task category are executor-routing rules.
+
+Before seeking approval, publish in the GitHub Issue the **acceptance-to-worker coverage** and the **complete immutable graph**: exact worker identity/executor/role/skills/capabilities, order and conditional transitions, independent verification, and `changes_requested` loops returning to the same developer/PR/saved worker conversations and retesting every affected gate. Every required acceptance check must have a declared execution/verification path, or an explicit blocker resolved **before** launch; do not defer essential QA to an undeclared new worker after starting. If real capabilities are unavailable, preserve the task as blocked rather than silently substitute a weaker test or proclaim production-ready. Owner approval must bind the resulting exact scope and entire graph; Runner only executes it and may not expand the team.
+
+Main Agent gives final `approved` only after checking actual evidence for all applicable gates, not simply because a reviewer returned `approved`. Preserve each already-approved active Issue's frozen graph; this rule applies to new planning and to any separately owner-approved material replan, never a silent mid-run rewrite.
+
 ## Main-agent execution boundary
 
 1. The main agent receives the user task, clarifies requirements, plans the complete worker graph, and records the task contracts and acceptance criteria in GitHub Issues.
