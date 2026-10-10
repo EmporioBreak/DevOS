@@ -65,3 +65,18 @@ test("worker authorization runbook preserves live blocker and fail-closed operat
  assert.match(runbook,/preflight.*blocked|вернуть `blocked`/i);
  assert.match(runbook,/не подтверждает завершение E2E/);
 });
+
+
+test("deployed DevOS 2 guidance cannot still claim Production is old or deploy prohibited",async()=>{
+ const [agents,guide,release]=await Promise.all([
+   read("AGENTS.md"),read("docs/devos2-user-guide.md"),read("docs/devos2-release-gate.md")]);
+ for(const file of [agents,guide,release]){
+   assert.match(file,/650865b/);
+   assert.match(file,/2026-10-10/);
+ }
+ assert.doesNotMatch(guide,/Production остаётся на старом подключении/);
+ assert.doesNotMatch(release,/Производство остаётся на прежнем работающем коде/);
+ assert.match(agents,/does NOT mean E2E accepted/i);
+ assert.match(release,/fullProductAcceptance:false/);
+ assert.match(release,/scripts\/devos2-production-postrelease\.smoke\.mjs/);
+});

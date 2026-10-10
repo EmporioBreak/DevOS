@@ -8,7 +8,7 @@
 
 В нормальном проекте пользователь сначала обсуждает с Main Agent результат, альтернативы, границы и критерии. Архитектурные решения и существенные изменения scope обсуждаются **до** выполнения, без серии повторных согласований внутри утверждённой задачи. Main Agent получает подлинное подтверждение пользователя и привязывает его к точной версии оригинальных Spec Kit артефактов и полного worker graph; одна лишь строка `userMessageRef` в JSON не является доказательством.
 
-Для текущей миграции действует особое правило: Main Agent разрабатывает Epic #121 **напрямую в изолированных Git worktrees и через draft PR**, не поручая построение DevOS 2 самому Runner. Production остаётся на старом подключении до release gate.
+Миграция Epic #121 выполнялась Main Agent **напрямую в изолированных Git worktrees и через draft PR**, не поручая построение DevOS 2 самому Runner. По решению владельца DevOS 2 уже развёрнут на Production (Git SHA `650865bc`, 2026-10-10), исходный ngrok и общий Camoufox сохранены; отдельный тестовый MCP отключён. **Не путайте факт развёртывания с E2E-приёмкой:** Web/iPhone и независимые worker-сценарии остаются неподтверждёнными в #150–154. Для новых задач действует обычный Runner.
 
 ## 2. Новый Feature / приложение
 
@@ -120,3 +120,5 @@ npx tsx scripts/staging-safe-chaos.smoke.ts
 **Как откатывать?** Зафиксировать проверенный Production Git SHA и его наличие на GitHub; при проблеме вернуть исходный код к нему с сохранением `.env`, `.devos`, OAuth/worker state и фактического Camoufox-профиля. Не переносить Staging secrets, профиль и URL в Production. Владелец допускает повторную штатную авторизацию ChatGPT/MCP (обычно несколько минут), поэтому создание полного приватного backup/restore не является обязательным условием релиза; PR #206 необязателен и исключён из release stack. Git rollback **не** восстанавливает cookie, OAuth или состояние задач, если они были повреждены: предварительно исключить их удаление/перезапись из процедуры. Не применять `reset --hard`/`rm -rf` как шаг по умолчанию и не публиковать секреты. Реальный Web/iOS smoke и проверка авторизации остаются обязательными.
 
 Дальнейшие технические контракты: [Runner и Skills](runner-skill-integration.md), [политика выбора](skill-policy.md), [оригинальный Spec Kit](spec-kit-predevelopment.md), [Bugfix](spec-kit-bugfix.md), [Assess](spec-kit-assessment.md), [матрица приёмки](devos-v2-verification-matrix.md), [реальный Staging blocker](live-staging-e2e-readiness.md), [безопасная диагностика browser-worker grant](worker-authorization-live-runbook.md), [MCP Web/iOS ограничения](staging-plugin-transport-readiness.md).
+
+Реальные read-only проверки установленного Production см. в [release gate](devos2-release-gate.md) и `scripts/devos2-production-postrelease.smoke.mjs`.
