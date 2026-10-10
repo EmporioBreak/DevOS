@@ -14,7 +14,7 @@
     {
       "id": "cos_broker_developer_local",
       "executor": "codex",
-      "prompt": "Implement the exact approved #239 original Spec Kit on the sole Production checkout. Worker chat/context/grant lives only for the current Issue: reuse on changes_requested, after final Main Agent acceptance, PR merge and verified Issue closed:completed, broker deletes each exact DevOS-created worker ChatGPT conversation from account with provider-confirmed durable one-attempt deletion; keep GitHub audit, never delete unrelated/owner/user chats; do not retain/reuse between Issues, never reuse for another Issue. Start with TDD RED for durable command claims/receipt, document epochs and two-Issue ownership. Reuse source patterns from pinned CoS only with MIT attribution and compatibility review; never start another Camoufox/profile, replay #226 turn 6, modify #232 or self-approve. Work in the same Draft PR #240 and write real test evidence.",
+      "prompt": "Implement the exact approved #239 original Spec Kit on the sole Production checkout. Worker chat/context/grant lives only for the current Issue: reuse on changes_requested, after final Main Agent acceptance, PR merge and verified Issue closed:completed, broker deletes each exact DevOS-created worker ChatGPT conversation from account with provider-confirmed durable one-attempt deletion; keep GitHub audit, never delete unrelated/owner/user chats; do not retain/reuse between Issues, never reuse for another Issue. Start with TDD RED for durable command claims/receipt, document epochs and two-Issue ownership. Reuse source patterns from pinned CoS only with MIT attribution and compatibility review; never start another Camoufox/profile, replay #226 turn 6, modify #232 or self-approve. Work in the same Draft PR #240 and write real test evidence. Implement project-level bounded concurrent Issue scheduling and one writable checkout lease, with exact per-Issue signed graphs and fair progress (never two conflicting local branches).",
       "on": {
         "done": "cos_security_auditor_local",
         "failed": null
@@ -33,7 +33,7 @@
     {
       "id": "cos_host_process_qa_local",
       "executor": "codex",
-      "prompt": "Run native host/IPC/process failure-injection tests for #239: two Issues, preserved windows, crashes at each durable stage, exact profile ownership, zero double-sends, signed grants and browser E2E preflight. Do not kill/restart existing #214/#226 browser runtimes or alter #232. If tests expose defects return changes_requested to same developer.",
+      "prompt": "Run native host/IPC/process failure-injection tests for #239: two Issues, preserved windows, crashes at each durable stage, exact profile ownership, zero double-sends, signed grants and browser E2E preflight. Do not kill/restart existing #214/#226 browser runtimes or alter #232. If tests expose defects return changes_requested to same developer. Verify three concurrently approved Issues: one running, one waiting/busy and one blocked, with no cross-Issue lock, duplicates or lost status after restart; local Git writes remain serialized.",
       "on": {
         "done": "cos_browser_worker_e2e",
         "changes_requested": "cos_broker_developer_local",
@@ -43,7 +43,7 @@
     {
       "id": "cos_browser_worker_e2e",
       "executor": "chatgpt_browser",
-      "prompt": "Use ONLY the original authorized Production DevOS browser tools. Independently verify a genuinely signed-in ChatGPT worker flow in the existing approved shared profile, real Project chats, headed two-window ownership, actual provider message IDs and no resend, Main Agent owner wake-up, rework and task-scoped teardown. Never treat synthetic Playwright tests or text-only status as live PASS. If genuine capability is absent, signed needs_local_worker only with independent host outage proof; do not open duplicate browser or copy profile. For an authorized disposable test Issue only, verify actual per-chat deletion (not archiving) after final completion and confirm unrelated chats survive; otherwise return a signed blocker. Never delete existing #214/#224/#226/#232 chats.",
+      "prompt": "Use ONLY the original authorized Production DevOS browser tools. Independently verify a genuinely signed-in ChatGPT worker flow in the existing approved shared profile, real Project chats, headed two-window ownership, actual provider message IDs and no resend, Main Agent owner wake-up, rework and task-scoped teardown. Never treat synthetic Playwright tests or text-only status as live PASS. If genuine capability is absent, signed needs_local_worker only with independent host outage proof; do not open duplicate browser or copy profile. For an authorized disposable test Issue only, verify actual per-chat deletion (not archiving) after final completion and confirm unrelated chats survive; otherwise return a signed blocker. Never delete existing #214/#224/#226/#232 chats. Include two concurrent final-review events queued to the single Main Agent chat with no duplicate/loss and task-only approved deletion; only use preapproved disposable test Issues.",
       "on": {
         "done": "cos_independent_reviewer",
         "needs_local_worker": "cos_browser_e2e_local",
