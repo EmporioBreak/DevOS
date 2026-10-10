@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +9,7 @@ import { JsonStateStore } from "../src/json-state-store.js";
 import { DevosToolRegistry } from "../src/mcp-tools/registry.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
-import { SharedBrowserExecutor, browserRuntimePaths, startSharedBrowserServer, closeSharedBrowserRuntime } from "../src/shared-browser-runtime.js";
+import { SharedBrowserExecutor, browserRuntimePaths, browserTaskKey, startSharedBrowserServer, closeSharedBrowserRuntime } from "../src/shared-browser-runtime.js";
 import type { Executor, WorkerRequest } from "../src/executor.js";
 import type { Workflow, WorkerStatus } from "../src/workflow.js";
 
@@ -152,10 +153,16 @@ test("CHAOS: one browser context uses distinct worker pages and reconstructs tab
   const pages: Array<Page> = [];
   const fakePage = (id: string, ownerContext?: BrowserContext) => {
     let currentUrl = "https://chatgpt.com/g/one/c/" + id;
+    let marker = "";
     return {
       id, url: () => currentUrl,
       isClosed: () => false, context: () => ownerContext ?? context,
-      async bringToFront() {}, async evaluate() { return null; },
+      async bringToFront() {}, async evaluate(fn: Function, value?: unknown) {
+        const source = fn.toString();
+        if (source.includes("window.name = value")) { marker = value as string; return; }
+        if (source.includes("window.name")) return marker;
+        return null;
+      },
       async goto(url: string) {
         assert.ok(url.startsWith("https://chatgpt.com/g/one/c/"));
         currentUrl = url;
@@ -218,13 +225,12 @@ test("CHAOS: one browser context uses distinct worker pages and reconstructs tab
   assert.ok(next, "reconstructed worker tab");
   assert.equal(restoredPages.length, 10, "each saved worker gets one tab, not a new window");
 
-  // A surviving restored page for a later worker must be claimed BEFORE
-  // creating missing earlier worker tabs, regardless of session map order.
+  // An unmarked surviving page is not claimed even if its URL matches a saved
+  // session; the task gets an owned window and reconstructs its own tabs.
   const survivor = fakePage("worker-9");
   const survivorContext = {
     pages: () => survivors,
     async newPage() {
-      assert.equal(survivors.length, 0);
       const page = fakePage("only-initial", survivorContext as unknown as BrowserContext);
       survivors.push(page);
       return page;
@@ -242,14 +248,75 @@ test("CHAOS: one browser context uses distinct worker pages and reconstructs tab
   const selected = await (another as any).getWorkerPage({
     workerId: "worker-0", knownBrowserSessions: workerSessions,
   }, survivorContext);
-  assert.notEqual(selected, survivor, "restored active worker gets a separate page");
-  assert.equal((another as any).workerPages.get("worker-9"), survivor,
-    "existing later tab must not be hijacked by an earlier worker");
-  assert.equal(survivors.length, 10);
+  assert.notEqual(selected, survivor, "unmarked page is never treated as task-owned");
+  assert.notEqual((another as any).workerPages.get(`${browserTaskKey({ repo: "__legacy__", issue: 0 })}\0worker-9`), survivor,
+    "saved session reconstruction cannot claim another unowned tab");
+  assert.equal(survivors.length, 11, "one unowned page plus ten owned worker tabs");
+});
+
+test("two Issues get separate top-level windows and scoped close preserves the other task", async () => {
+  type FakePage = Page & { windowId: number; closed: boolean; marker?: string; currentUrl: string };
+  const pages: FakePage[] = [];
+  const pageWaiters: Array<(page: Page) => void> = [];
+  let nextWindow = 1;
+  const makePage = (windowId: number) => {
+    const page = { windowId, closed: false, currentUrl: "about:blank" } as unknown as FakePage;
+    Object.assign(page, {
+      url: () => page.currentUrl,
+      isClosed: () => page.closed,
+      context: () => context,
+      close: async () => { page.closed = true; },
+      bringToFront: async () => {},
+      goto: async (url: string) => { page.currentUrl = url; },
+      evaluate: async (fn: Function, value?: unknown) => {
+        const source = fn.toString();
+        if (source.includes("window.name = value")) { page.marker = value as string; return; }
+        if (source.includes("return window.name")) return page.marker ?? "";
+        if (source.includes("window.open")) {
+          const child = makePage(page.windowId);
+          pages.push(child);
+          pageWaiters.shift()?.(child);
+          return;
+        }
+        return null;
+      },
+    });
+    return page;
+  };
+  const context = {
+    pages: () => pages,
+    async newPage() { const page = makePage(nextWindow++); pages.push(page); return page; },
+    waitForEvent(event: string) {
+      assert.equal(event, "page");
+      return new Promise<Page>(resolve => pageWaiters.push(resolve));
+    },
+  } as unknown as BrowserContext;
+  const executor = new ChatGptBrowserExecutor({
+    projectUrl: "https://chatgpt.com/g/one/project", profileDir: "/unused", headless: false,
+  });
+  const get = (task: { repo: string; issue: number }, workerId: string) =>
+    (executor as any).getWorkerPage({ task, workerId }, context) as Promise<Page>;
+  const pair = await Promise.all([
+    get({ repo: "owner/repo", issue: 10 }, "developer"),
+    get({ repo: "owner/repo", issue: 10 }, "reviewer"),
+  ]);
+  const aDeveloper = pair[0] as FakePage;
+  const aReviewer = pair[1] as FakePage;
+  const bDeveloper = await get({ repo: "owner/repo", issue: 11 }, "developer") as FakePage;
+  const bReviewer = await get({ repo: "owner/repo", issue: 11 }, "reviewer") as FakePage;
+  assert.equal(aDeveloper.windowId, aReviewer.windowId, "workers in one Issue share its top-level window");
+  assert.equal(bDeveloper.windowId, bReviewer.windowId, "sibling worker tabs stay in Issue B's window");
+  assert.notEqual(aDeveloper.windowId, bDeveloper.windowId, "different Issues own separate top-level windows");
+  assert.equal(await executor.closeTask({ repo: "owner/repo", issue: 10 }), true);
+  assert.equal(bDeveloper.closed, false);
+  assert.equal(bReviewer.closed, false);
+  assert.equal(await executor.closeTask({ repo: "owner/repo", issue: 11 }), false);
 });
 
 test("CHAOS: 100 repeated turns on one tab do not accumulate network listeners", { timeout: 20_000 }, async () => {
   const saved = "https://chatgpt.com/g/one/c/developer";
+  const task = { repo: "Stress/DevOS", issue: 99 };
+  let marker = "devos-task-window:" + createHash("sha256").update(`${task.repo}#${task.issue}`).digest("hex");
   let current = saved;
   let sends = 0;
   const listeners = new Map<string, Set<Function>>();
@@ -267,7 +334,9 @@ test("CHAOS: 100 repeated turns on one tab do not accumulate network listeners",
     isClosed: () => false,
     async goto(target: string) { current = target; return { status: () => 200 }; },
     locator: () => locator,
-    async evaluate(fn: Function) {
+    async evaluate(fn: Function, value?: unknown) {
+      if (fn.toString().includes("window.name = value")) { marker = value as string; return; }
+      if (fn.toString().includes("window.name")) return marker;
       if (fn.toString().includes("document.body")) return "";
       if (fn.toString().includes("__DEVOS_ARM_STREAM__")) return 1;
       return { text: 'Done\nDEVOS_RESULT {"status":"done"}', failed: false };
@@ -280,7 +349,7 @@ test("CHAOS: 100 repeated turns on one tab do not accumulate network listeners",
   }, 1_000);
   Object.assign(executor, { context });
   for (let i = 0; i < 100; i++) {
-    const output = await executor.run({ projectRoot: "/project", workerId: "developer",
+    const output = await executor.run({ projectRoot: "/project", task, workerId: "developer",
       prompt: "Same task, distinct turn " + i, sessionId: saved });
     assert.match(output.text, /DEVOS_RESULT/);
     assert.equal(listeners.get("response")?.size ?? 0, 0, "backend response observers must be detached");

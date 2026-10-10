@@ -1,5 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { profileProcesses, terminateOwnedBrowser, type OwnedBrowserProcess } from "./owned-browser-process.js";
 import { readCompletedTurn, type SubmittedTurn } from "./chatgpt-turn-recovery.js";
 import { mkdir } from "node:fs/promises";
@@ -8,7 +7,7 @@ import { loadOrCreateCamoufoxIdentity, type CamoufoxIdentity } from "./camoufox-
 import type { BrowserContext, Page, Request as PlaywrightRequest, Response as PlaywrightResponse } from "playwright-core";
 import type { Executor, WorkerRequest } from "./executor.js";
 import { debugLog } from "./debug-log.js";
-import type { WorkerOutput } from "./workflow.js";
+import type { TaskRef, WorkerOutput } from "./workflow.js";
 import {
   assertChatGptProjectScope,
   canonicalChatGptProjectId,
@@ -24,20 +23,11 @@ import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { observeWorkerAuthorization } from "./chat-worker-observer.js";
 import { localWorkerAuthorization } from "./chat-worker-grants.js";
 import { classifyBrowserFailure, browserRecoveryDelayMs } from "./browser-recovery-policy.js";
-import { BrowserCommandBroker } from "./browser-command-broker.js";
-import type { BrowserDocumentClaim } from "./browser-command-identity.js";
 
 export class BrowserResumeUnavailableError extends Error {
   constructor(readonly sessionId: string, message: string) {
     super(message);
     this.name = "BrowserResumeUnavailableError";
-  }
-}
-
-class BrowserCommandReplayError extends Error {
-  constructor() {
-    super("Browser command was already claimed; refusing a second Send");
-    this.name = "BrowserCommandReplayError";
   }
 }
 
@@ -105,77 +95,27 @@ export class ChatGptBrowserExecutor implements Executor {
   private ownedProcess: OwnedBrowserProcess | undefined;
   private launching: Promise<BrowserContext> | undefined;
   private readonly workerPages = new Map<string, Page>();
-  private readonly documentEpochs = new WeakMap<Page, { documentId: string; navigationEpoch: number }>();
-  private readonly runtimeIncarnation = randomUUID();
+  private readonly taskWindowPages = new Map<string, Page>();
+  private readonly activeTaskRuns = new Map<string, number>();
+  private readonly taskPageLocks = new Map<string, Promise<void>>();
 
   constructor(
     private readonly config: ChatGptBrowserConfig = loadChatGptBrowserConfig(),
     private readonly timeoutMs = 60 * 60_000,
     private readonly onOwnedBrowserProcess?: (owned: OwnedBrowserProcess) => Promise<void>,
-    private readonly commandBroker?: BrowserCommandBroker,
+    private readonly onTaskWindow?: (task: TaskRef, marker: string | null) => Promise<void>,
+    private readonly onTaskSession?: (task: TaskRef, sessionId: string) => Promise<void>,
   ) {}
 
   async run(request: WorkerRequest): Promise<WorkerOutput> {
-    return await this.runTurn(request);
-  }
-
-  private trackDocument(page: Page): { documentId: string; navigationEpoch: number } {
-    let state = this.documentEpochs.get(page);
-    if (state) return state;
-    state = { documentId: randomUUID(), navigationEpoch: 0 };
-    this.documentEpochs.set(page, state);
-    page.on("framenavigated", frame => {
-      if (frame === page.mainFrame()) {
-        state!.documentId = randomUUID();
-        state!.navigationEpoch++;
-      }
-    });
-    return state;
-  }
-
-  private async claimBrowserCommand(request: WorkerRequest, page: Page): Promise<BrowserDocumentClaim | undefined> {
-    if (!this.commandBroker) return undefined;
-    const context = request.browserCommand;
-    if (!context || !request.workerId || context.workerId !== request.workerId ||
-        !context.task || !Number.isSafeInteger(context.task.pr) || context.task.pr! < 1 ||
-        !Number.isSafeInteger(context.turn) || context.turn < 1 ||
-        !request.reportTurn ||
-        request.reportTurn.task.repo !== context.task.repo ||
-        request.reportTurn.task.issue !== context.task.issue ||
-        request.reportTurn.task.pr !== context.task.pr ||
-        request.reportTurn.active.workerId !== context.workerId ||
-        request.reportTurn.active.turn !== context.turn ||
-        !/^[a-f0-9]{64}$/.test(request.reportTurn.active.tokenHash))
-      throw new Error("Trusted browser command identity is missing or inconsistent");
-    const document = this.trackDocument(page);
-    const url = new URL(page.url());
-    const conversation = /\/c\/([^/?#]+)/.exec(url.pathname)?.[1];
-    const payloadSha256 = createHash("sha256").update(request.prompt).digest("hex");
-    const taskKey = `${context.task.repo}#${context.task.issue}`;
-    const claim: BrowserDocumentClaim = {
-      repo: context.task.repo, issue: context.task.issue, workerId: context.workerId,
-      turn: context.turn, commandId: context.commandId, runtimeIncarnation: this.runtimeIncarnation,
-      profileOwner: createHash("sha256").update(resolve(this.config.profileDir)).digest("hex"),
-      windowLease: createHash("sha256").update(taskKey).digest("hex"),
-      tabLease: createHash("sha256").update(`${taskKey}#${context.workerId}`).digest("hex"),
-      documentId: document.documentId, navigationEpoch: document.navigationEpoch,
-      conversationId: conversation ? decodeURIComponent(conversation) : undefined, payloadSha256,
-    };
-    await this.commandBroker.prepare(claim);
-    if (!(await this.commandBroker.claim(claim.commandId, claim))) throw new BrowserCommandReplayError();
-    return claim;
-  }
-
-  private async requireCommandReceipt(
-    claim: BrowserDocumentClaim | undefined,
-    receiptWrite: Promise<void> | undefined,
-  ): Promise<void> {
-    if (!claim || !this.commandBroker) return;
-    await receiptWrite;
-    const record = await this.commandBroker.get(claim.commandId);
-    if (record?.status === "claimed") await this.commandBroker.markAmbiguous(claim.commandId);
-    if (record?.status !== "acknowledged")
-      throw new Error("Browser command has no exact acknowledged provider receipt; replay is prohibited");
+    const key = taskIdentity(request.task ?? request.reportTurn?.task ?? { repo: "__legacy__", issue: 0 });
+    this.activeTaskRuns.set(key, (this.activeTaskRuns.get(key) ?? 0) + 1);
+    try { return await this.runTurn(request); }
+    finally {
+      const active = (this.activeTaskRuns.get(key) ?? 1) - 1;
+      if (active > 0) this.activeTaskRuns.set(key, active);
+      else this.activeTaskRuns.delete(key);
+    }
   }
 
   private async runTurn(request: WorkerRequest): Promise<WorkerOutput> {
@@ -198,9 +138,6 @@ export class ChatGptBrowserExecutor implements Executor {
     let mayHaveSubmitted = false;
     let submitted: SubmittedTurn | undefined;
     let submissionAmbiguous = false;
-    let submittedRequest: PlaywrightRequest | undefined;
-    let claimedCommand: BrowserDocumentClaim | undefined;
-    let providerReceiptWrite: Promise<void> | undefined;
     let durableSession = request.sessionId;
     // The terminal MCP tool is the control plane: receipt of its authenticated,
     // turn-scoped report can finish this run even if the SSE observer hangs.
@@ -208,6 +145,7 @@ export class ChatGptBrowserExecutor implements Executor {
     const rememberSession = async (session: string) => {
       if (durableSession && !isSameChatGptConversation(durableSession, session)) throw new Error("ChatGPT changed conversation identity");
       if (projectScope) assertChatGptProjectScope(this.config.projectUrl, session, true);
+      await this.onTaskSession?.(request.task ?? request.reportTurn?.task ?? { repo: "__legacy__", issue: 0 }, session);
       durableSession = session;
       await request.onSession?.(session);
     };
@@ -243,7 +181,6 @@ export class ChatGptBrowserExecutor implements Executor {
           return;
         }
         submitted = candidate;
-        submittedRequest = outgoing;
         // Log only whether identifiers are present; never persist prompt, IDs,
         // OAuth headers or a raw request payload in diagnostics.
         debugLog("browser.submission", { phase: "post-submit", captured: true, hasConversationId: !!submitted.conversationId, hasMessageId: true });
@@ -253,40 +190,19 @@ export class ChatGptBrowserExecutor implements Executor {
         debugLog("browser.submission", { phase: "post-submit", captured: false, reason: "request payload unavailable" });
       }
     };
-    const onOutgoingResponse = (response: PlaywrightResponse) => {
-      if (!this.commandBroker || !claimedCommand || !submittedRequest ||
-          response.request() !== submittedRequest) return;
-      if (response.status() < 200 || response.status() >= 300 || !submitted?.conversationId) {
-        debugLog("browser.command.receipt", { decision: "ambiguous-provider-response", status: response.status() });
-        return;
-      }
-      const receipt = {
-        repo: claimedCommand.repo, issue: claimedCommand.issue,
-        workerId: claimedCommand.workerId, turn: claimedCommand.turn,
-        commandId: claimedCommand.commandId, payloadSha256: claimedCommand.payloadSha256,
-        conversationId: submitted.conversationId, messageId: submitted.messageId,
-      };
-      providerReceiptWrite = (async () => {
-        await this.commandBroker!.recordProviderReceipt(claimedCommand!.commandId, receipt);
-        await this.commandBroker!.acknowledge(claimedCommand!.commandId, receipt);
-      })();
-    };
     page.on("request", onOutgoingRequest);
-    page.on("response", onOutgoingResponse);
     try {
       let submissionStarted!: () => void;
       const submission = new Promise<void>(resolve => { submissionStarted = resolve; });
-      const assertSubmissionScope = async () => {
+      const assertSubmissionScope = () => {
         try {
           const backendFailure = getBackendFailure();
           if (backendFailure) throw backendFailure;
           if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), request.sessionId !== undefined);
           if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation before submission");
-          claimedCommand = await this.claimBrowserCommand(request, page);
           mayHaveSubmitted = true;
           submissionStarted();
         } catch (error) {
-          if (error instanceof BrowserCommandReplayError) throw error;
           const message = error instanceof Error ? error.message : String(error);
           if (request.sessionId) throw new BrowserResumeUnavailableError(request.sessionId, message);
           throw new BrowserPreSubmitFailureError(message);
@@ -324,7 +240,6 @@ export class ChatGptBrowserExecutor implements Executor {
       if (request.sessionId) {
         const outcome = await response;
         if ("error" in outcome) throw outcome.error;
-        await this.requireCommandReceipt(claimedCommand, providerReceiptWrite);
         if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
         if (!isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation after submission");
         debugLog("browser.session.ready", { sessionId: request.sessionId, actualUrl: page.url() });
@@ -348,7 +263,6 @@ export class ChatGptBrowserExecutor implements Executor {
 
       const outcome = await response;
       if ("error" in outcome) throw outcome.error;
-      await this.requireCommandReceipt(claimedCommand, providerReceiptWrite);
       if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
       if (!isSameChatGptConversation(sessionId, page.url())) throw new Error("ChatGPT changed fresh conversation after submission");
       debugLog("browser.response", { sessionId, textLength: outcome.text.length });
@@ -356,9 +270,6 @@ export class ChatGptBrowserExecutor implements Executor {
     } catch (error) {
       const cause = error instanceof Error ? error.message.split("\n")[0]! : "Browser operation failed";
       if (mayHaveSubmitted) {
-        await providerReceiptWrite?.catch(() => undefined);
-        const commandRecord = claimedCommand ? await this.commandBroker?.get(claimedCommand.commandId).catch(() => null) : null;
-        if (commandRecord?.status === "claimed") await this.commandBroker?.markAmbiguous(claimedCommand!.commandId).catch(() => undefined);
         // Optional read-only DOM evidence: one exact submitted user turn and
         // one stable assistant final bearing a machine-valid DEVOS_RESULT.
         // This does not depend on outgoing network user IDs or extra MCP calls.
@@ -366,7 +277,6 @@ export class ChatGptBrowserExecutor implements Executor {
         if (durableSession && isSameChatGptConversation(durableSession, page.url())) {
           const domFinal = await readExactDomFinal(page, request.prompt, Math.min(this.timeoutMs, 3_000));
           if (domFinal) {
-            await this.requireCommandReceipt(claimedCommand, providerReceiptWrite);
             debugLog("browser.recovery", { phase: "post-submit", decision: "exact-dom-final" });
             return { text: domFinal, sessionId: durableSession };
           }
@@ -428,7 +338,6 @@ export class ChatGptBrowserExecutor implements Executor {
       // Keep only one request listener per active worker turn across repeated
       // use of the same tab, including MCP-finished turns.
       page.off?.("request", onOutgoingRequest);
-      page.off?.("response", onOutgoingResponse);
       // Stable worker pages stay alive for the whole task. Cleanup is task-scoped.
     }
   }
@@ -474,9 +383,44 @@ export class ChatGptBrowserExecutor implements Executor {
       debugLog("browser.cleanup", { phase: "context", decision: "unconfirmed" });
       throw new Error("Browser cleanup unconfirmed: exact owned process termination not verified");
     }
-    if (this.context === context) { this.context = undefined; this.workerPages.clear(); }
+    if (this.context === context) {
+      this.context = undefined;
+      this.workerPages.clear();
+      this.taskWindowPages.clear();
+    }
     if (this.ownedProcess === owned) this.ownedProcess = undefined;
     debugLog("browser.cleanup", { phase: "context", decision: "closed" });
+  }
+
+  /** Close one exact task lease. Returns whether another task still owns a window. */
+  async closeTask(task: TaskRef): Promise<boolean> {
+    const taskKey = taskIdentity(task);
+    if ((this.activeTaskRuns.get(taskKey) ?? 0) > 0)
+      throw new Error(`Cannot close browser window while ${task.repo}#${task.issue} has an active worker turn`);
+    const owned = [...this.workerPages.entries()].filter(([key]) => key.startsWith(`${taskKey}\0`));
+    const pages = new Set(owned.map(([, page]) => page));
+    const root = this.taskWindowPages.get(taskKey);
+    if (root) pages.add(root);
+    const marker = taskWindowMarker(task);
+    for (const page of this.context?.pages?.() ?? []) {
+      if (!page.isClosed?.() && await readTaskWindowMarker(page) === marker) pages.add(page);
+    }
+    for (const page of pages) if (!page.isClosed?.()) await page.close();
+    for (const [key] of owned) this.workerPages.delete(key);
+    this.taskWindowPages.delete(taskKey);
+    await this.onTaskWindow?.(task, null);
+    const remainingPages = (this.context?.pages?.() ?? []).filter(page => !page.isClosed?.());
+    const remainingOwnership = await Promise.all(remainingPages.map(async page => ({
+      marker: await readTaskWindowMarker(page), url: page.url(),
+    })));
+    const otherOwnedPage = remainingOwnership.some(page => !!page.marker && page.marker !== marker);
+    // The native context creates an initial about:blank page. It is never
+    // assigned to a task; it does not keep the project runtime alive once
+    // all task-owned windows have been released. Unknown navigated pages do.
+    const unownedNonBlankPage = remainingOwnership.some(page => page.url !== "about:blank" && !page.marker);
+    const trackedOtherTask = [...this.taskWindowPages.entries()].some(([key, page]) => key !== taskKey && !page.isClosed?.()) ||
+      [...this.workerPages.entries()].some(([key, page]) => key.startsWith(`${taskKey}\0`) === false && !page.isClosed?.());
+    return trackedOtherTask || otherOwnedPage || unownedNonBlankPage;
   }
 
   private async prepare(
@@ -508,7 +452,6 @@ export class ChatGptBrowserExecutor implements Executor {
           page = await this.getWorkerPage(request, context);
           if (expired) { await page.close(); throw new Error("Timeout: preparation deadline exhausted"); }
           const currentPage = page;
-          if (this.commandBroker) this.trackDocument(currentPage);
           const onBackendResponse = (response: PlaywrightResponse) => {
             const target = new URL(response.url());
             const status = response.status();
@@ -761,40 +704,86 @@ export class ChatGptBrowserExecutor implements Executor {
   }
 
   private async getWorkerPage(request: WorkerRequest, context: BrowserContext): Promise<Page> {
+    const task = request.task ?? request.reportTurn?.task ?? { repo: "__legacy__", issue: 0 };
+    const taskKey = taskIdentity(task);
+    const previous = this.taskPageLocks.get(taskKey) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    this.taskPageLocks.set(taskKey, current);
+    await previous;
+    try { return await this.getWorkerPageLocked(request, context, task); }
+    finally {
+      release();
+      if (this.taskPageLocks.get(taskKey) === current) this.taskPageLocks.delete(taskKey);
+    }
+  }
+
+  private async getWorkerPageLocked(request: WorkerRequest, context: BrowserContext, task: TaskRef): Promise<Page> {
     const workerId = request.workerId ?? "__default__";
-    const existing = this.workerPages.get(workerId);
+    const taskKey = taskIdentity(task);
+    const marker = taskWindowMarker(task);
+    const workerKey = `${taskKey}\0${workerId}`;
+    const existing = this.workerPages.get(workerKey);
     if (existing && !existing.isClosed?.()) return existing;
-    const known = request.knownBrowserSessions ?? {};
-    // Reuse the initial about:blank page rather than spawning an extra window.
-    // Additional worker pages must be opened as browser tabs from a live page,
-    // not via Playwright context.newPage() (which can create Firefox windows).
+    const known = {
+      ...(request.knownBrowserSessions ?? {}),
+      ...(request.sessionId && request.workerId ? { [request.workerId]: request.sessionId } : {}),
+    };
+    // Each Issue owns one window. Reconstruct it only from its marker or an
+    // exact saved conversation in that Issue's trusted task state.
+    let taskRoot = this.taskWindowPages.get(taskKey);
+    const open = context.pages?.().filter(page => !page.isClosed?.()) ?? [];
+    const openOwnership = await Promise.all(open.map(async page => ({ page, marker: await readTaskWindowMarker(page) })));
+    const ownedPages = new Set<Page>(openOwnership.filter(item => item.marker === marker).map(item => item.page));
+    if (taskRoot && !taskRoot.isClosed?.()) ownedPages.add(taskRoot);
+    for (const session of Object.values(known)) await this.onTaskSession?.(task, session);
+    for (const [id, session] of Object.entries(known)) {
+      const matching = [...ownedPages].find(page => !page.isClosed?.() && isSameChatGptConversation(session, page.url()));
+      if (!matching) continue;
+      const key = `${taskKey}\0${id}`;
+      if (!this.workerPages.has(key) || this.workerPages.get(key)!.isClosed?.())
+        this.workerPages.set(key, matching);
+      ownedPages.add(matching);
+    }
+    if (!taskRoot && ownedPages.size) taskRoot = ownedPages.values().next().value as Page;
+    if (!taskRoot) {
+      // Never claim an arbitrary blank tab: a new task gets a new top-level
+      // Firefox window and an explicit task marker.
+      taskRoot = await context.newPage();
+      await writeTaskWindowMarker(taskRoot, marker);
+      ownedPages.add(taskRoot);
+    }
+    this.taskWindowPages.set(taskKey, taskRoot);
+    await this.onTaskWindow?.(task, marker);
+
     const pickPage = async (): Promise<Page> => {
-      const used = new Set(this.workerPages.values());
-      const open = context.pages?.().filter(page => !page.isClosed?.()) ?? [];
-      const available = open.find(page => !used.has(page) && page.url() === "about:blank");
+      const used = new Set([...this.workerPages.entries()]
+        .filter(([key]) => key.startsWith(`${taskKey}\0`)).map(([, page]) => page));
+      const available = [...ownedPages].find(page => !page.isClosed?.() && !used.has(page) && page.url() === "about:blank");
       if (available) return available;
-      if (this.workerPages.size === 0) return open[0] ?? await context.newPage();
-      if (!open.length) throw new Error("Shared browser has no live tab to open a sibling tab");
-      return await openWorkerTabInSameWindow(context, open.find(page => used.has(page)) ?? open[0]!);
+      if (used.size === 0 && taskRoot && !taskRoot.isClosed?.()) return taskRoot;
+      if (taskRoot.isClosed?.()) throw new Error(`Owned browser window for ${task.repo}#${task.issue} is closed`);
+      const page = await openWorkerTabInSameWindow(context, taskRoot);
+      await writeTaskWindowMarker(page, marker);
+      ownedPages.add(page);
+      return page;
     };
 
-    // First claim ALL currently open pages matching known saved sessions.
-    // Otherwise, a missing worker with earlier insertion order could steal a
-    // later worker's restored tab before that later worker is matched.
+    // Exact saved conversations are claimed before creating missing tabs so a
+    // missing early worker cannot steal a later worker's restored page.
     const sessions = Object.entries(known);
     for (const [id, session] of sessions) {
-      if (this.workerPages.has(id) && !this.workerPages.get(id)!.isClosed?.()) continue;
-      const matching = context.pages?.().find(page =>
-        !page.isClosed?.() && ![...this.workerPages.values()].includes(page) &&
-        isSameChatGptConversation(session, page.url()),
-      );
-      if (matching) this.workerPages.set(id, matching);
+      const key = `${taskKey}\0${id}`;
+      if (this.workerPages.has(key) && !this.workerPages.get(key)!.isClosed?.()) continue;
+      const matching = [...ownedPages].find(page => !page.isClosed?.() && isSameChatGptConversation(session, page.url()));
+      if (matching) this.workerPages.set(key, matching);
     }
     for (const [id, session] of sessions) {
-      const knownPage = this.workerPages.get(id);
+      const key = `${taskKey}\0${id}`;
+      const knownPage = this.workerPages.get(key);
       if (knownPage && !knownPage.isClosed?.()) continue;
       const candidate = await pickPage();
-      this.workerPages.set(id, candidate);
+      this.workerPages.set(key, candidate);
       if (id !== workerId) {
         await candidate.goto(session, { waitUntil: "domcontentloaded", timeout: Math.min(this.timeoutMs, 15_000) });
         if (!isSameChatGptConversation(session, candidate.url()))
@@ -802,12 +791,29 @@ export class ChatGptBrowserExecutor implements Executor {
       }
     }
 
-    const reconstructed = this.workerPages.get(workerId);
+    const reconstructed = this.workerPages.get(workerKey);
     if (reconstructed && !reconstructed.isClosed?.()) return reconstructed;
     const page = await pickPage();
-    this.workerPages.set(workerId, page);
+    this.workerPages.set(workerKey, page);
     return page;
   }
+}
+
+function taskIdentity(task: TaskRef): string { return `${task.repo}#${task.issue}`; }
+
+function taskWindowMarker(task: TaskRef): string {
+  return `devos-task-window:${createHash("sha256").update(taskIdentity(task)).digest("hex")}`;
+}
+
+async function readTaskWindowMarker(page: Page): Promise<string | undefined> {
+  try {
+    const marker = await page.evaluate(() => window.name);
+    return typeof marker === "string" && marker.startsWith("devos-task-window:") ? marker : undefined;
+  } catch { return undefined; }
+}
+
+async function writeTaskWindowMarker(page: Page, marker: string): Promise<void> {
+  await page.evaluate(value => { window.name = value; }, marker).catch(() => undefined);
 }
 
 /** Firefox/Camoufox: request an actual tab from the existing top-level page.
@@ -876,10 +882,10 @@ export function isTransientBrowserFailure(error: unknown): boolean {
 
 export async function submitOnly(
   page: Page, prompt: string, timeoutMs: number,
-  beforeSubmit?: () => void | Promise<void>, prepared?: PreparedMessage,
+  beforeSubmit?: () => void, prepared?: PreparedMessage,
 ): Promise<void> {
   const message = prepared ?? await prepareMessage(page, prompt, timeoutMs);
-  await beforeSubmit?.();
+  beforeSubmit?.();
   if (message.useButton) {
     await page.locator(SEND).first().click({ timeout: Math.min(timeoutMs, 15_000) });
   } else {
@@ -891,7 +897,7 @@ export async function sendAndRead(
   page: Page,
   prompt: string,
   timeoutMs: number,
-  beforeSubmit?: () => void | Promise<void>,
+  beforeSubmit?: () => void,
   prepared?: PreparedMessage,
 ): Promise<string> {
   const message = prepared ?? await prepareMessage(page, prompt, timeoutMs);
@@ -899,10 +905,10 @@ export async function sendAndRead(
   const composer = page.locator(COMPOSER).first();
   const send = page.locator(SEND).first();
   if (message.useButton) {
-    await beforeSubmit?.();
+    beforeSubmit?.();
     await send.click({ timeout: Math.min(timeoutMs, 15_000) });
   } else {
-    await beforeSubmit?.();
+    beforeSubmit?.();
     await composer.press("Enter", { timeout: Math.min(timeoutMs, 15_000) });
   }
 
