@@ -45,4 +45,4 @@ As a QA author, I need a pure string function that trims surrounding ECMAScript 
 
 ## Approval Boundary
 
-The project `.specify/memory/constitution.md` currently contains unratified template placeholders. This spec is a **planning draft**, not evidence that `speckit.constitution`, `speckit.specify`, or owner consent has passed. It must not be marked approved or implemented until a trusted source verifies original Constitution ratification and the exact scope/plan and frozen worker graph. No ChatGPT browser worker has run for Issue #214 yet.
+The canonical `.specify/memory/constitution.md` has now been populated and committed through DevOS 2 governance Issue #218 / PR #219, version 0.1.0, with SHA-256 `43ac4954ceeb5deca93c77cff8c88593ebdf2f278f10432c8f3976a2d5e9574f`. **This planning draft is not yet authenticated original `speckit.specify` stage evidence or independently approved exact scope/plan/worker graph.** A genuine new owner-password-backed receipt for these exact committed bytes and the immutable four-slot graph/roster is required before strict Runner. No browser worker has run for Issue #214 yet.

@@ -20,9 +20,9 @@ Create a pure TypeScript fixture normalizer for QA-only E2E validation. It will 
 **Constraints**: No secrets, external network, browser manipulation, MCP restart or modifications to `src/`.
 **Scale/Scope**: Exactly one fixture module and one test file (plus this task's original Spec Kit artifacts).
 
-## Constitution Check — BLOCKED
+## Constitution Check — Document committed; protected task approval pending
 
-The original repository `.specify/memory/constitution.md` is still a template with `[PROJECT_NAME]` and `[PRINCIPLE_1_NAME]`. It is **not an owner-ratified Constitution**. Do not claim that the original `speckit.plan` gate passed or that this plan is independently owner-approved. Main Agent must obtain trustworthy ratification and exact scope/spec/plan consent before any strict Runner start. Do not alter the project's Constitution without separate owner agreement.
+The original project Constitution v0.1.0 has been committed through Issue #218 / PR #219 and is no longer the upstream placeholder (SHA-256 `43ac4954ceeb5deca93c77cff8c88593ebdf2f278f10432c8f3976a2d5e9574f`). This **does not itself prove** a provider-independent protected owner approval of the exact QA contract or original `speckit.plan` stage. Before strict Runner, verify the committed bytes and obtain a genuine human-password-backed owner task receipt bound to the exact Issue/PR/Constitution and all scope/plan/graph/roster hashes; no self-attested stage results.
 
 ## Project Structure
 
