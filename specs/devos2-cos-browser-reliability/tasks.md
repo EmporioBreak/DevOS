@@ -26,3 +26,9 @@
 - #232 explicitly must not be touched.
 - #224/#226/#228 existing PR and exact chat/session states stay unchanged until separately reconciled; this Issue is not a back door for replay of #226 turn 6.
 - No second Production/Staging MCP, browser profile, custom system daemon or cross-task worker authority.
+
+## Preliminary safe preparation evidence (before owner-reviewed production wiring)
+
+- [x] T015 Add isolated transport-neutral identity matcher and TDD RED→GREEN tests (not yet a trusted host observation or authorization oracle): exact project/Issue/worker/runtime/profile/window/tab/document/navigation epoch, A→B→A, signed-turn/command/payload/provider receipt IDs. `src/browser-command-identity.ts` is a pure matcher, not a second outbox, browser executor, signer or proof source.
+- [x] T016 Build and run focused existing browser regression read-only with no active browser launches; 122/122 scoped tests pass, including the 3 new identity tests. This is NOT the real headed signed-in E2E.
+- [x] T017 Produce explicit draft 6-slot task-specific worker graph and aligned skill roster. **These drafts are not owner approved** and must be pinned in the actual task approval.
