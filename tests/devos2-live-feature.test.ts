@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { normalizeQaLabel } from './fixtures/devos2-live-feature/normalize-qa-label.ts';
+import { normalizeQaLabel } from './fixtures/devos2-live-feature/normalize-qa-label.js';
 
 const cases: Array<[string, string, string]> = [
   ['collapses mixed whitespace', '  Alpha \t  Beta\n', 'Alpha Beta'],
