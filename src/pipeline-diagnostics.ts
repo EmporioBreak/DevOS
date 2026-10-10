@@ -5,6 +5,7 @@ import {JsonStateStore} from "./json-state-store.js";
 import {readWorkerSkillManifest} from "./skill-policy.js";
 import type {OrchestrationEvent} from "./orchestrator.js";
 import type {TaskRef} from "./workflow.js";
+import {readTaskChatSendQueues} from "./chat-send-queue.js";
 
 const REPO=/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const WORKER=/^[A-Za-z0-9_-]{1,100}$/;
@@ -137,6 +138,7 @@ export interface PipelineSnapshot{
     selected:Array<{id:string;version:string;mode:string;why:string}>;
     skipped:Array<{id:string;why:string}>;}>;
   events:TaskAuditRecord[];
+  sendQueue:Array<{workerId:string;turn:number;status:string;globalBusy:"unknown";deadlineAt:string;reason?:Exclude<import("./chat-send-queue.js").ChatSendRecord["reason"],undefined>;receipt?:Exclude<import("./chat-send-queue.js").ChatSendRecord["receipt"],undefined>}>;
   blocker:string|null;
 }
 function safeSkip(reason:string){
@@ -151,6 +153,7 @@ export async function readPipelineSnapshot(
 ):Promise<PipelineSnapshot>{
   validTask(task);
   const state=await new JsonStateStore(root,task).load();
+  const sendQueue=await readTaskChatSendQueues(root,task);
   let events:TaskAuditRecord[]=[];
   try{
     const text=await readFile(pathFor(root,task),"utf8");
@@ -195,5 +198,5 @@ export async function readPipelineSnapshot(
   return {version:1,task:{repo:task.repo,issue:task.issue,...(task.pr?{pr:task.pr}:{})},
     state:derived,workerId:state?.currentWorkerId??null,
     turn:state?.completedRuns??0,reviewLoops:state?.reviewLoops??0,
-    workers,events,blocker};
+    workers,events,sendQueue,blocker};
 }

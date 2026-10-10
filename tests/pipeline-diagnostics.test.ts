@@ -7,10 +7,24 @@ import {appendTaskAuditEvent,readPipelineSnapshot} from "../src/pipeline-diagnos
 import {JsonStateStore} from "../src/json-state-store.js";
 import {resolveWorkerSkills,saveWorkerSkillManifest} from "../src/skill-policy.js";
 import {DevosToolRegistry} from "../src/mcp-tools/registry.js";
+import {ChatSendQueueStore} from "../src/chat-send-queue.js";
 
 const task={repo:"EmporioBreak/DevOS",issue:748,pr:930};
 const key="pipeline-owner-key-strong-".repeat(3);
 const tdd="superpowers-test-driven-development";
+test("pipeline snapshot exposes task send readiness and unknown global busy without prompt or hashes",async()=>{
+  const {root}=await fixture();
+  try{
+    const queue=new ChatSendQueueStore(root,{repo:task.repo,issue:task.issue,workerId:"developer",turn:2,
+      turnTokenHash:"a".repeat(64),promptSha256:"b".repeat(64),conversationSha256:"c".repeat(64)});
+    await queue.begin(); await queue.markReady();
+    const result=await readPipelineSnapshot(root,task,key);
+    assert.equal(result.sendQueue[0]?.status,"ready_to_send");
+    assert.equal(result.sendQueue[0]?.globalBusy,"unknown");
+    assert.equal(JSON.stringify(result).includes("a".repeat(64)),false);
+    assert.equal(JSON.stringify(result).includes("b".repeat(64)),false);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
 async function fixture(){
   const root=await mkdtemp(join(tmpdir(),"devos-pipeline-audit-"));
   await mkdir(join(root,"config"),{recursive:true});

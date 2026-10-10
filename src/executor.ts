@@ -12,6 +12,9 @@ export interface WorkerRequest {
   // Serialized across shared-browser IPC; identifies the single authorized
   // MCP report which can terminate browser response waiting for this turn.
   reportTurn?: { task: TaskRef; active: WorkerReportTurn };
+  /** Orchestrator-supplied exact send lease identity, serialized only to the
+   * task-owned browser runtime. */
+  sendQueueTurn?: { task: TaskRef; workerId: string; turn: number; turnTokenHash: string };
   sessionId?: string;
   /** Trusted task/worker identity set by Orchestrator, not from prompt. */
   codexSkills?: CodexSkillAssignment;

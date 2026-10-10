@@ -48,3 +48,11 @@ test("blocks mismatched conversation, active generation, and overlays", async ()
     }), /chat did not become stably ready/i);
   }
 });
+
+test("bounds a readiness observation that never settles", async () => {
+  const started = Date.now();
+  await assert.rejects(waitForStableReadiness(() => new Promise<ReadinessSnapshot>(() => {}), {
+    timeoutMs: 15, intervalMs: 1, stableSamples: 2,
+  }), /readiness observation exceeded its bounded deadline/i);
+  assert.ok(Date.now() - started < 250);
+});
