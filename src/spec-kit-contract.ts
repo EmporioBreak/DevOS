@@ -16,7 +16,7 @@ export interface SpecKitArtifactContract {
   phase: SpecKitPhase;
   /** Exact verified Git revision containing the referenced artifacts. */
   commit: string;
-  /** Canonical directory under specs/ for the feature or scenario. */
+  /** Original Spec Kit `.specify/specs/` or compatible historical `specs/`. */
   artifactDirectory: string;
   /** Paths point to the ORIGINAL Spec Kit artifacts, not a second plan. */
   artifacts: Record<string, string>;
@@ -70,7 +70,7 @@ export function validateSpecKitContract(value: unknown): SpecKitArtifactContract
     throw new Error("Spec Kit artifacts require an exact Git commit SHA");
   const artifactDirectory = safeRelativePath(v.artifactDirectory, "artifactDirectory");
   const allowedDirectory = scenario === "feature"
-    ? /^specs\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/
+    ? /^(?:specs|\.specify\/specs)\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/
     : scenario === "bugfix"
       ? /^\.specify\/bugs\/[a-z0-9-]+$/
       : /^\.specify\/assessments\/[a-z0-9-]+$/;

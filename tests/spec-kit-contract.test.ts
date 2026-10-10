@@ -52,6 +52,22 @@ test("rejects divergent plans, unknown fields, self-dependencies and unsafe path
   assert.throws(() => parseSpecKitContract("<!-- DEVOS_SPECKIT_V1 -->"), /Ambiguous/);
 });
 
+test("accepts original Spec Kit .specify/specs paths while preserving strict safety", () => {
+  const historic=issue(214);
+  const dirname=".specify/specs/devos2-live-feature";
+  const exact={...historic,artifactDirectory:dirname,
+    artifacts:{spec:dirname+"/spec.md",plan:dirname+"/plan.md",tasks:dirname+"/tasks.md"}};
+  assert.deepEqual(parseSpecKitContract(embedSpecKitContract("#214",exact)),exact);
+  assert.throws(()=>validateSpecKitContract({...exact,
+    artifacts:{...exact.artifacts,plan:".specify/specs/other/plan.md"}}),/feature directory/);
+  assert.throws(()=>validateSpecKitContract({...exact,
+    artifacts:{...exact.artifacts,plan:dirname+"/../other.md"}}),/unsafe relative/);
+  assert.throws(()=>validateSpecKitContract({...exact,
+    artifactDirectory:".specify/specs/../secrets"}),/unsafe relative/);
+  assert.throws(()=>validateSpecKitContract({...exact,
+    artifactDirectory:".specify/other/my-feature"}),/canonical/);
+});
+
 test("original Bugfix and Assess scenarios link their own canonical artifacts", () => {
   for (const scenario of ["bugfix", "assess"] as const) {
     const directory = scenario === "bugfix"
