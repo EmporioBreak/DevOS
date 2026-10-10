@@ -1,50 +1,86 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# DevOS Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Единственный источник требований и ответственность ролей
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+DevOS Main Agent MUST формировать и согласовывать продуктовые решения, вести точные
+GitHub Issue/PR и окончательно принимать результат. DevOS Runner MUST исполнять
+только одну заранее одобренную Issue с неизменным полным графом исполнителей.
+Новые воркеры, роли, переходы и незаявленные задачи в процессе запрещены.
+Исправления по ревью MUST оставаться в тех же Issue, PR и worker-чатах.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### II. Целостность оригинального Spec Kit
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+Единственным источником SDD MUST оставаться официальный, версионированный,
+неизменённый github/spec-kit: Constitution, spec.md, plan.md и tasks.md.
+Для Feature используется оригинальная последовательность Spec Kit; Bugfix и
+Assess MUST следовать собственным оригинальным сценариям. Converge MAY
+дописывать недостающие задачи, но MUST NOT самостоятельно утверждать результат.
+Запрещён конкурирующий workflow engine, подмена original stages и фиктивные
+свидетельства их прохождения.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### III. Методология, тесты и независимое ревью
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+При изменении проверяемого поведения MUST применяться TDD там, где применимо:
+демонстрируемый RED, минимальное исправление, GREEN и проверка регрессии.
+Независимый reviewer MUST оценивать реальный diff, тесты и критерии Issue;
+его мотивированный changes_requested возвращает исходному разработчику тот же PR.
+Методики Superpowers MAY применяться только как закреплённые неизменяемые
+источники либо отдельные совместимые devos-* адаптации. Нельзя выдумывать
+успех теста, роль reviewer, подписание MCP-отчёта или acceptance.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+### IV. Авторизация и изоляция по сессиям
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+DevOS MCP MUST применять default-deny к каждому ChatGPT-чату отдельно от OAuth.
+Пароли, приватные URL и токены MUST NOT попадать в репозиторий, отчёты или
+аргументы модели. Worker grant MUST быть привязан к доверенно проверенным
+host-session, точной задаче, исполнителю и turn и подтверждаться сервером;
+самоописание модели не даёт прав. Одобрение owner-чата не равно одобрению
+спецификации, графа или skill roster. Для них MUST быть отдельное явное,
+доверенно проверяемое подтверждение точных байтов/digests. Недостаточные
+доказательства MUST блокировать запуск без обхода strict-проверок.
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+### V. Границы Production, навыки и откат
+
+DevOS Skills Library MUST проверять pinned versions, origin и SHA-256 и
+применять режимы required/optional/off без скрытых изменений активного графа.
+Production deployment и merge MUST быть отдельными решениями владельца или
+выполняться в рамках его ранее явно согласованной области. Перед изменением
+MCP MUST иметь проверяемый Git rollback и сохранять локальные .env, .devos,
+OAuth и общий Camoufox профиль. Дополнительный Staging MCP без решения
+владельца запрещён. iPhone проверяет исключительно владелец; это не
+агентский критерий приёмки.
+
+## Инженерные ограничения
+
+Изменения MUST оставаться в утверждённой области файлов. Browser-first MUST
+предшествовать любому Codex fallback; локальный воркер MAY стартовать лишь
+после настоящего needs_local_worker от заранее объявленного browser-воркера.
+Возможный повтор отправленного браузерного turn MUST быть запрещён до
+проверенного восстановления. Тестовые/синтетические подтверждения не заменяют
+живой ChatGPT Web → MCP → Mac → reviewer → handoff E2E.
+
+## Процесс разработки и контроль готовности
+
+Main Agent MUST обеспечить согласование значимых альтернатив и границ,
+оригинальные стадии Spec Kit, точный Git SHA документов и полный graph/skills
+до запуска Runner. Runner MUST завершать задачу через FINAL_REVIEW_REQUIRED;
+только Main Agent решает approved либо changes_requested. Изменение требований,
+исходных байтов и графа требует нового подтверждения. Нельзя автоматически
+считать merge, unit PASS или transport HTTP 200 итоговой product acceptance.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+Конституция имеет приоритет над временными инструкциями процесса, кроме
+выделенных и явно документированных решений владельца по конкретной миграции.
+Любое изменение принципов MUST иметь сравнительный diff, дату, предложенную
+версию и отдельное явное подтверждение владельца с проверкой точной ревизии.
+Version использует SemVer: MAJOR — несовместимая замена принципов;
+MINOR — новый принцип или существенное расширение; PATCH — уточнения.
+Каждая спецификация, реализация и итоговое ревью MUST явно проверять
+соответствие текущей закреплённой Конституции. Для первого утверждения
+используется v0.1.0; криптографическое подтверждение QA-графа остаётся
+отдельным обязательным шагом и не подразумевается этой записью.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 0.1.0 | **Ratified**: 2026-10-10 | **Last Amended**: 2026-10-10
