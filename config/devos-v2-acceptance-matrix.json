@@ -440,11 +440,11 @@
       "evidence": []
     },
     {
-      "id": "LIVE-WEB-IOS",
-      "criterion": "Actual original Production DevOS MCP app and per-chat authorization work in ChatGPT Web and iPhone",
+      "id": "LIVE-WEB",
+      "criterion": "Actual original Production DevOS MCP app and per-chat authorization work in ChatGPT Web",
       "status": "live_pending",
       "liveIssue": 151,
-      "check": "In real ChatGPT Web and native iPhone app verify on-demand approval, no repeated cards, one continuation or honest Safari fallback; preserve current connector and shared Camoufox profile. HTTP-only and local tests do not count",
+      "check": "In real ChatGPT Web verify approved and distinct unapproved host chat sessions, on-demand approval, no duplicate authorization forms and one supported continuation; preserve the current Production connector and shared Camoufox profile. HTTP-only/local fixtures do not count. Native iPhone testing is explicitly outside this agent-owned release gate and reserved for the owner",
       "evidence": []
     },
     {

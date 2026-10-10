@@ -1,3 +1,15 @@
+> **Решение владельца 2026-10-10 (актуальнее исторических упоминаний ниже):**
+> отдельный Cloudflare/Staging MCP окончательно отменён, PR #155 закрыт **без merge** как `not_planned`.
+> **Тестирование ChatGPT на iPhone владелец выполнит самостоятельно.** Оно
+> исключено из agent-owned E2E/release acceptance criteria — не требовать
+> iPhone, Safari или native Apps proof от агента, не блокировать наши тесты его
+> отсутствием, но и не утверждать, что проверка iPhone пройдена.
+> Активный `LIVE-WEB` означает только реальный **Production ChatGPT Web** и
+> per-chat auth; `LIVE-PRODUCTION-ISOLATION` независимо требует подтверждения
+> чужой неавторизованной сессии и подписанного worker grant. Всего по-прежнему
+> 9 live prerelease gates и 2 owner/release postrelease gates, все без
+> поддельных успешных аттестаций.
+
 # DevOS 2 — блокирующий release gate и безопасный rollback (#154)
 
 Состояние на **2026-10-10:** **DevOS 2 развёрнут в Production по прямому разрешению владельца, но ПРОДУКТОВАЯ E2E-ПРИЁМКА ЕЩЁ ЗАБЛОКИРОВАНА**. GitHub `main` и работающий Production совпадают на merge-коммите `650865bcf0ff0e31ab699f3c045e98e1f7e67d6b` (предыдущий SHA для отката: `7acda9327d4d878522fecb516f61d0f5a3abccdc`). Существующие ngrok, `.devos` и общий Camoufox сохранены; отдельный Staging MCP отключён. Живые E2E #150–153 и проверка Web/iPhone #151 **не приняты**. Автоматические тесты 566/566 и post-deploy 23/23 проходили, но они не заменяют живую проверку. Epic #121 и Issue #154 остаются открыты.
@@ -142,9 +154,10 @@ signed report и не iPhone. Отдельный Web/iPhone live gate остаё
 Владелец окончательно отказался от второго Staging MCP/Cloudflare и
 копирования OAuth или профиля (2026-10-10). Исправлен live acceptance manifest:
 
-- `LIVE-WEB-IOS` — реальные Web + native iPhone через **оригинальный
-  Production DevOS MCP**, on-demand owner approval, отсутствие повторных
-  форм, Safari fallback, без нарушения общего Camoufox profile;
+- `LIVE-WEB` — реальный ChatGPT Web через **оригинальный Production
+  DevOS MCP**, on-demand approval, отсутствие повторных форм и корректное
+  продолжение, без нарушения общего Camoufox profile. **iPhone выполняет
+  только владелец самостоятельно**; его результат не входит в agent gate;
 - `LIVE-PRODUCTION-ISOLATION` — **реально другой** неавторизованный ChatGPT
   разговор получает отказ, подтверждённый owner-чат работает и настоящий
   DevOS-created worker получает доступ **только** по доказанному подписанному
@@ -160,3 +173,13 @@ signed report и не iPhone. Отдельный Web/iPhone live gate остаё
 Это не автоматическое выполнение gate: всё девять prerelease live-критериев
 остаются pending. Исторические доказательства Staging не переносить в новые
 Production-only acceptance claims.
+
+## Manual owner iPhone check: out of agent scope
+
+User expressly chose to perform native iPhone validation personally
+(2026-10-10). Do not run, automate, require or report an agent iPhone/Safari
+client test. It is not recorded as successful until the owner supplies a
+result; a missing owner report is **not** an additional agent release blocker.
+Only the real Production Web gate and independent per-chat identity gate stay
+in our 9 prerelease live criteria. The retired separate Staging Cloudflare
+PR #155 was closed unmerged as obsolete, without deleting its history.

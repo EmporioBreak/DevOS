@@ -15,6 +15,8 @@ test('Production baseline never claims Web/iPhone or browser-worker acceptance',
  assert.equal(result.fullProductAcceptance,false);
  assert.deepEqual(result.independentlyVerifiedE2e,[]);
  assert.equal(result.pendingRealE2e.length,9);
+ assert.ok(result.pendingRealE2e.includes("LIVE-WEB"));
+ assert.ok(!result.pendingRealE2e.includes("LIVE-WEB-IOS"));
  assert.ok(result.pendingRealE2e.includes("LIVE-PRODUCTION-ISOLATION"));
  assert.ok(!result.pendingRealE2e.includes("LIVE-STAGING-ISOLATION"));
  assert.equal(result.browserWorkersStarted,false);
