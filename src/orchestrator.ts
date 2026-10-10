@@ -75,6 +75,12 @@ export interface OrchestratorOptions {
   executors: Map<string, Executor>;
   stateStore: StateStore;
   mainAgentDecision?: "approved" | "changes_requested";
+  /** Trusted host-side verification of a concrete unavailable browser/MCP capability.
+   * Never infer truth from a worker status, model summary or GitHub comment. */
+  verifyHostOnlyFallback?: (context: {
+    task: TaskRef; workerId: string; turn: number; nextWorkerId: string;
+    sessionId: string | undefined; signedWorkerReport: boolean;
+  }) => Promise<boolean>;
   finalizeTask?: (state: RunState) => Promise<void>;
   resolveTask?: (task: TaskRef) => Promise<TaskRef>;
   /** Mandatory for v2: reverify signed per-worker graph before every dispatch. */
@@ -311,14 +317,7 @@ export class Orchestrator {
           projectRoot: this.options.projectRoot,
           prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot,
             workerReportToken ? { turn: state.completedRuns, token: workerReportToken } : undefined) +
-            (skillAssignment ? (
-              "\n\nDevOS 2 STRICT assigned skill manifest SHA-256: "+
-              skillAssignment.manifestSha256+
-              ". Original Spec Kit stage: "+(skillAssignment.stage??"none")+
-              ". Read your exact assigned skills via devos_skill_manifest and "+
-              "devos_skill_read in this already verified worker chat before executing "+
-              "the task. Do not invent, override or dispatch additional workers."
-            ) : "") +
+            (skillAssignment ? buildStrictWorkerSkillInstructions(worker.executor,skillAssignment) : "") +
             (browserTurnToken
               ? "\n\nDevOS browser attempt ID: " + state.activeReport!.tokenHash + ". This is a non-secret correlation identifier; do not repeat it in your final answer or GitHub comments."
               : ""),
@@ -370,7 +369,8 @@ export class Orchestrator {
           });
           output = await executor.run({
             projectRoot: this.options.projectRoot,
-            prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot),
+            prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot) +
+              (skillAssignment ? buildStrictWorkerSkillInstructions(worker.executor,skillAssignment) : ""),
             workerId: worker.id,
             codexSkills: { task: activeWorkflow.task, workerId: worker.id,
               mandatory: workflow.skillsMode === "strict" },
@@ -439,6 +439,31 @@ export class Orchestrator {
       if (parsed && reportedStatus && parsed.status !== reportedStatus)
         throw new Error(`Worker ${worker.id} reported conflicting statuses via MCP and final message`);
       const result = parsed ?? { status: reportedStatus! };
+      // A browser worker may be authorized on the SAME Mac as local Codex.
+      // A signed model-chosen status is authentic reporting, not proof that a
+      // host-only capability actually failed. Gate BEFORE consuming the turn.
+      if (worker.executor === "chatgpt_browser" && result.status === "needs_local_worker" &&
+          worker.on.needs_local_worker && workers.get(worker.on.needs_local_worker)?.executor === "codex") {
+        let allowed = false;
+        if (this.options.verifyHostOnlyFallback &&
+            (workflow.skillsMode !== "strict" || reportedStatus === "needs_local_worker")) {
+          try {
+            allowed = await this.options.verifyHostOnlyFallback({
+              task: activeWorkflow.task,workerId:worker.id,turn:state.completedRuns,
+              nextWorkerId:worker.on.needs_local_worker,
+              sessionId:state.sessions[worker.id],
+              signedWorkerReport:reportedStatus === "needs_local_worker",
+            }) === true;
+          } catch {
+            // Host verifier unavailable or malformed: never delegate by default.
+          }
+        }
+        if (!allowed) {
+          await stateStore.save(state);
+          await this.emitTaskStatus(state,"blocked");
+          throw new Error(`Browser worker ${worker.id}: host-only capability evidence not independently verified; refusing local Codex fallback`);
+        }
+      }
       if (worker.executor === "codex" && result.status === "needs_local_worker") {
         state = { ...state, sessions, ...(sessionProjectRoots ? { sessionProjectRoots } : {}) };
         await stateStore.save(state);
@@ -662,6 +687,27 @@ export async function awaitWorkerReportOrBrowser(options: {
   }
 }
 
+/** Never tell a native Codex worker to request browser-worker MCP authorization.
+ * Native skills have already been staged from the signed assignment by
+ * CodexExecutor.prepareCodexSkills; browser skills are gateway-scoped. */
+export function buildStrictWorkerSkillInstructions(
+  executor: ExecutorKind,
+  assignment: {stage:string|null;manifestSha256:string},
+):string {
+  const common = "\n\nDevOS 2 STRICT assigned skill manifest SHA-256: " +
+    assignment.manifestSha256 + ". Original Spec Kit stage: " +
+    (assignment.stage ?? "none") + ". ";
+  if (executor === "codex") {
+    return common + "Your signed pinned skills are prepared locally by " +
+      "prepareCodexSkills. Read your assigned native .agents/skills SKILL.md " +
+      "resources on this host. Do NOT request DevOS browser MCP authorization " +
+      "or any owner's password. Do not invent, override or dispatch workers.";
+  }
+  return common + "Read your exact assigned skills via devos_skill_manifest " +
+    "and devos_skill_read in this verified browser worker chat before executing " +
+    "the task. Do not invent, override or dispatch additional workers.";
+}
+
 export function buildWorkerPrompt(
   workflow: Workflow, worker: WorkerSpec, projectRoot?: string,
   report?: { turn: number; token: string },
@@ -685,7 +731,7 @@ export function buildWorkerPrompt(
     `Begin every GitHub report with exactly: **DevOS worker:** \`${worker.id}\` (\`${worker.executor}\`)`,
     worker.executor === "codex"
       ? "This worker already runs on the local Codex executor. It must not return needs_local_worker; return failed for an unrecoverable local-executor failure."
-      : "If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_local_worker instead of failed.",
+      : "Use the authorized Production Desktop Commander MCP to work on the same host before considering fallback. Complexity, caution, browser-window ownership risk, or preference for local Codex are NOT host-only capability blockers. Return needs_local_worker only after attempting the required operation and identifying a specific unavailable host capability with independently verifiable evidence. If unsafe, stop without touching other task state; do not invent a limitation or worker authorization.",
     ...(worker.executor === "chatgpt_browser" && report ? [
       "This is a DevOS-owned browser worker conversation. Before the FIRST operational Desktop Commander or first-party DevOS MCP call in this turn, call the safe devos_worker_probe tool exactly once, with no arguments. This does not itself authorize any operation; the trusted local browser owner verifies its provider-structured tool response in this exact worker chat.",
       "After devos_worker_probe returns status=issued, call devos_noop exactly once with no arguments and await its result. The gateway may briefly wait for independent, signed, exact-chat proof; the probe alone NEVER grants permission. Only approved=true permits operational Mac/DevOS tools or devos_worker_report. If denied/worker_proof_pending, do not request owner authorization, use Mac tools, fabricate an MCP report, repeat the probe or replay this turn; explain the blocker in text.",

@@ -82,13 +82,25 @@ function taskGraph(workflow:Workflow):Workflow {
   const parsed=parseWorkflow(workflow);
   if(!parsed.owner || parsed.owner.mode!=="main_agent")
     throw new Error("Main Agent must own final acceptance of each Issue");
-  const start=parsed.workers.find(x=>x.id===parsed.start);
-  if(start?.executor!=="chatgpt_browser")
-    throw new Error("Browser-first graph must start with a ChatGPT browser worker");
-  for(const local of parsed.workers.filter(x=>x.executor==="codex")) {
-    if(!parsed.workers.some(x=>x.executor==="chatgpt_browser" &&
-        x.on.needs_local_worker===local.id))
-      throw new Error("Local Codex worker must be predeclared behind browser needs_local_worker");
+  // Main Agent, not Runner, chooses each executor according to its exact
+  // capabilities in the *approved* immutable graph. A planned Codex stage
+  // may start first or follow an ordinary `done` edge; an exceptional
+  // `needs_local_worker` fallback remains separately subject to host proof.
+  const workers=new Map(parsed.workers.map(worker=>[worker.id,worker]));
+  const reachable=new Set<string>([parsed.start]);
+  const queue=[parsed.start];
+  while(queue.length){
+    const id=queue.shift()!;
+    for(const next of Object.values(workers.get(id)!.on)){
+      if(next&&!reachable.has(next)){
+        reachable.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  for(const worker of parsed.workers){
+    if(!reachable.has(worker.id))
+      throw new Error(`Main Agent graph has unreachable worker: ${worker.id}`);
   }
   const devs=parsed.workers.filter(x=>/develop|implement/i.test(x.id));
   const reviews=parsed.workers.filter(x=>/review|qa/i.test(x.id));

@@ -14,6 +14,9 @@ test("Epic 121 acceptance matrix maps every automated item to a real enabled reg
   assert.equal(report.automated+report.livePending,report.matrix.entries.length);
   assert.ok(report.matrix.entries.some(x=>x.id==="BROWSER-NO-REPLAY"));
   assert.ok(report.matrix.entries.some(x=>x.id==="RUNNER-LEGACY"));
+  assert.ok(report.matrix.entries.some(x=>x.id==="RUNNER-CAPABILITY-GRAPH" &&
+    x.evidence.some(e=>e.name.includes("Main Agent planned Codex action")) &&
+    x.evidence.some(e=>e.name.includes("trusted host proof"))));
   assert.ok(report.matrix.entries.some(x=>x.id==="SKILLS-CODEX"));
 });
 

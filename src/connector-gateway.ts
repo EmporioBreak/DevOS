@@ -23,6 +23,7 @@ import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_UR
 import { OwnerTaskApprovalStore, OWNER_TASK_APPROVAL_TOOL, OWNER_TASK_APPROVAL_STATUS_TOOL, ownerTaskApprovalForm } from "./owner-task-approval.js";
 import { ChatWorkerProbeRegistry, CHAT_WORKER_PROBE_TOOL } from "./chat-worker-probe.js";
 import { ChatWorkerGrantRegistry } from "./chat-worker-grants.js";
+import { recordObservedHostOutage } from "./host-fallback-evidence.js";
 import { watchChatAccessRevocation } from "./chat-authorization-watch.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
 import { SKILL_POLICY_WIDGET_URI, skillPolicyWidget } from "./skill-policy-widget.js";
@@ -946,6 +947,26 @@ export async function startGateway(options: {
               if (toolCall && (!accessStillValid() || requestController.signal.aborted))
                 throw new Error("Chat authorization was revoked during tool execution");
             } catch (error) {
+              // Only the trusted gateway can attest a real Desktop Commander
+              // transport outage for the EXACT active grant and worker turn.
+              // Invalid tool arguments, absent tools or ordinary tool failures
+              // do not produce host-only fallback evidence.
+              if (toolCall && forwardedRequestPromise !== undefined &&
+                  !desktop.ready && !requestController.signal.aborted &&
+                  forwardedRequest.method === "tools/call" &&
+                  typeof forwardedRequest.params?.name === "string" &&
+                  !forwardedRequest.params.name.startsWith("devos_") &&
+                  !localTools.has(forwardedRequest.params.name)) {
+                const owner=workerGrants.activeIdentity(fingerprint);
+                if(owner){
+                  try {
+                    await recordObservedHostOutage(options.root,options.ownerSecret,
+                      owner,forwardedRequest.params.name);
+                  } catch {
+                    // Diagnostic failure is never a reason to grant a fallback.
+                  }
+                }
+              }
               void Promise.allSettled(writes);
               throw error;
             } finally {
