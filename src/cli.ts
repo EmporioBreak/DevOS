@@ -36,6 +36,7 @@ import { acquireTaskLock } from "./task-lock.js";
 import type { Workflow } from "./workflow.js";
 import { loadWorkflow } from "./workflow-loader.js";
 import { verifyRunnerSkillGraph } from "./runner-skill-graph.js";
+import {verifyHostBackendUnavailable} from "./host-fallback-evidence.js";
 import { appendTaskAuditEvent } from "./pipeline-diagnostics.js";
 import { parseEnvFile } from "./connector-env.js";
 import { readFile } from "node:fs/promises";
@@ -189,7 +190,25 @@ export async function runWorkflow(
       ...(chatgpt ? [["chatgpt_browser", chatgpt] as const] : []),
     ]),
     stateStore,
-    ...(strictSecret?{verifyAssignedWorkerSkills:async (workerId:string)=>{
+    ...(strictSecret?{verifyHostOnlyFallback:async (context:{
+      task:Workflow["task"];workerId:string;turn:number;nextWorkerId:string;
+      sessionId:string|undefined;signedWorkerReport:boolean;
+    })=>{
+      if(!context.signedWorkerReport||!context.sessionId)return false;
+      const state=await stateStore.load();
+      if(!state||state.currentWorkerId!==context.workerId||
+          state.completedRuns!==context.turn||!state.activeReport||
+          state.activeReport.workerId!==context.workerId||
+          state.activeReport.turn!==context.turn||
+          state.sessions[context.workerId]!==context.sessionId||
+          context.task.repo!==workflow.task.repo||context.task.issue!==workflow.task.issue)
+        return false;
+      return verifyHostBackendUnavailable(cwd,strictSecret,{
+        repo:context.task.repo,issue:context.task.issue,workerId:context.workerId,
+        turn:context.turn,sessionId:context.sessionId,
+        tokenHash:state.activeReport.tokenHash,
+      });
+    },verifyAssignedWorkerSkills:async (workerId:string)=>{
       const exact=await verifyRunnerSkillGraph(cwd,workflow,strictSecret);
       const assigned=exact.workers.find(w=>w.workerId===workerId);
       if(!assigned)throw new Error("Undeclared DevOS Runner worker");
