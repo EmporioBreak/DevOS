@@ -1,5 +1,5 @@
 import {createHash, createHmac, randomBytes, randomUUID, timingSafeEqual} from "node:crypto";
-import {existsSync, lstatSync, mkdirSync, readFileSync, linkSync, unlinkSync, writeFileSync} from "node:fs";
+import {existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, linkSync, unlinkSync, writeFileSync} from "node:fs";
 import {join} from "node:path";
 import {ChatAccessRegistry} from "./chat-access.js";
 import {ownerPassword} from "./chat-access-widget.js";
@@ -124,6 +124,48 @@ export class OwnerTaskApprovalStore {
        !p.receiptId)return {approved:false};
     return {approved:true,approval_ref:"devos-owner-approval:"+p.receiptId};
   }
+  /** Read-only owner wake-up binding. An approval receipt is signed for a
+   * SPECIFIC task/PR/revision AND originating chat fingerprint. Do not choose
+   * from the ChatAccessRegistry's unrelated or multiply-approved chats.
+   * A /share URL is only a label: delivery must separately observe a real
+   * private /c destination + editable composer before any send.
+   */
+  resolveOwnerChat(expectedInput:OwnerTaskReview):
+    {fingerprint:string;approvedReference:string;kind:"private"|"share_label"}|null {
+    const expected=canonical(expectedInput);
+    if(!existsSync(this.dir))return null;
+    const directory=lstatSync(this.dir);
+    if(!directory.isDirectory()||directory.isSymbolicLink()||(directory.mode&0o077)!==0)
+      throw new Error("Unsafe owner approval directory");
+    const files=readdirSync(this.dir).filter(x=>x.endsWith(".json"));
+    if(files.length>4096)throw new Error("Owner receipt inventory capacity exceeded");
+    const fingerprints=new Set<string>();
+    for(const name of files){
+      const id=name.slice(0,-5);
+      if(!ID.test(id))throw new Error("Unexpected owner approval receipt name");
+      const path=join(this.dir,name),stat=lstatSync(path);
+      if(!stat.isFile()||stat.isSymbolicLink()||(stat.mode&0o077)!==0||stat.size>8192)
+        throw new Error("Unsafe owner approval receipt");
+      let signed:SignedReceipt;
+      try{signed=JSON.parse(readFileSync(path,"utf8")) as SignedReceipt;}
+      catch{throw new Error("Malformed owner approval receipt")}
+      if(signed?.receipt?.version!==1||signed.receipt.id!==id||
+          !/^chat_[a-f0-9]{64}$/.test(signed.receipt.fingerprint)||
+          !H.test(signed.mac)||!fixedEqual(this.mac(signed.receipt),signed.mac))
+        throw new Error("Owner approval receipt integrity check failed");
+      const actual=canonical(signed.receipt.review);
+      if(JSON.stringify(actual)===JSON.stringify(expected))
+        fingerprints.add(signed.receipt.fingerprint);
+    }
+    if(fingerprints.size>1)throw new Error("Ambiguous multiple signed owner chat bindings for exact task");
+    if(fingerprints.size===0)return null;
+    const fingerprint=[...fingerprints][0]!;
+    const binding=this.chats.list().find(x=>x.fingerprint===fingerprint);
+    if(!binding)return null; // revoked/missing, never assume another chat
+    return {fingerprint,approvedReference:binding.url,
+      kind:binding.url.includes("/share/")?"share_label":"private"};
+  }
+
   private mac(receipt:Receipt):string {
     return createHmac("sha256",this.signingKey)
       .update(JSON.stringify(receipt)).digest("hex");
