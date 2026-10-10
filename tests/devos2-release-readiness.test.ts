@@ -63,11 +63,11 @@ test("all provider-attested pre-release proof yields human release decision, no 
  assert.equal(ready.mayCloseEpic,false);
 });
 
-test("GitHub rollback and reauthorization acceptance never bypass missing Web/iOS live proof",async()=>{
+test("GitHub rollback and reauthorization acceptance never bypass missing actual Web live proof",async()=>{
  const incomplete=await inspectDevos2ReleaseReadiness({projectRoot,stagingSha,
-   provider,gates:gates().filter(x=>x.id!=="LIVE-WEB-IOS")});
+   provider,gates:gates().filter(x=>x.id!=="LIVE-WEB")});
  assert.equal(incomplete.status,"blocked");
- assert.match(incomplete.blockers.join(" "),/LIVE-WEB-IOS/);
+ assert.match(incomplete.blockers.join(" "),/LIVE-WEB/);
  assert.equal(incomplete.mayTouchProduction,false);
 });
 

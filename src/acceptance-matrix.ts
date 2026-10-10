@@ -22,7 +22,7 @@ const REQUIRED=[
   "SKILLS-BROWSER","SKILLS-CODEX","MCP-DEFAULT-DENY","MCP-WORKER-GRANT",
   "MCP-APP-ONE-SHOT","BROWSER-NO-REPLAY","OWNER-REVIEW",
   "TASK-TIMELINE","LIVE-GITHUB-LINKS","LIVE-FEATURE-SDD",
-  "LIVE-BUGFIX","LIVE-ASSESS","LIVE-WEB-IOS","LIVE-PRODUCTION-ISOLATION",
+  "LIVE-BUGFIX","LIVE-ASSESS","LIVE-WEB","LIVE-PRODUCTION-ISOLATION",
   "LIVE-CHAOS","LIVE-DOCS","LIVE-PRODUCTION-GATE","LIVE-OWNER-REPORT",
 ] as const;
 const quotePattern=(s:string)=>s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
@@ -91,15 +91,19 @@ export async function verifyAcceptanceMatrix(
   // Owner retired the separate Staging/Cloudflare MCP and intentionally uses
   // the existing shared Camoufox profile. A release matrix demanding those
   // retired resources would make real product acceptance impossible.
+  // Owner personally verifies native iPhone; it is not a machine/agent live gate.
   const productionOnly=records.filter(x=>
-    x.id==="LIVE-WEB-IOS"||x.id==="LIVE-PRODUCTION-ISOLATION");
+    x.id==="LIVE-WEB"||x.id==="LIVE-PRODUCTION-ISOLATION");
+  if(records.some(x=>x.id==="LIVE-WEB-IOS" || x.id==="LIVE-IOS" || x.id==="LIVE-IPHONE"))
+    throw new Error("Native iPhone test is reserved for the owner, not an agent live acceptance gate");
   if(productionOnly.length!==2||productionOnly.some(x=>
       x.status!=="live_pending"||x.liveIssue!==151||
       !/Production MCP|Production DevOS MCP/.test(x.criterion)||
-      (x.id==="LIVE-WEB-IOS" &&
-        !/real ChatGPT|native iPhone/i.test(x.check??"")) ||
+      (x.id==="LIVE-WEB" &&
+        (!/real ChatGPT Web/i.test(x.check??"") ||
+         !/owner/i.test(x.check??""))) ||
       /Staging plugin works|Cloudflare resource|copied authentication/i.test(x.criterion)))
-    throw new Error("DevOS 2 Web/iPhone acceptance must use the original Production-only MCP contract");
+    throw new Error("DevOS 2 Web acceptance must use the original Production-only MCP contract");
   for(const issue of LIVE)if(!records.some(x=>x.liveIssue===issue))
     throw new Error("No explicit live/release blocker for Issue #"+issue);
   return {matrix:raw as DevosAcceptanceMatrix,automated,livePending,testRefs};

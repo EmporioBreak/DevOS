@@ -17,16 +17,16 @@ test("Epic 121 acceptance matrix maps every automated item to a real enabled reg
   assert.ok(report.matrix.entries.some(x=>x.id==="SKILLS-CODEX"));
 });
 
-test("live Web/iPhone and Production isolation cannot be marked PASS by simulated tests",async()=>{
+test("live Web and Production isolation cannot be marked PASS by simulated tests",async()=>{
   const checked=await verifyAcceptanceMatrix(root,source);
   const pending=checked.matrix.entries.filter(x=>x.status==="live_pending");
   assert.ok(pending.every(x=>!!x.check&&!!x.liveIssue));
-  assert.ok(pending.some(x=>x.liveIssue===151&&x.id==="LIVE-WEB-IOS"));
+  assert.ok(pending.some(x=>x.liveIssue===151&&x.id==="LIVE-WEB"));
   assert.ok(pending.some(x=>x.liveIssue===151&&x.id==="LIVE-PRODUCTION-ISOLATION"));
   assert.ok(!pending.some(x=>x.id==="LIVE-STAGING-ISOLATION"));
   assert.ok(pending.some(x=>x.liveIssue===154&&x.id==="LIVE-PRODUCTION-GATE"));
   const fabricated=structuredClone(source);
-  const i=fabricated.entries.findIndex((x:{id:string})=>x.id==="LIVE-WEB-IOS");
+  const i=fabricated.entries.findIndex((x:{id:string})=>x.id==="LIVE-WEB");
   fabricated.entries[i].status="automated";
   await assert.rejects(verifyAcceptanceMatrix(root,fabricated),
     /Automated acceptance cannot claim live result/);
@@ -60,7 +60,7 @@ test("cross-component coverage contains all necessary original pathways and rele
 
 test("live matrix must not require retired Staging MCP, Cloudflare or copied OAuth",async()=>{
  const verified=await verifyAcceptanceMatrix(root,source);
- const web=verified.matrix.entries.find(x=>x.id==="LIVE-WEB-IOS")!;
+ const web=verified.matrix.entries.find(x=>x.id==="LIVE-WEB")!;
  const isolation=verified.matrix.entries.find(x=>x.id==="LIVE-PRODUCTION-ISOLATION")!;
  assert.equal(web.status,"live_pending");
  assert.equal(isolation.status,"live_pending");
@@ -77,6 +77,23 @@ test("live matrix must not require retired Staging MCP, Cloudflare or copied OAu
  bad.criterion="Proof of distinct remote MCP/Cloudflare resource and copied authentication";
  await assert.rejects(verifyAcceptanceMatrix(root,obsolete),/Production-only MCP contract/);
  const fake=structuredClone(source);
- fake.entries.find((x:{id:string})=>x.id==="LIVE-WEB-IOS").status="automated";
+ fake.entries.find((x:{id:string})=>x.id==="LIVE-WEB").status="automated";
  await assert.rejects(verifyAcceptanceMatrix(root,fake),/Automated acceptance cannot claim live result/);
+});
+
+
+test("owner manually tests iPhone; only Production Web is an agent E2E gate",async()=>{
+ const result=await verifyAcceptanceMatrix(root,source);
+ const pending=result.matrix.entries.filter(x=>x.status==="live_pending");
+ assert.equal(pending.length,11);
+ assert.ok(pending.some(x=>x.id==="LIVE-WEB"&&x.liveIssue===151));
+ assert.ok(pending.every(x=>!(/LIVE-(IOS|IPHONE|WEB-IOS)/.test(x.id))));
+ const web=pending.find(x=>x.id==="LIVE-WEB")!;
+ assert.match(web.check!,/Native iPhone testing is explicitly outside/);
+ const old=structuredClone(source);
+ old.entries.find((x:{id:string})=>x.id==="LIVE-WEB").id="LIVE-WEB-IOS";
+ await assert.rejects(verifyAcceptanceMatrix(root,old),/Missing required Epic acceptance route|reserved for the owner/);
+ const fabricated=structuredClone(source);
+ fabricated.entries.find((x:{id:string})=>x.id==="LIVE-WEB").status="automated";
+ await assert.rejects(verifyAcceptanceMatrix(root,fabricated),/Automated acceptance cannot claim live result/);
 });
