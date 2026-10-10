@@ -441,18 +441,18 @@
     },
     {
       "id": "LIVE-WEB-IOS",
-      "criterion": "Actual Staging plugin works in ChatGPT Web and iPhone",
+      "criterion": "Actual original Production DevOS MCP app and per-chat authorization work in ChatGPT Web and iPhone",
       "status": "live_pending",
       "liveIssue": 151,
-      "check": "Verify OAuth form and no duplicates, native App or Safari fallback on real devices",
+      "check": "In real ChatGPT Web and native iPhone app verify on-demand approval, no repeated cards, one continuation or honest Safari fallback; preserve current connector and shared Camoufox profile. HTTP-only and local tests do not count",
       "evidence": []
     },
     {
-      "id": "LIVE-STAGING-ISOLATION",
-      "criterion": "Proof of distinct remote MCP/Cloudflare resource and copied authentication",
+      "id": "LIVE-PRODUCTION-ISOLATION",
+      "criterion": "Original Production MCP denies a genuinely unrelated ChatGPT conversation and verifies owner/worker scope with no second gateway",
       "status": "live_pending",
       "liveIssue": 151,
-      "check": "Verify full staging-connected plugin; confirm production connector unchanged",
+      "check": "Independently verify distinct real host sessions, default-deny for a separate unauthorized ChatGPT chat, approved owner chat and signed exact worker grants on Production ngrok. Keep Staging MCP off and existing shared Camoufox identity unchanged; never copy OAuth/session/profile state",
       "evidence": []
     },
     {
@@ -460,7 +460,7 @@
       "criterion": "Actual connection interruption, replay, isolation and signed grant stress",
       "status": "live_pending",
       "liveIssue": 152,
-      "check": "Run bounded staging-owned chaos/host scenarios and cleanup verification",
+      "check": "Run bounded Production-only live disconnect/recovery, no-replay, signed worker grant and cleanup verification without touching unrelated tasks or starting Staging MCP",
       "evidence": []
     },
     {
@@ -476,7 +476,7 @@
       "criterion": "Production release explicitly approved; code rollback to pinned Git SHA is available; local auth may be redone",
       "status": "live_pending",
       "liveIssue": 154,
-      "check": "Independent release gate and Git SHA rollback readiness; no mandatory secrets/profile backup; never claim before release",
+      "check": "Verify the already owner-approved Production deployment Git SHA, unchanged local OAuth and shared Camoufox identity, safe Git code rollback and healthy connector; do not require a private secrets/profile backup",
       "evidence": []
     },
     {
