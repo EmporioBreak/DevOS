@@ -35,3 +35,14 @@ Before #152 or Epic #121 can be approved, actual #150/#151 need to pass and then
 - Actual clean staging-owned cleanup without closing unrelated user/Production browser; record evidence with Issue and safe links
 
 **Important:** #150's first real ChatGPT Project QA turn timed out without a verified terminal result; it may have submitted, so its one-shot guard remains in force. Do not replay it to manufacture success. The full Staging plugin UI acceptance in #151 remains pending. No Production promotion before #154.
+
+
+## Production-only маршрут после миграции (2026-10-10)
+
+Старый Staging инструмент выше требует запущенных обоих портов и больше не
+подходит для Production-only режима. Не запускайте ради него выключенный
+Staging MCP. Используйте read-only/synthetic набор
+`tsx scripts/devos2-production-safe-chaos.smoke.ts <production-root> <isolated-worktree-root>`.
+Он тестирует временные процессы, **не** реальные ChatGPT worker turns и не
+Web/iPhone. Подробности и фактические результаты см. в
+[DevOS 2 release gate](devos2-release-gate.md).

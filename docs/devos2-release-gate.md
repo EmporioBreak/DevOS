@@ -72,3 +72,32 @@ provider-attested доказательства реального worker turn, W
 `devos2-release-preflight.ts` продолжает показывать `blocked` для
 непрошедших E2E — теперь это **статус приёмки**, а не утверждение, что код
 не развёрнут. Зафиксировать baseline в #154 без секретов.
+
+
+## V04 — безопасный Production-only стресс после развёртывания
+
+Владелец отключил отдельный Staging MCP, поэтому старый
+`scripts/staging-safe-chaos.smoke.ts` требующий оба одновременно работающих
+порта **не используется**. Вместо него в отдельной worktree (не из рабочего
+Production `main`) предусмотрено:
+
+```sh
+# FROM ISOLATED WORKTREE, not from the running Production checkout
+./node_modules/.bin/tsx scripts/devos2-production-safe-chaos.smoke.ts \
+  /path/to/Production-DevOS /path/to/isolated-DevOS-worktree
+```
+
+Скрипт использует только временные **синтетические** browser fixtures,
+не создаёт GitHub Issue/PR/новых воркеров, не отправляет ChatGPT messages,
+не подключается к действующему Camoufox-профилю и не запускает Staging MCP.
+Проверяется набор безопасности/восстановления и собственное завершение
+временных браузерных процессов. До/после сравниваются Production listener PID,
+health, Git HEAD и чистота checkout, отсутствие Staging listener,
+а также PID существующих браузерных runtime. Полный отчёт содержит только
+булевы проверки, counts, status и явно пустой `independentlyVerifiedE2e`.
+
+**Фактическая проверка 2026-10-10:** тесты 73/73 PASS без skipped,
+синтетический host browser lifecycle PASS; все проверки состояния Production
+PASS. Код работающего Production не изменён; никаких реальных worker turns
+или iPhone проверок не было. Поэтому V04 принимает только
+`pass_non_destructive_only`, а 9 live gates остаются pending.

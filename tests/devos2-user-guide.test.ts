@@ -80,3 +80,14 @@ test("deployed DevOS 2 guidance cannot still claim Production is old or deploy p
  assert.match(release,/fullProductAcceptance:false/);
  assert.match(release,/scripts\/devos2-production-postrelease\.smoke\.mjs/);
 });
+
+
+test("Production-only stress instructions do not silently demand the retired Staging MCP",async()=>{
+ const [doc,guide]=await Promise.all([
+  read("docs/staging-safe-chaos.md"),read("docs/devos2-release-gate.md")]);
+ assert.match(doc,/devos2-production-safe-chaos\.smoke\.ts/);
+ assert.match(guide,/pass_non_destructive_only/);
+ assert.match(guide,/73\/73 PASS/);
+ assert.match(guide,/independentlyVerifiedE2e/);
+ assert.match(guide,/не запускает Staging MCP/);
+});
