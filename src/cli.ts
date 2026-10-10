@@ -13,6 +13,10 @@ import {
 } from "./completed-tasks.js";
 import { CodexExecutor } from "./codex-executor.js";
 import { runChatAccessAdmin, type ChatAccessCommand } from "./chat-access-admin.js";
+import { ChatAccessRegistry } from "./chat-access.js";
+import { OwnerTaskApprovalStore } from "./owner-task-approval.js";
+import { OwnerWakeupLedger } from "./owner-wakeup-ledger.js";
+import { enqueueOwnerHandoff } from "./owner-wakeup-handoff.js";
 import { parseSkillsCliArgs, runSkillsCliCommand, type SkillsCliCommand } from "./skills-cli.js";
 import { LocalCommandRunner } from "./command-runner.js";
 import { debugLog } from "./debug-log.js";
@@ -250,6 +254,27 @@ export async function runWorkflow(
       catch {debugLog("orchestrator.audit_error", {category:"local_audit_unavailable"});}
     },
   }).run();
+  // The final-review state has already been durably saved by Orchestrator.
+  // Prepare the owner notification *after* this point, never from the early
+  // main_agent_handoff event. This does not launch a browser or send a chat
+  // message: native delivery requires independently verified editable /c/
+  // ownership, readiness and a real provider request ID. Notification failure
+  // must not corrupt or restart a completed worker handoff.
+  if(strictSecret && workflow.owner?.mode==="main_agent" && state.mainAgentReviewPending){
+    try{
+      const chats=new ChatAccessRegistry(cwd,strictSecret);
+      const approvals=new OwnerTaskApprovalStore(cwd,strictSecret,chats);
+      const ledger=new OwnerWakeupLedger(cwd,strictSecret);
+      const notice=await enqueueOwnerHandoff({
+        workflow,state,store:approvals,ledger,
+      });
+      debugLog("owner.wakeup.intent",{issue:workflow.task.issue,status:notice,
+        dispatch:"not_sent"});
+    }catch{
+      debugLog("owner.wakeup.blocked",{issue:workflow.task.issue,
+        reason:"signed_owner_binding_or_local_queue_unavailable",dispatch:"not_sent"});
+    }
+  }
   // final_review_required is not task completion. Keep the shared Camoufox
   // process and every worker tab alive for main-agent review / rework.
   // finalizeTask closes them only after terminal approval.
