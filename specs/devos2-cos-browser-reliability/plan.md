@@ -3,6 +3,12 @@
 **Issue:** #239 | **Upstream CoS SHA:** `9c9ccac195be282011a5e7c8f2ee35e64f8680b7`
 **Status:** draft architecture for exact owner review; no code production swap by this document.
 
+## Intentional deviation from CoS: workers exist only for one Issue
+
+CoS supports reusable sleeping agents that may accept unrelated future assignments. **DevOS must NOT copy this behavior.** Main Agent is the only persistent cross-Issue project-context owner; it transfers the minimum necessary task brief into newly created worker conversations. Each approved DevOS worker identity, chat, signed MCP grant, task window/tab lease, queued command and outstanding result is scoped to exactly one `repo#issue`. A `changes_requested` loop keeps those same worker chats and grants on the SAME Issue/PR until the task is genuinely completed. Successful final Main Agent acceptance and a persisted `completed` transition cause task-local retirement: cancel pending operations under the normal no-replay rules, revoke worker-specific grants/leases, detach task conversations from executable routing and close only the completed Issue's browser window/tabs when approved and safely idle. Unresolved ambiguous sends must never be cleaned up by declaring a false `completed`. Keep signed reports, commits, PR comments and authorized audit records; do not delete them simply to 'reset context'. A future Issue always receives new worker chats, auth grants and conversation context, even if it uses a worker ID/role string identical to an earlier Issue. There must be no 'sleeping workers pool' shared across Issues.
+
+This is a **functional lifecycle requirement** and needs concurrency, rework, completion, late-response and cross-Issue tests. Browser **process/profile** lifetime is distinct from **worker** lifetime: the shared Camoufox process may outlive one completed Issue as long as another Issue is active, but its retired worker sessions cannot be reactivated for a different Issue.
+
 ## Architecture decision
 
 **Do not install CoS alongside DevOS.** Its full Electron+Chrome/Edge/Brave MV3 extension + HTTP bridge would become a competing browser/process/session owner and does not directly support the existing Camoufox/Firefox profile. Instead use CoS's precise ownership, outbox, durable command ACK, broker and observation contracts to rebuild the existing DevOS browser subsystem behind its unchanged `Executor`/signed-MCP interfaces.
