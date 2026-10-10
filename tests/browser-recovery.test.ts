@@ -13,7 +13,7 @@ import type { Workflow } from "../src/workflow.js";
 const project = "https://chatgpt.com/g/one/project";
 const saved = "https://chatgpt.com/g/one/c/saved";
 const created = "https://chatgpt.com/g/one/c/created";
-function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failures?: number; error?: string; destination?: string; status?: number; body?: string; historyBody?: boolean; sendError?: boolean; noConversation?: boolean; responseError?: boolean; slow?: boolean; closeSlow?: boolean; backendDenied?: boolean; backendDeniedDuringWait?: boolean; backendDeniedDuringFill?: boolean; rootRedirect?: boolean } = {}) {
+function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failures?: number; error?: string; destination?: string; status?: number; statusSequence?: number[]; responseHeaders?: Record<string,string>; body?: string; bodySequence?: string[]; historyBody?: boolean; sendError?: boolean; noConversation?: boolean; responseError?: boolean; slow?: boolean; closeSlow?: boolean; backendDenied?: boolean; backendDeniedCount?: number; backendDeniedDuringWait?: boolean; backendDeniedDuringFill?: boolean; rootRedirect?: boolean } = {}) {
   let attempts = 0, sends = 0, fills = 0, closes = 0;
   const urls: string[] = [];
   let responseListener: ((response: any) => void) | undefined;
@@ -41,22 +41,27 @@ function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failur
     async press() { await this.click(); },
   };
   let url = project;
-  function fail() { if (attempts <= (options.failures ?? 1)) throw new Error(options.error ?? "Timeout waiting for composer"); }
+  function fail() {
+    const attempt = options.phase === "newPage" ? attempts : urls.length;
+    if (attempt <= (options.failures ?? 1)) throw new Error(options.error ?? "Timeout waiting for composer");
+  }
   const page = {
     on(_event: string, listener: (response: any) => void) { responseListener = listener; },
     url: () => url,
     async goto(target: string) {
-      if (options.backendDenied) denied();
-      urls.push(target); url = options.rootRedirect && attempts === 1 ? "https://chatgpt.com/" : options.destination ?? target;
+      if (options.backendDenied && urls.length < (options.backendDeniedCount ?? Infinity)) denied();
+      urls.push(target); url = options.rootRedirect && urls.length === 1 ? "https://chatgpt.com/" : options.destination ?? target;
       if (options.slow) await new Promise(resolve => setTimeout(resolve, 60));
       if (options.phase === "goto") fail();
-      return { status: () => options.status ?? 200 };
+      return { status: () => options.statusSequence?.[Math.min(urls.length - 1, options.statusSequence.length - 1)] ?? options.status ?? 200,
+        headers: () => options.responseHeaders ?? {} };
     },
     locator: () => locator,
     async evaluate(fn: Function) {
       if (fn.toString().includes("document.body")) {
-        if (options.historyBody) return runInNewContext(`(${fn.toString()})()`, { document: { body: { innerText: options.body }, querySelector: () => ({}), querySelectorAll: () => [] } });
-        return options.body ?? "";
+        const body = options.bodySequence?.[Math.min(urls.length - 1, options.bodySequence.length - 1)] ?? options.body ?? "";
+        if (options.historyBody) return runInNewContext(`(${fn.toString()})()`, { document: { body: { innerText: body }, querySelector: () => ({}), querySelectorAll: () => [] } });
+        return body;
       }
       if (fn.toString().includes("__DEVOS_ARM_STREAM__")) return 1;
       return { text: 'DEVOS_RESULT {"status":"done"}', failed: false };
@@ -95,7 +100,6 @@ for (const options of [
   { destination: "https://chatgpt.com/auth/login" },
   { status: 401 }, { status: 403 }, { status: 404 },
   { body: "Unable to load conversation" },
-  { body: "Just a moment… Cloudflare challenge" },
   { phase: "goto" as const, error: "net::ERR_CERT_AUTHORITY_INVALID" },
 ]) {
   test(`definitive scope/auth/unavailable failure is not retried: ${JSON.stringify(options)}`, async () => {
@@ -208,10 +212,10 @@ test("invalid saved Project scope stops before opening a page", async () => {
   assert.equal(f.attempts(), 0);
 });
 
-test("backend HTML 403 challenge is definitive even when composer wait times out", async () => {
+test("backend HTML 403 challenge retries with a bounded same-tab budget before giving up", async () => {
   const f = fixture({ backendDenied: true, phase: "wait", failures: 99 });
   await assert.rejects(f.executor.run({ projectRoot: "/project", sessionId: saved, prompt: "Work", enforceProjectScope: true }), /challenge.*HTTP 403/);
-  assert.deepEqual(f.urls, [saved]);
+  assert.deepEqual(f.urls, [saved, saved, saved]);
   assert.equal(f.sends(), 0);
 });
 
@@ -231,7 +235,7 @@ test("slow cleanup cannot extend the total preparation deadline", async () => {
 });
 
 
-test("asynchronous backend HTML 403 remains definitive when preparation deadline wins", async () => {
+test("asynchronous backend HTML 403 cannot outlive the preparation deadline", async () => {
   const f = fixture({ backendDeniedDuringWait: true });
   await assert.rejects(
     f.executor.run({ projectRoot: "/project", sessionId: saved, prompt: "Work", enforceProjectScope: true }),
@@ -241,13 +245,13 @@ test("asynchronous backend HTML 403 remains definitive when preparation deadline
   assert.equal(f.sends(), 0);
 });
 
-test("backend HTML 403 during prompt preparation stops before irreversible submit", async () => {
+test("backend HTML 403 during preparation retries but never submits an unready prompt", async () => {
   const f = fixture({ backendDeniedDuringFill: true });
   await assert.rejects(
     f.executor.run({ projectRoot: "/project", sessionId: saved, prompt: "Work", enforceProjectScope: true }),
     /challenge.*HTTP 403/,
   );
-  assert.deepEqual(f.urls, [saved]);
+  assert.deepEqual(f.urls, [saved, saved, saved]);
   assert.equal(f.sends(), 0);
 });
 
@@ -504,4 +508,76 @@ test("possible submission without a saved URL revokes safe retry and cannot crea
   assert.deepEqual(f.urls, [project, project]);
   assert.equal(f.sends(), 1);
   assert.equal(store.state?.activeReport?.workerId, "browser", "unknown submit must block any replay");
+});
+
+test("temporary 503, 408 and 425 navigation errors recover on the exact saved tab", async () => {
+  for (const status of [503, 408, 425]) {
+    const f=fixture({statusSequence:[status,200]});
+    const output=await f.executor.run({projectRoot:"/project",sessionId:saved,prompt:"Work",enforceProjectScope:true});
+    assert.equal(output.sessionId,saved);
+    assert.deepEqual(f.urls,[saved,saved]);
+    assert.equal(f.attempts(),1,"no new browser page may replace the worker tab");
+    assert.equal(f.closes(),0);
+    assert.equal(f.sends(),1);
+  }
+});
+test("Cloudflare passive challenge can settle after bounded same-tab reload", async () => {
+  const f=fixture({bodySequence:["Just a moment… Cloudflare challenge",""]});
+  const output=await f.executor.run({projectRoot:"/project",sessionId:saved,prompt:"Work",enforceProjectScope:true});
+  assert.equal(output.sessionId,saved);
+  assert.deepEqual(f.urls,[saved,saved]);
+  assert.equal(f.attempts(),1);
+  assert.equal(f.closes(),0);
+  assert.equal(f.sends(),1);
+});
+test("one upstream HTML 403 interstitial can recover, but plain 403 still stops", async () => {
+  const retry=fixture({statusSequence:[403,200],responseHeaders:{"content-type":"text/html"}});
+  assert.equal((await retry.executor.run({projectRoot:"/project",sessionId:saved,prompt:"Work"})).sessionId,saved);
+  assert.deepEqual(retry.urls,[saved,saved]);
+  assert.equal(retry.sends(),1);
+  const denied=fixture({status:403,responseHeaders:{"content-type":"application/json"}});
+  await assert.rejects(denied.executor.run({projectRoot:"/project",sessionId:saved,prompt:"Work"}),/authentication\/access/);
+  assert.deepEqual(denied.urls,[saved]);
+  assert.equal(denied.sends(),0);
+});
+test("backend HTML 403 recovery never resends after a recoverable first pre-send failure", async () => {
+  const f=fixture({backendDenied:true,backendDeniedCount:1});
+  const output=await f.executor.run({projectRoot:"/project",sessionId:saved,prompt:"Work"});
+  assert.equal(output.sessionId,saved);
+  assert.deepEqual(f.urls,[saved,saved]);
+  assert.equal(f.sends(),1);
+});
+test("interactive verification waits for the owner in the existing tab", async () => {
+  const f=fixture({body:"Verify you are human — CAPTCHA"});
+  await assert.rejects(f.executor.run({projectRoot:"/project",sessionId:saved,prompt:"Work"}),/interactive_verification/);
+  assert.deepEqual(f.urls,[saved]);
+  assert.equal(f.closes(),0);
+  assert.equal(f.sends(),0);
+});
+test("rate limits never trigger automated browser retries or message resubmission", async () => {
+  const f=fixture({status:429});
+  await assert.rejects(f.executor.run({projectRoot:"/project",sessionId:saved,prompt:"Work"}),/provider_denial/);
+  assert.deepEqual(f.urls,[saved]);
+  assert.equal(f.sends(),0);
+});
+
+test("Cloudflare HTML 403 with human verification is left visible and not reloaded", async () => {
+  const f=fixture({status:403,responseHeaders:{"content-type":"text/html"},
+    body:"Verify you are human — CAPTCHA"});
+  await assert.rejects(f.executor.run({projectRoot:"/project",sessionId:saved,prompt:"Work"}),/interactive_verification/);
+  assert.deepEqual(f.urls,[saved]);
+  assert.equal(f.closes(),0);
+  assert.equal(f.sends(),0);
+});
+test("an earlier backend challenge cannot hide a human verification screen", async () => {
+  const f=fixture({backendDenied:true,body:"Verify you are human — CAPTCHA"});
+  await assert.rejects(f.executor.run({projectRoot:"/project",sessionId:saved,prompt:"Work"}),/interactive_verification/);
+  assert.deepEqual(f.urls,[saved]);
+  assert.equal(f.sends(),0);
+});
+test("HTML 401 remains a hard login refusal and never gets a challenge retry", async () => {
+  const f=fixture({status:401,responseHeaders:{"content-type":"text/html"}});
+  await assert.rejects(f.executor.run({projectRoot:"/project",sessionId:saved,prompt:"Work"}),/authentication\/access/);
+  assert.deepEqual(f.urls,[saved]);
+  assert.equal(f.sends(),0);
 });
