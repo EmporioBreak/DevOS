@@ -49,7 +49,7 @@ test("DOM final beats permanently hung SSE waiter without replaying the prompt",
   const { sendAndRead } = await import("../src/chatgpt-browser-executor.js");
   let sends = 0;
   const page = {
-    locator: () => ({ first() { return this; }, async click() { sends++; }, async press() { sends++; } }),
+    locator: () => ({ first() { return this; }, async isVisible() { return true; }, async isEnabled() { return true; }, async click() { sends++; }, async press() { sends++; } }),
     async waitForFunction() { return await new Promise<never>(() => {}); },
     async evaluate() { return final; },
   } as unknown as Page;

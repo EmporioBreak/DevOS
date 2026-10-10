@@ -22,6 +22,7 @@ import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { observeWorkerAuthorization } from "./chat-worker-observer.js";
 import { localWorkerAuthorization } from "./chat-worker-grants.js";
 import { classifyBrowserFailure, browserRecoveryDelayMs } from "./browser-recovery-policy.js";
+import { waitForStableReadiness, type ReadinessSnapshot } from "./chat-readiness.js";
 
 export class BrowserResumeUnavailableError extends Error {
   constructor(readonly sessionId: string, message: string) {
@@ -63,6 +64,12 @@ const SEND = [
   'button[data-testid="send-button"]:visible',
   'button[aria-label*="Send"]:visible',
   'button[type="submit"][aria-label="Отправить"]:visible',
+].join(",");
+
+const STOP = [
+  'button[data-testid*="stop"]:visible',
+  'button[aria-label*="Stop"]:visible',
+  'button[aria-label*="Остановить"]:visible',
 ].join(",");
 
 export const chatGptBrowserDeps = {
@@ -476,7 +483,8 @@ export class ChatGptBrowserExecutor implements Executor {
           this.assertIdentity(request, currentPage, enforceScope);
           phase = "prepare-message";
           if (expired) throw new Error("Timeout: preparation deadline exhausted");
-          const prepared = await prepareMessage(currentPage, request.prompt, budget, !request.reportTurn);
+          const prepared = await prepareMessage(currentPage, request.prompt, budget, !request.reportTurn, () =>
+            this.assertIdentity(request, currentPage, enforceScope));
           if (backendFailure) throw backendFailure;
           this.assertIdentity(request, currentPage, enforceScope);
           return {
@@ -753,15 +761,51 @@ interface PreparedMessage { token: number; useButton: boolean }
 
 async function prepareMessage(
   page: Page, prompt: string, timeoutMs: number, needsStream = true,
+  assertIdentity?: () => void,
 ): Promise<PreparedMessage> {
+  const observe = async (requireSendEnabled: boolean): Promise<ReadinessSnapshot> => {
+    assertIdentity?.();
+    const composer = page.locator(COMPOSER).first();
+    const send = page.locator(SEND).first();
+    const stop = page.locator(STOP).first();
+    const overlay = page.locator('[role="dialog"]:visible, [data-testid*="captcha"]:visible, [data-testid*="challenge"]:visible').first();
+    const composerEnabled = await composer.isVisible() && await composer.isEnabled();
+    const sendVisible = await send.isVisible();
+    return {
+      conversationMatches: true,
+      projectMatches: true,
+      composerEnabled,
+      sendVisible,
+      sendEnabled: requireSendEnabled ? sendVisible && await send.isEnabled() : true,
+      generating: await stop.isVisible(),
+      blockingOverlay: await overlay.isVisible(),
+    };
+  };
+  const readinessTimeoutMs = Math.min(timeoutMs, 10_000);
+  const readinessIntervalMs = Math.min(50, Math.max(1, Math.floor(readinessTimeoutMs / 4)));
+  await waitForStableReadiness(() => observe(false), {
+    timeoutMs: readinessTimeoutMs, intervalMs: readinessIntervalMs, stableSamples: 2,
+  }).catch(error => {
+    throw new BrowserPreSubmitFailureError(error instanceof Error ? error.message : "Chat readiness is unknown");
+  });
   await page.locator(COMPOSER).first().fill(prompt, { timeout: timeoutMs });
+  await waitForStableReadiness(() => observe(true), {
+    timeoutMs: readinessTimeoutMs, intervalMs: readinessIntervalMs, stableSamples: 2,
+  }).catch(error => {
+    throw new BrowserPreSubmitFailureError(error instanceof Error ? error.message : "Chat send readiness is unknown");
+  });
   if (!needsStream) return { token: 0, useButton: await page.locator(SEND).first().isVisible() };
   const token = await page.evaluate(() => {
     const arm = (window as unknown as { __DEVOS_ARM_STREAM__?: (prompt: string) => number }).__DEVOS_ARM_STREAM__;
     if (!arm) throw new Error("ChatGPT response loader is not installed");
     return arm(prompt);
   });
-  return { token, useButton: await page.locator(SEND).first().isVisible() };
+  const send = page.locator(SEND).first();
+  const visible = await send.isVisible();
+  if (visible && !(await send.isEnabled())) {
+    throw new BrowserPreSubmitFailureError("Chat send control is visible but disabled; no submission was attempted");
+  }
+  return { token, useButton: visible };
 }
 
 export function isTransientBrowserFailure(error: unknown): boolean {
@@ -773,10 +817,14 @@ export async function submitOnly(
   beforeSubmit?: () => void, prepared?: PreparedMessage,
 ): Promise<void> {
   const message = prepared ?? await prepareMessage(page, prompt, timeoutMs);
-  beforeSubmit?.();
   if (message.useButton) {
-    await page.locator(SEND).first().click({ timeout: Math.min(timeoutMs, 15_000) });
+    const send = page.locator(SEND).first();
+    if (!(await send.isVisible()) || !(await send.isEnabled()))
+      throw new BrowserPreSubmitFailureError("Chat send control became unavailable before click; no click was attempted");
+    beforeSubmit?.();
+    await send.click({ timeout: Math.min(timeoutMs, 1_000) });
   } else {
+    beforeSubmit?.();
     await page.locator(COMPOSER).first().press("Enter", { timeout: Math.min(timeoutMs, 15_000) });
   }
 }
@@ -793,8 +841,10 @@ export async function sendAndRead(
   const composer = page.locator(COMPOSER).first();
   const send = page.locator(SEND).first();
   if (message.useButton) {
+    if (!(await send.isVisible()) || !(await send.isEnabled()))
+      throw new BrowserPreSubmitFailureError("Chat send control became unavailable before click; no click was attempted");
     beforeSubmit?.();
-    await send.click({ timeout: Math.min(timeoutMs, 15_000) });
+    await send.click({ timeout: Math.min(timeoutMs, 1_000) });
   } else {
     beforeSubmit?.();
     await composer.press("Enter", { timeout: Math.min(timeoutMs, 15_000) });

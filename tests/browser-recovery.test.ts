@@ -23,6 +23,7 @@ function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failur
     headers: () => ({ "content-type": "text/html" }),
   });
   const locator = {
+    selector: "",
     first() { return this; },
     async waitFor() {
       if (options.backendDeniedDuringWait) {
@@ -36,7 +37,8 @@ function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failur
       if (options.backendDeniedDuringFill) denied();
       if (options.phase === "fill") fail();
     },
-    async isVisible() { return true; },
+    async isVisible() { return !this.selector.includes("stop") && !this.selector.includes("dialog") && !this.selector.includes("captcha") && !this.selector.includes("challenge"); },
+    async isEnabled() { return true; },
     async click() { sends++; url = options.noConversation ? project : url === saved ? saved : created; if (options.sendError) throw new Error("Target page crashed during click"); },
     async press() { await this.click(); },
   };
@@ -56,7 +58,7 @@ function fixture(options: { phase?: "goto" | "wait" | "fill" | "newPage"; failur
       return { status: () => options.statusSequence?.[Math.min(urls.length - 1, options.statusSequence.length - 1)] ?? options.status ?? 200,
         headers: () => options.responseHeaders ?? {} };
     },
-    locator: () => locator,
+    locator: (selector: string) => Object.assign(Object.create(locator), { selector }),
     async evaluate(fn: Function) {
       if (fn.toString().includes("document.body")) {
         const body = options.bodySequence?.[Math.min(urls.length - 1, options.bodySequence.length - 1)] ?? options.body ?? "";

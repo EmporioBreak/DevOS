@@ -254,8 +254,10 @@ test("CHAOS: 100 repeated turns on one tab do not accumulate network listeners",
   let sends = 0;
   const listeners = new Map<string, Set<Function>>();
   const locator = {
+    selector: "",
     first() { return this; }, async fill() {}, async waitFor() {},
-    async isVisible() { return true; }, async click() { sends++; }, async press() { sends++; },
+    async isVisible() { return !this.selector.includes("stop") && !this.selector.includes("dialog") && !this.selector.includes("captcha") && !this.selector.includes("challenge"); },
+    async isEnabled() { return true; }, async click() { sends++; }, async press() { sends++; },
   };
   const page = {
     on(event: string, fn: Function) {
@@ -266,7 +268,7 @@ test("CHAOS: 100 repeated turns on one tab do not accumulate network listeners",
     url: () => current,
     isClosed: () => false,
     async goto(target: string) { current = target; return { status: () => 200 }; },
-    locator: () => locator,
+    locator: (selector: string) => Object.assign(Object.create(locator), { selector }),
     async evaluate(fn: Function) {
       if (fn.toString().includes("document.body")) return "";
       if (fn.toString().includes("__DEVOS_ARM_STREAM__")) return 1;
