@@ -4,6 +4,8 @@ import type { CodexSkillAssignment } from "./codex-skills.js";
 
 export interface WorkerRequest {
   projectRoot: string;
+  /** Trusted task identity from the selected workflow; never parsed from model text. */
+  task?: TaskRef;
   prompt: string;
   workerId?: string;
   knownBrowserSessions?: Record<string, string>;

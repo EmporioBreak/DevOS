@@ -17,8 +17,9 @@ import {
 const self = fileURLToPath(import.meta.url);
 
 if (process.argv[2] === "--runtime-child") {
-  const [root, socketPath, metadataPath, profileDir] = process.argv.slice(3);
-  if (!root || !socketPath || !metadataPath || !profileDir) {
+  const [root, socketPath, metadataPath, profileDir, repo, issueText] = process.argv.slice(3);
+  const task = { repo, issue: Number(issueText) };
+  if (!root || !socketPath || !metadataPath || !profileDir || !repo || !Number.isSafeInteger(task.issue)) {
     throw new Error("missing shared-browser smoke child args");
   }
   const executor = new ChatGptBrowserExecutor({
@@ -35,7 +36,8 @@ if (process.argv[2] === "--runtime-child") {
   const context = await (
     executor as unknown as { getContext(timeout: number): Promise<BrowserContext> }
   ).getContext(15_000);
-  const page = context.pages()[0] ?? await context.newPage();
+  const page = await (executor as unknown as { getWorkerPage(request: { task: typeof task; workerId: string }, context: BrowserContext): Promise<import("playwright-core").Page> })
+    .getWorkerPage({ task, workerId: "smoke" }, context);
   await page.goto("data:text/html,<title>shared runtime child</title>");
   const js = await page.evaluate(() => 6 * 7);
   Object.defineProperty(context, "close", {
@@ -72,7 +74,7 @@ if (process.argv[2] === "--runtime-child") {
 
     child = spawn(
       process.execPath,
-      [...process.execArgv, self, "--runtime-child", root, runtime.socket, runtime.metadata, ownedProfile],
+      [...process.execArgv, self, "--runtime-child", root, runtime.socket, runtime.metadata, ownedProfile, task.repo, String(task.issue)],
       { stdio: ["ignore", "pipe", "inherit"] },
     );
     const ready = await new Promise<{ ready: boolean; js: number; pid: number }>((resolve, reject) => {
