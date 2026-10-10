@@ -20,6 +20,7 @@ import { DesktopCommanderIntegration, type DesktopCommanderSnapshot } from "./de
 import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { ChatAccessRegistry, CHAT_NOOP_TOOL, chatSessionSignal, noOpResult, deniedChatToolResult } from "./chat-access.js";
 import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_URI, chatApprovalWidget, externalChatApprovalForm, CHAT_PREVIOUS_APPROVAL_WIDGET_URI, CHAT_CACHED_APPROVAL_WIDGET_URI } from "./chat-access-widget.js";
+import { OwnerTaskApprovalStore, OWNER_TASK_APPROVAL_TOOL, OWNER_TASK_APPROVAL_STATUS_TOOL, ownerTaskApprovalForm } from "./owner-task-approval.js";
 import { ChatWorkerProbeRegistry, CHAT_WORKER_PROBE_TOOL } from "./chat-worker-probe.js";
 import { ChatWorkerGrantRegistry } from "./chat-worker-grants.js";
 import { watchChatAccessRevocation } from "./chat-authorization-watch.js";
@@ -369,7 +370,8 @@ export async function startGateway(options: {
       identity &&
       req.headers.origin &&
       req.headers.origin !== identity.origin &&
-      req.path !== "/chat-access/approve" && req.path !== "/chat-access/check" && req.path !== "/chat-access/form"
+      req.path !== "/chat-access/approve" && req.path !== "/chat-access/check" && req.path !== "/chat-access/form" &&
+      !req.path.startsWith("/owner-approval/")
     ) {
       res.status(403).json({ error: "forbidden_origin" });
       return;
@@ -403,6 +405,8 @@ export async function startGateway(options: {
           void session.server.sendToolListChanged().catch(() => {});
     },
   );
+  const ownerApprovals = new OwnerTaskApprovalStore(
+    options.chatAccessRoot ?? options.root, options.ownerSecret, chatAccess);
   const workerProbe = new ChatWorkerProbeRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
   const workerGrants = new ChatWorkerGrantRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
   const callOrigin = new AsyncLocalStorage<{ clientId: string; sessionHeader: unknown }>();
@@ -576,6 +580,34 @@ export async function startGateway(options: {
         : { approved: false, error: "authorization_failed" });
     },
   );
+  // Owner review is a separate explicit human-password action, never a
+  // model-generated tools/call or an already-approved chat grant.
+  const taskApprovalRate = rateLimit({windowMs:5*60_000,limit:45,
+    standardHeaders:false,legacyHeaders:false});
+  app.get("/owner-approval/form", (_req,res) => {
+    res.set({"Content-Security-Policy":"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
+      "X-Content-Type-Options":"nosniff"});
+    res.type("html").send(ownerTaskApprovalForm());
+  });
+  app.post("/owner-approval/preview",taskApprovalRate,
+    express.json({limit:"1kb",type:"application/json"}),(req,res) => {
+      if (req.headers.origin && identity && req.headers.origin!==identity.origin) {
+        res.status(403).json({error:"forbidden_origin"});return;
+      }
+      const ticket=req.body && typeof req.body==="object" && !Array.isArray(req.body) &&
+        Object.keys(req.body).length===1 ? req.body.ticket : undefined;
+      const preview=ownerApprovals.preview(ticket);
+      res.status(preview?200:403).json(preview??{error:"invalid_ticket"});
+    });
+  app.post("/owner-approval/submit",taskApprovalRate,
+    express.json({limit:"4kb",type:"application/json"}),(req,res) => {
+      if (req.headers.origin && identity && req.headers.origin!==identity.origin) {
+        res.status(403).json({error:"forbidden_origin"});return;
+      }
+      const approved=ownerApprovals.submit(req.body);
+      res.status(approved?200:403).json(approved?{approved:true}:
+        {approved:false,error:"approval_failed"});
+    });
   app.use((req, res, next) => {
     if (!authRouter) {
       res.status(503).json({ error: "connector_not_ready" });
@@ -720,6 +752,26 @@ export async function startGateway(options: {
                 return { content: [{ type: "text", text: JSON.stringify(issued) +
                   (link ? "\\nЕсли форма не отображается в ChatGPT для iOS, открой через Safari: " + link : "") }],
                   structuredContent: { ...issued, ...(link ? { approval_url: link } : {}) } };
+              }
+              if (request.params?.name === OWNER_TASK_APPROVAL_TOOL.name ||
+                  request.params?.name === OWNER_TASK_APPROVAL_STATUS_TOOL.name) {
+                // A worker-specific grant is NEVER an owner authorization.
+                if (!chatAccess.isApproved(fingerprint)) {
+                  return {content:[{type:"text",text:"Owner-approved MCP chat required."}],
+                    structuredContent:{ready:false,reason:"owner_chat_required"}};
+                }
+                const args=request.params?.arguments as Record<string,unknown>|undefined;
+                if (request.params.name === OWNER_TASK_APPROVAL_STATUS_TOOL.name) {
+                  const status=ownerApprovals.result(args?.ticket,fingerprint);
+                  return {content:[{type:"text",text:JSON.stringify(status)}],
+                    structuredContent:status};
+                }
+                const issued=ownerApprovals.issue(fingerprint,args);
+                const approvalUrl=issued.ticket&&identity
+                  ? new URL("/owner-approval/form",identity).href+"#"+issued.ticket : undefined;
+                const data={...issued,...(approvalUrl?{approval_url:approvalUrl}:{})};
+                return {content:[{type:"text",text:JSON.stringify(data)}],
+                  structuredContent:data};
               }
               // Skill preferences are owner-administration, not a worker
               // capability. A browser-worker grant MUST NOT authorize settings
@@ -924,6 +976,8 @@ export async function startGateway(options: {
                 String(tool.name ?? "") === CHAT_NOOP_TOOL.name ||
                 String(tool.name ?? "") === CHAT_WORKER_PROBE_TOOL.name ||
                 String(tool.name ?? "") === CHAT_APPROVAL_WIDGET_TOOL.name ||
+                String(tool.name ?? "") === OWNER_TASK_APPROVAL_TOOL.name ||
+                String(tool.name ?? "") === OWNER_TASK_APPROVAL_STATUS_TOOL.name ||
                 localTools.has(String(tool.name ?? "")) ||
                 String(tool.name ?? "").startsWith("devos_"));
               if (conflicting) throw new Error("Desktop Commander tool conflicts with reserved DevOS namespace");
@@ -1022,6 +1076,8 @@ export async function startGateway(options: {
                   // already cached tool lists must still be able to reopen
                   // the form. Ordinary tools never own a widget.
                   CHAT_APPROVAL_WIDGET_TOOL,
+                  OWNER_TASK_APPROVAL_TOOL,
+                  OWNER_TASK_APPROVAL_STATUS_TOOL,
                   CHAT_WORKER_PROBE_TOOL],
               };
             }
