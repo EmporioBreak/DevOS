@@ -27,7 +27,7 @@ The original project Constitution v0.1.0 has been committed through Issue #218 /
 ## Project Structure
 
 ```text
-.specify/specs/devos2-live-feature/
+specs/devos2-live-feature/
 ├── spec.md   # this canonical draft specification
 ├── plan.md   # this draft plan
 └── tasks.md  # ordered, currently unstarted canonical tasks
