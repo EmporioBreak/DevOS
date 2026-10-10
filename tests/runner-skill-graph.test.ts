@@ -158,7 +158,7 @@ test("legacy workflow stays compatible, and unsupported skills mode is rejected"
 });
 
 
-test("strict browser to Codex fallback preserves signed assignment, original Issue and reviewer",async()=>{
+test("strict browser fallback does not accept unsigned host-only claims even with a verifier",async()=>{
   const f=await fixture();
   try{
     await sealRunnerSkillGraph(f.root,f.w,secret,async()=>true,upstreamRoot);
@@ -177,18 +177,23 @@ test("strict browser to Codex fallback preserves signed assignment, original Iss
       assert.equal(request.codexSkills?.workerId,"host");
       return {text:'DEVOS_RESULT {"status":"done"}',sessionId:"local-codex-thread-744"};
     }};
-    const state=await new Orchestrator({projectRoot:f.root,workflow:f.w,
+    const store=new FakeStore();
+    await assert.rejects(new Orchestrator({projectRoot:f.root,workflow:f.w,
       executors:new Map([["chatgpt_browser",browser],["codex",codex]]),
-      stateStore:new FakeStore(),verifyAssignedWorkerSkills:async (workerId:string)=>{
+      stateStore:store,
+      verifyHostOnlyFallback:async context=>
+        context.workerId==="developer" && context.nextWorkerId==="host",
+      verifyAssignedWorkerSkills:async (workerId:string)=>{
         const stage=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
         const ref=stage.workers.find(x=>x.workerId===workerId)!;
         return {stage:ref.stage,manifestSha256:ref.manifestSha256};
-      }}).run();
-    assert.deepEqual(requests.map(x=>x.workerId),["developer","host","reviewer"]);
-    assert.equal(state.completedRuns,3);
-    assert.equal(state.mainAgentReviewPending,true);
-    assert.equal(state.task?.pr,917);
-    assert.equal(state.sessions.host,"local-codex-thread-744");
+      }}).run(),/host-only capability evidence not independently verified/);
+    // Strict Runner cannot turn a textual DEVOS_RESULT into permission to use
+    // local Codex, even when an injected verifier approves the claimed blocker.
+    assert.deepEqual(requests.map(x=>x.workerId),["developer"]);
+    assert.equal(store.state?.completedRuns,0);
+    assert.equal(store.state?.currentWorkerId,"developer");
+    assert.equal(store.state?.task?.pr,917);
   }finally{await rm(f.root,{recursive:true,force:true})}
 });
 test("strict verification must precede Camoufox process startup",async()=>{
@@ -337,4 +342,33 @@ test("strict Main Agent handoff survives restarts and accepts corrections in the
     assert.equal(finalized,1);
     assert.equal(store.state,null);
   } finally {await rm(f.root,{recursive:true,force:true})}
+});
+
+test("strict native Codex receives local signed skills in its actual Runner prompt",async()=>{
+  const f=await fixture();
+  try {
+    await sealRunnerSkillGraph(f.root,f.w,secret,async()=>true,upstreamRoot);
+    const store=new FakeStore();
+    store.state={currentWorkerId:"host",completedRuns:1,sessions:{},
+      task:f.w.task,startedAt:new Date().toISOString(),reviewLoops:0};
+    const codex:Executor={kind:"codex",async run(request){
+      assert.equal(request.workerId,"host");
+      assert.equal(request.codexSkills?.mandatory,true);
+      assert.match(request.prompt,/signed pinned skills are prepared locally/);
+      assert.match(request.prompt,/\.agents\/skills SKILL\.md/);
+      assert.doesNotMatch(request.prompt,/devos_skill_manifest|devos_skill_read/);
+      return {text:'DEVOS_RESULT {"status":"done"}',sessionId:"codex-host"};
+    }};
+    const browser=new BrowserFake();
+    const state=await new Orchestrator({projectRoot:f.root,workflow:f.w,
+      stateStore:store,executors:new Map([["codex",codex],["chatgpt_browser",browser]]),
+      verifyAssignedWorkerSkills:async id=>{
+        const seal=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
+        const match=seal.workers.find(item=>item.workerId===id)!;
+        return {stage:match.stage,manifestSha256:match.manifestSha256};
+      },
+    }).run();
+    assert.equal(state.mainAgentReviewPending,true);
+    assert.equal(state.sessions.host,"codex-host");
+  }finally{await rm(f.root,{recursive:true,force:true})}
 });
