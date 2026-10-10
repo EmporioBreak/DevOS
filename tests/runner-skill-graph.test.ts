@@ -372,3 +372,47 @@ test("strict native Codex receives local signed skills in its actual Runner prom
     assert.equal(state.sessions.host,"codex-host");
   }finally{await rm(f.root,{recursive:true,force:true})}
 });
+
+test("strict signed MCP blocker plus trusted host proof routes only predeclared Codex",async()=>{
+  const f=await fixture();
+  try {
+    await sealRunnerSkillGraph(f.root,f.w,secret,async()=>true,upstreamRoot);
+    const {JsonStateStore}=await import("../src/json-state-store.js");
+    const {DevosToolRegistry}=await import("../src/mcp-tools/registry.js");
+    const seen:string[]=[];
+    const browser:Executor={kind:"chatgpt_browser",async run(request){
+      seen.push(request.workerId!);
+      const sessionId="https://chatgpt.com/c/"+request.workerId;
+      await request.onSession?.(sessionId);
+      const token=/turn_token=([a-f0-9]{64})/.exec(request.prompt)?.[1];
+      assert.ok(token);
+      const report=await new DevosToolRegistry(f.root).call("devos_worker_report",{
+        repo:f.w.task.repo,issue:f.w.task.issue,worker_id:request.workerId,
+        turn:request.reportTurn?.active.turn,turn_token:token,
+        status:request.workerId==="reviewer"?"approved":"needs_local_worker",
+        summary:"Synthetic host capability failure verified independently",
+      });
+      assert.equal(report.isError,undefined,JSON.stringify(report));
+      return {text:"",sessionId};
+    }};
+    const codex:Executor={kind:"codex",async run(request){
+      seen.push(request.workerId!);
+      return {text:'DEVOS_RESULT {"status":"done"}',sessionId:"codex-host"};
+    }};
+    const state=await new Orchestrator({projectRoot:f.root,workflow:f.w,
+      stateStore:new JsonStateStore(f.root,f.w.task),
+      executors:new Map([["chatgpt_browser",browser],["codex",codex]]),
+      enableWorkerReports:true,
+      verifyHostOnlyFallback:async ctx=>ctx.signedWorkerReport &&
+        ctx.workerId==="developer" && ctx.nextWorkerId==="host" && ctx.turn===0,
+      verifyAssignedWorkerSkills:async id=>{
+        const graph=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
+        const assigned=graph.workers.find(x=>x.workerId===id)!;
+        return {stage:assigned.stage,manifestSha256:assigned.manifestSha256};
+      },
+    }).run();
+    assert.deepEqual(seen,["developer","host","reviewer"]);
+    assert.equal(state.completedRuns,3);
+    assert.equal(state.mainAgentReviewPending,true);
+  }finally{await rm(f.root,{recursive:true,force:true})}
+});
