@@ -19,3 +19,11 @@
 - [ ] T010 Runner returns trusted `FINAL_REVIEW_REQUIRED`; Main Agent independently checks original scope, PR, review, evidence and decides.
 
 No checklist mark substitutes for real original `speckit` stage evidence or owner's authenticated task approval.
+
+## Direct Main Agent repair follow-up (owner requested no Runner; #232 excluded)
+
+- [x] T011 Safely resolve the owner wake-up destination from an **exact password-backed signed Issue/PR/Spec Kit review receipt** and currently approved chat fingerprint. Require a unique bound owner; revoked/multiple/foreign grants fail closed. A saved `/share/` remains a non-writable label, never a proof of editable `/c/`.
+- [x] T012 RED/GREEN private durable exact owner+Issue+review-round wake-up ledger, atomic lease/arm BEFORE any Send, prompt+URL digests only, HMAC integrity, bounded expiry/cancellation, no restart replay after possible submit, provider-verifier-controlled confirmation, arbitrary new explicit review round.
+- [ ] T013 Integrate with the exact `final_review_required` handoff and implement genuine shared Camoufox delivery: authenticate owner chat, navigate saved `/share/` to private editable `/c/`, verify same account/current owner bind, bounded busy/ready state, one real network user-message ID receipt per round. No fabricated completion from a click or model text.
+- [ ] T014 Genuine two-chat headed authenticated E2E: busy Main Agent then released, single send, crash/restart/ambiguous turn, owner changes_requested loop and approved task-only close. Requires safe #226 live legacy-to-shared runtime adoption; no second profile/process.
+- [ ] T015 Independent diff/security review plus full regression, Main Agent acceptance and PR merge/Issue close only if every original gate has actual evidence. #232 not touched.
