@@ -21,6 +21,7 @@ import { readExactDomFinal } from "./chatgpt-dom-recovery.js";
 import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { observeWorkerAuthorization } from "./chat-worker-observer.js";
 import { localWorkerAuthorization } from "./chat-worker-grants.js";
+import { classifyBrowserFailure, browserRecoveryDelayMs } from "./browser-recovery-policy.js";
 
 export class BrowserResumeUnavailableError extends Error {
   constructor(readonly sessionId: string, message: string) {
@@ -388,6 +389,7 @@ export class ChatGptBrowserExecutor implements Executor {
       let page: Page | undefined;
       let phase = "context";
       let expired = false;
+      let timedOut = false;
       let backendFailure: Error | undefined;
       let detachBackendListener = () => {};
       const budget = Math.min(15_000, deadline - Date.now());
@@ -404,11 +406,15 @@ export class ChatGptBrowserExecutor implements Executor {
           const onBackendResponse = (response: PlaywrightResponse) => {
             const target = new URL(response.url());
             const status = response.status();
-            if (target.origin === new URL(url).origin && target.pathname.startsWith("/backend-api/") && status >= 500) backendFailure = new Error(`Transient backend HTTP ${status}`);
+            if (target.origin === new URL(url).origin && target.pathname.startsWith("/backend-api/") && (status >= 500 || status === 408 || status === 425)) backendFailure = new Error(`Transient backend HTTP ${status}`);
             if (target.origin === new URL(url).origin && target.pathname.startsWith("/backend-api/") && (status === 401 || status === 403)) {
-              const challenge = (response.headers()["content-type"] ?? "").includes("text/html");
+              const headers = response.headers();
+              const challenge = status === 403 && (headers["cf-mitigated"] === "challenge" ||
+                (headers["content-type"] ?? "").includes("text/html"));
               backendFailure = new Error(`ChatGPT ${challenge ? "authentication/challenge" : "authentication/access"} blocked backend (HTTP ${status})${status === 401 ? "; visible login/debug run needed (DEVOS_BROWSER_HEADLESS=0)" : ""}`);
             }
+            if (target.origin === new URL(url).origin && target.pathname.startsWith("/backend-api/") && status === 429)
+              backendFailure = new Error("ChatGPT provider rate limit HTTP 429");
           };
           currentPage.on("response", onBackendResponse);
           detachBackendListener = () => { currentPage.off?.("response", onBackendResponse); };
@@ -417,9 +423,22 @@ export class ChatGptBrowserExecutor implements Executor {
           if (expired) throw new Error("Timeout: preparation deadline exhausted");
           debugLog("browser.navigation", { requestedUrl: url, actualUrl: currentPage.url(), attempt });
           const status = response?.status();
-          if (status === 401 || status === 403) throw new Error(`ChatGPT authentication/challenge blocked navigation (HTTP ${status})${status === 401 ? "; visible login/debug run needed (DEVOS_BROWSER_HEADLESS=0)" : ""}`);
+          if (status === 401 || status === 403) {
+            const headers = response?.headers?.() ?? {};
+            if (status === 403 && (headers["cf-mitigated"] === "challenge" ||
+                (headers["content-type"] ?? "").includes("text/html"))) {
+              // An HTML 403 can be a manual verification page. Never refresh
+              // away a CAPTCHA the owner is actively being asked to solve.
+              const interstitial = await currentPage.evaluate(() =>
+                (document.body?.innerText ?? "").slice(0, 2000)).catch(() => "");
+              if (/verify you are human|captcha|turnstile|провер.*человек/i.test(interstitial))
+                throw new Error("ChatGPT interactive challenge: Verify you are human");
+              throw new Error(`Temporary ChatGPT interstitial HTTP ${status}`);
+            }
+            throw new Error(`ChatGPT authentication/access blocked navigation (HTTP ${status})`);
+          }
           if (status === 404 || status === 410) throw new Error(`ChatGPT conversation unavailable (HTTP ${status})`);
-          if (status && status >= 500) throw new Error(`Transient navigation HTTP ${status}`);
+          if (status && (status >= 500 || status === 408 || status === 425)) throw new Error(`Transient navigation HTTP ${status}`);
           if (status && status >= 400) throw new Error(`ChatGPT navigation rejected (HTTP ${status})`);
           phase = "page-state";
           const body = await currentPage.evaluate(() => {
@@ -435,7 +454,8 @@ export class ChatGptBrowserExecutor implements Executor {
               .map(node => (node as HTMLElement).innerText ?? "").join("\n");
           });
           if (typeof body === "string") {
-            if (/cloudflare|verify you are human|just a moment|checking your browser|провер.*человек/i.test(body)) throw new Error("ChatGPT authentication/challenge required");
+            if (/verify you are human|captcha|turnstile|провер.*человек/i.test(body)) throw new Error("ChatGPT interactive challenge: Verify you are human");
+            if (/cloudflare|just a moment|checking your browser/i.test(body)) throw new Error("ChatGPT passive challenge page");
             if (/unable to load conversation|conversation (?:not found|unavailable)|не удалось загрузить (?:разговор|чат)/i.test(body)) throw new Error("ChatGPT conversation unavailable");
             if (/DEVOS_SIGNED_OUT|log in to chatgpt|sign in to chatgpt|необходимо войти/i.test(body)) throw new Error("ChatGPT authentication required; visible login/debug run needed (DEVOS_BROWSER_HEADLESS=0)");
           }
@@ -468,26 +488,47 @@ export class ChatGptBrowserExecutor implements Executor {
         };
         const outcome = await Promise.race([
           preparation(),
-          new Promise<never>((_, reject) => { timer = setTimeout(() => { expired = true; reject(new Error("Timeout: preparation deadline exhausted")); }, budget); }),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => {
+            expired = true; timedOut = true; reject(new Error("Timeout: preparation deadline exhausted"));
+          }, budget); }),
         ]);
         debugLog("browser.recovery", { attempt, phase, decision: "ready", requestedUrl: url });
         return outcome;
       } catch (error) {
         expired = true;
         detachBackendListener();
-        const effectiveError = backendFailure ?? error;
+        // A server transport notice must not override a definite identity
+        // violation, account refusal, or visible human verification screen.
+        const pageDecision = classifyBrowserFailure(error);
+        const effectiveError = pageDecision.action === "human" ||
+          ["identity_or_access", "provider_denial"].includes(pageDecision.reason)
+          ? error : backendFailure ?? error;
         const cause = effectiveError instanceof Error ? effectiveError.message.split("\n")[0]! : "Browser operation failed";
-        const transient = isTransientBrowserFailure(effectiveError);
-        await closeBeforeDeadline(() => page?.close() ?? Promise.resolve(), deadline);
-        if (page && request.workerId && this.workerPages.get(request.workerId) === page) this.workerPages.delete(request.workerId);
-        if (page && !request.workerId && this.workerPages.get("__default__") === page) this.workerPages.delete("__default__");
-        if (/closed|crashed|disconnected/i.test(cause)) {
-          await closeBeforeDeadline(() => this.close(), deadline);
+        const disposition = classifyBrowserFailure(effectiveError);
+        const transient = disposition.action === "retry";
+        // A wall-clock race leaves an unsettled Playwright operation: close
+        // its tab and defer further work to a new explicit Runner invocation.
+        const retry = transient && !timedOut && attempt < 3 && Date.now() < deadline;
+        const broken = /closed|crashed|disconnected/i.test(cause);
+        // Keep a surviving tab for retries and interactive checks. Reloading the
+        // same tab preserves signed-in state and permits the human to see a check.
+        // A raced operation may still be running after the wall-clock timeout.
+        // Close its page before any next attempt; never run two navigations on it.
+        if (broken || timedOut || disposition.action === "stop") {
+          await closeBeforeDeadline(() => page?.close() ?? Promise.resolve(), deadline);
+          if (page && request.workerId && this.workerPages.get(request.workerId) === page) this.workerPages.delete(request.workerId);
+          if (page && !request.workerId && this.workerPages.get("__default__") === page) this.workerPages.delete("__default__");
         }
-        const retry = transient && attempt < 3 && Date.now() < deadline;
-        debugLog("browser.recovery", { attempt, phase, cause, requestedUrl: url, actualUrl: page?.url(), decision: retry ? "retry-same-session" : "stop" });
+        if (broken) await closeBeforeDeadline(() => this.close(), deadline);
+        debugLog("browser.recovery", { attempt, phase, category: disposition.reason,
+          requestedUrl: url, actualUrl: page?.url(),
+          decision: retry ? "reload-same-tab" : disposition.action === "human" ? "wait-for-human" : "stop" });
+        if (retry) {
+          const pause = deadline - Date.now() > 5_000 ? browserRecoveryDelayMs(attempt, deadline - Date.now()) : 0;
+          if (pause > 0) await new Promise(resolve => setTimeout(resolve, pause));
+        }
         if (!retry) {
-          const message = `Browser recovery attempt=${attempt} phase=${phase} ${transient ? "transient" : "definitive"}: ${cause}; saved identity preserved`;
+          const message = `Browser recovery attempt=${attempt} phase=${phase} ${transient ? "transient" : "definitive"} (${disposition.reason}): ${cause}; saved identity preserved`;
           if (request.sessionId) throw new BrowserResumeUnavailableError(request.sessionId, message);
           throw new BrowserPreSubmitFailureError(message);
         }
@@ -724,8 +765,7 @@ async function prepareMessage(
 }
 
 export function isTransientBrowserFailure(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /Timeout|net::ERR_(?:CONNECTION_RESET|CONNECTION_CLOSED|TIMED_OUT|NETWORK_CHANGED|INTERNET_DISCONNECTED)|Execution context was destroyed|Cannot find context with specified id|Target (?:page|browser|context).*closed|(?:page|browser).*crashed|browser.*disconnected|Transient (?:navigation|backend) HTTP 5\d\d/i.test(message);
+  return classifyBrowserFailure(error).action === "retry";
 }
 
 export async function submitOnly(
