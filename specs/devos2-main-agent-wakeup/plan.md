@@ -20,3 +20,9 @@ The signed `OwnerTaskApprovalStore.resolveOwnerChat(review)` resolves one exact 
 The new `OwnerWakeupLedger` is the task-scoped no-double-send *control plane*, not a notification sender. It persists private hashed intent per review round, arms once before UI send, conservatively blocks retry after ambiguous submit and confirms only with an external trusted provider-receipt verifier. A 15-minute bounded pending deadline, fail-closed lock and explicit cancellation prevent an unbounded retry daemon. Never interpret its `waiting`, `armed` or `confirmed` unit-test fixture states as real Production ChatGPT delivery.
 
 The actual UI sender/handoff hookup and real headed two-chat acceptance depend on the unresolved original #226 shared Camoufox legacy profile adoption and cannot be substituted with a local unit test or modified #232 queue. Preserve all existing exact #214/#224/#226 task states and worker sessions.
+
+## Persisted final-review handoff hookup
+
+The post-Orchestrator.run() CLI boundary has been hooked to enqueueOwnerHandoff only for signed strict Main Agent-owned workflows, and only after the task is durably final_review_required. An independently HMAC-verified unique task+PR owner review receipt is resolved from the actual approved owner chat registry; multiple inconsistent signed revisions block notification preparation even when they share an owner fingerprint. Each exact review round creates only one ledger intent; later CLI polling is idempotent; user decisions and actual worker result are not altered by a notification failure. Diagnostics explicitly record dispatch:not_sent (no ChatGPT click or outgoing POST).
+
+This is queue preparation only, not delivery, and intentionally cannot resolve #226's pre-existing possible-send turn. The real interactive /share-to-private conversation sender and native profile migration/E2E remain open T013-T015 gates.

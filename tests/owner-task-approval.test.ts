@@ -150,3 +150,23 @@ test("owner wake-up preserves /share as a non-writable label and rejects multipl
       "multiple signed chat approvals for exact task must never be chosen arbitrarily");
   }finally{await rm(f.root,{recursive:true,force:true})}
 });
+
+test("wake-up resolves one exact PR approval and refuses incompatible signed revisions",async()=>{
+  const f=await fixture();
+  try{
+    const task={repo:"EmporioBreak/DevOS",issue:214,pr:215};
+    assert.equal(f.store.resolveOwnerChatForTask(task),null);
+    let a=f.store.issue(f.owner,review());
+    assert.equal(f.store.submit({ticket:a.ticket,password,confirm:"approve"}),true);
+    assert.equal(f.store.resolveOwnerChatForTask(task)?.fingerprint,f.owner);
+    assert.equal(f.store.resolveOwnerChatForTask({...task,pr:216}),null);
+    assert.equal(f.store.resolveOwnerChatForTask({...task,issue:215}),null);
+    const newRevision={...review(),gitSha:"f".repeat(40)};
+    a=f.store.issue(f.owner,newRevision);
+    assert.equal(f.store.submit({ticket:a.ticket,password,confirm:"approve"}),true);
+    assert.throws(()=>f.store.resolveOwnerChatForTask(task),/Ambiguous owner wake-up approvals/,
+      "a stale owner approval must not silently select the earlier signed revision");
+    f.chats.revoke(f.owner);
+    assert.throws(()=>f.store.resolveOwnerChatForTask(task),/Ambiguous owner wake-up approvals/);
+  }finally{await rm(f.root,{recursive:true,force:true})}
+});
