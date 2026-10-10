@@ -1,0 +1,21 @@
+# Tasks: Main Agent wake-up
+**Issue:** #224
+**Status:** DRAFT; work unstarted; no original stage attestation
+
+## Preparation
+- [ ] T001 Verify original pinned Constitution and spec/plan, agree exact scope and full four-slot browser-first worker graph.
+- [ ] T002 Pin this single PR, obtain authentic owner password-backed SHA/digest approval and sign four exact worker skill manifests/graph.
+
+## Implement/test (browser developer first, local fallback only after genuine `needs_local_worker`)
+- [ ] T003 RED tests: owner MCP session binds exact URL; distinguish `/c/` and `/share/`; reject ambiguous/revoked/other-owner chats.
+- [ ] T004 RED tests: new final-review round yields one durable notification; retries, crashes and may-have-submitted never send again.
+- [ ] T005 Implement owner wake-up in existing Camoufox task runtime and verify original private conversation from `/share/`; never post to public share copy.
+- [ ] T006 RED/GREEN tests: unlimited explicit `changes_requested` rounds with same saved worker chats and one notification per round; `approved` closes runtime only afterward.
+- [ ] T007 Run focused regressions, TypeScript build, applicable broader tests and live controlled browser E2E; preserve actual evidence.
+
+## Independent review and handoff
+- [ ] T008 Different predeclared reviewer verifies same PR, code, precise owner binding, idempotence, actual tests and authenticated MCP reporting.
+- [ ] T009 On real defects return `changes_requested` to original developer/reviewer without starting a replacement Issue, PR or chat.
+- [ ] T010 Runner returns trusted `FINAL_REVIEW_REQUIRED`; Main Agent independently checks original scope, PR, review, evidence and decides.
+
+No checklist mark substitutes for real original `speckit` stage evidence or owner's authenticated task approval.
