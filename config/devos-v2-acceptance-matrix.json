@@ -147,13 +147,17 @@
       ]
     },
     {
-      "id": "RUNNER-BROWSER-FIRST",
-      "criterion": "Browser-first then predeclared Codex only after needs_local_worker",
+      "id": "RUNNER-CAPABILITY-GRAPH",
+      "criterion": "Main Agent predeclares capable browser and Codex stages; unplanned needs_local_worker routes only with signed host evidence",
       "status": "automated",
       "evidence": [
         {
           "file": "tests/runner-skill-graph.test.ts",
-          "name": "strict browser to Codex fallback preserves signed assignment, original Issue and reviewer"
+          "name": "Main Agent planned Codex action after browser done needs no fake host fallback"
+        },
+        {
+          "file": "tests/runner-skill-graph.test.ts",
+          "name": "strict signed MCP blocker plus trusted host proof routes only predeclared Codex"
         }
       ]
     },
