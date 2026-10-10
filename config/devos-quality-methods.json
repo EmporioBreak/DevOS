@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "methods": [
+    {
+      "id": "test-first",
+      "skillId": "superpowers-test-driven-development",
+      "phases": ["implement"],
+      "roles": ["developer"],
+      "evidence": ["RED: failing test before production implementation", "GREEN: same test passes after minimal fix", "REFACTOR: full focused regression still passes"]
+    },
+    {
+      "id": "root-cause",
+      "skillId": "superpowers-systematic-debugging",
+      "phases": ["debug"],
+      "roles": ["developer"],
+      "evidence": ["Reproduce the original failure", "Identify causal mechanism before fixing", "Add a regression test for the cause"]
+    },
+    {
+      "id": "review-feedback",
+      "skillId": "superpowers-receiving-code-review",
+      "phases": ["review-feedback"],
+      "roles": ["developer"],
+      "evidence": ["Inspect actual code and reviewer claim", "Accept true findings or document verified disagreement", "Re-run affected tests after changes"]
+    },
+    {
+      "id": "verification",
+      "skillId": "superpowers-verification-before-completion",
+      "phases": ["complete", "review"],
+      "roles": ["developer", "reviewer"],
+      "evidence": ["Fresh observed commands and exact output", "Inspect real PR diff and acceptance criteria", "Do not claim a test ran without a corresponding result"]
+    }
+  ],
+  "neverAutoActivate": [
+    "superpowers-requesting-code-review",
+    "superpowers-subagent-driven-development",
+    "superpowers-executing-plans",
+    "superpowers-dispatching-parallel-agents",
+    "superpowers-using-git-worktrees",
+    "superpowers-finishing-a-development-branch"
+  ]
+}

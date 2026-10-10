@@ -13,6 +13,7 @@ import {
 } from "./completed-tasks.js";
 import { CodexExecutor } from "./codex-executor.js";
 import { runChatAccessAdmin, type ChatAccessCommand } from "./chat-access-admin.js";
+import { parseSkillsCliArgs, runSkillsCliCommand, type SkillsCliCommand } from "./skills-cli.js";
 import { LocalCommandRunner } from "./command-runner.js";
 import { debugLog } from "./debug-log.js";
 import type { Executor } from "./executor.js";
@@ -34,6 +35,10 @@ import { resolveTaskReference } from "./task-reference.js";
 import { acquireTaskLock } from "./task-lock.js";
 import type { Workflow } from "./workflow.js";
 import { loadWorkflow } from "./workflow-loader.js";
+import { verifyRunnerSkillGraph } from "./runner-skill-graph.js";
+import { appendTaskAuditEvent } from "./pipeline-diagnostics.js";
+import { parseEnvFile } from "./connector-env.js";
+import { readFile } from "node:fs/promises";
 import {
   closeSharedBrowserRuntime,
   ensureSharedBrowserRuntime,
@@ -52,6 +57,7 @@ import {
 } from "./connector.js";
 
 export type CliCommand =
+  | { kind: "skills"; command: SkillsCliCommand }
   | { kind: "connector"; action: ConnectorAction }
   | { kind: "chat_access"; command: ChatAccessCommand }
   | { kind: "select" }
@@ -61,6 +67,7 @@ export function parseCliArgs(args: string[]): CliCommand {
   if (args.length === 0) {
     return { kind: "select" };
   }
+  if (args[0] === "skills") return {kind:"skills",command:parseSkillsCliArgs(args.slice(1))};
 
   if (args[0] === "connector" && args[1] === "access") {
     if (args.length === 3 && args[2] === "list")
@@ -111,6 +118,18 @@ export async function runWorkflow(
   if (config) assertWorkflowMatchesProject(workflow, config);
   const taskLock = await acquireTaskLock(cwd, workflow.task);
   try {
+  let strictSecret: string | undefined;
+  if(workflow.skillsMode==="strict") {
+    strictSecret=process.env.DEVOS_CONNECTOR_OWNER_SECRET;
+    if(!strictSecret) {
+      const vars=parseEnvFile(await readFile(join(cwd,".env"),"utf8"));
+      strictSecret=vars.DEVOS_CONNECTOR_OWNER_SECRET;
+    }
+    if(!strictSecret || Buffer.byteLength(strictSecret)<32)
+      throw new Error("Strict Runner requires strong local owner key");
+    // Before state, Camoufox or any other worker process starts.
+    await verifyRunnerSkillGraph(cwd,workflow,strictSecret);
+  }
   if (process.env.DEVOS_DEBUG === "1") {
     process.env.DEVOS_DEBUG_FILE = join(
       cwd,
@@ -170,6 +189,12 @@ export async function runWorkflow(
       ...(chatgpt ? [["chatgpt_browser", chatgpt] as const] : []),
     ]),
     stateStore,
+    ...(strictSecret?{verifyAssignedWorkerSkills:async (workerId:string)=>{
+      const exact=await verifyRunnerSkillGraph(cwd,workflow,strictSecret);
+      const assigned=exact.workers.find(w=>w.workerId===workerId);
+      if(!assigned)throw new Error("Undeclared DevOS Runner worker");
+      return {stage:assigned.stage,manifestSha256:assigned.manifestSha256};
+    }}:{}),
     enableWorkerReports: hasBrowserWorker && workerReportsEnabled(process.env.DEVOS_WORKER_MCP_REPORTS),
     ...(mainAgentDecision ? { mainAgentDecision } : {}),
     finalizeTask: async state => {
@@ -177,7 +202,14 @@ export async function runWorkflow(
       await recordTaskCompletion(cwd, workflow.task.issue, state);
     },
     resolveTask: task => resolveTaskReference(task, cwd, commandRunner),
-    onEvent: event => { debugLog("orchestrator.event", event); writeOrchestrationEvent(event); },
+    onEvent: async event => {
+      debugLog("orchestrator.event", event);
+      writeOrchestrationEvent(event);
+      // Diagnostics must never cause a worker turn to be replayed or the
+      // actual task to fail after a successful external side effect.
+      try {await appendTaskAuditEvent(cwd,workflow.task,event);}
+      catch {debugLog("orchestrator.audit_error", {category:"local_audit_unavailable"});}
+    },
   }).run();
   // final_review_required is not task completion. Keep the shared Camoufox
   // process and every worker tab alive for main-agent review / rework.
@@ -222,6 +254,10 @@ export async function main(
   }
   const command = parseCliArgs(args);
 
+  if (command.kind === "skills") {
+    process.stdout.write(await runSkillsCliCommand(command.command,cwd));
+    return;
+  }
   if (command.kind === "connector") {
     await connector(command.action, cwd);
     return;

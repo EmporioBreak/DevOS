@@ -1,5 +1,6 @@
 import type { ExecutorKind, WorkerOutput, TaskRef } from "./workflow.js";
 import type { WorkerReportTurn } from "./orchestrator.js";
+import type { CodexSkillAssignment } from "./codex-skills.js";
 
 export interface WorkerRequest {
   projectRoot: string;
@@ -12,6 +13,8 @@ export interface WorkerRequest {
   // MCP report which can terminate browser response waiting for this turn.
   reportTurn?: { task: TaskRef; active: WorkerReportTurn };
   sessionId?: string;
+  /** Trusted task/worker identity set by Orchestrator, not from prompt. */
+  codexSkills?: CodexSkillAssignment;
   enforceProjectScope?: boolean;
   onSession?: (sessionId: string) => void | Promise<void>;
 }

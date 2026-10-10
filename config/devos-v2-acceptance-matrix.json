@@ -1,0 +1,491 @@
+{
+  "version": 1,
+  "epic": 121,
+  "verificationIssue": 149,
+  "entries": [
+    {
+      "id": "OWNER-SCOPE",
+      "criterion": "No implementation without trusted owner approvals",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/main-agent-intake.test.ts",
+          "name": "new app cannot start until exact scope, spec and plan approvals are verified"
+        }
+      ]
+    },
+    {
+      "id": "OWNER-EARLY-BLOCK",
+      "criterion": "Changed scope must return to owner",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/main-agent-project-plan.test.ts",
+          "name": "no fake human consent, and no changed scope or worker graph after signoff"
+        }
+      ]
+    },
+    {
+      "id": "SDD-ORIGINAL",
+      "criterion": "Exactly one original Spec Kit spec/plan/tasks process",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/spec-kit-predevelopment.test.ts",
+          "name": "full original Spec Kit predevelopment progresses and keeps one canonical spec/plan/tasks"
+        }
+      ]
+    },
+    {
+      "id": "SDD-CONSTITUTION",
+      "criterion": "Ratified Constitution not silently rewritten",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/spec-kit-predevelopment.test.ts",
+          "name": "untrusted, out-of-order, unratified Constitution or modified original plan fail closed"
+        }
+      ]
+    },
+    {
+      "id": "CONVERGE-APPEND",
+      "criterion": "Converge original tasks only append",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/spec-kit-convergence.test.ts",
+          "name": "append-only convergence adds numbered scoped tasks and safely handles repeated review"
+        }
+      ]
+    },
+    {
+      "id": "CONVERGE-REVIEW",
+      "criterion": "No Converge auto-approval",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/spec-kit-convergence.test.ts",
+          "name": "clean convergence leaves original tasks.md byte-for-byte unchanged and hands off to Main Agent"
+        }
+      ]
+    },
+    {
+      "id": "BUGFIX-REPRO",
+      "criterion": "Original Bugfix reproducer, root cause, TDD",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/spec-kit-bugfix.test.ts",
+          "name": "original Spec Kit Bugfix fixture reproduces, locates cause, tests fix, and hands to Main Agent"
+        }
+      ]
+    },
+    {
+      "id": "BUGFIX-SCOPE",
+      "criterion": "Bugfix rejects fake evidence and out-of-scope changes",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/spec-kit-bugfix.test.ts",
+          "name": "changed files outside owner-approved scope and fabricated evidence fail closed"
+        }
+      ]
+    },
+    {
+      "id": "ASSESS-NO-CODE",
+      "criterion": "Original Assess GO does not auto-create Issue/PR/Runner",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/spec-kit-assessment.test.ts",
+          "name": "original Assessment GO is a candidate only, without creating an Issue, PR or Runner"
+        }
+      ]
+    },
+    {
+      "id": "ASSESS-SOURCES",
+      "criterion": "Original Assess rejects assumptions as facts",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/spec-kit-assessment.test.ts",
+          "name": "go requires adequate credible supporting evidence; assumptions never enough"
+        }
+      ]
+    },
+    {
+      "id": "PROJECT-DAG",
+      "criterion": "Large project decomposes into dependency Issues",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/main-agent-project-plan.test.ts",
+          "name": "large product expands into three independently verifiable Issues with DAG, not T001 micro-Issues"
+        }
+      ]
+    },
+    {
+      "id": "RUNNER-FIXED-GRAPH",
+      "criterion": "Frozen Issue worker graph cannot change",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/runner-skill-graph.test.ts",
+          "name": "frozen workflow cannot mutate prompts, PR, worker graph or signed skills"
+        }
+      ]
+    },
+    {
+      "id": "RUNNER-SIGNED-ROSTER",
+      "criterion": "Original skills and worker assignments approved independently",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/runner-skill-preparation.test.ts",
+          "name": "approved Main Agent project plan binds exact skill choices and seals all Runner workers"
+        }
+      ]
+    },
+    {
+      "id": "RUNNER-BROWSER-FIRST",
+      "criterion": "Browser-first then predeclared Codex only after needs_local_worker",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/runner-skill-graph.test.ts",
+          "name": "strict browser to Codex fallback preserves signed assignment, original Issue and reviewer"
+        }
+      ]
+    },
+    {
+      "id": "RUNNER-PREFLIGHT",
+      "criterion": "Strict Runner fails before Camoufox startup",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/runner-skill-graph.test.ts",
+          "name": "strict verification must precede Camoufox process startup"
+        }
+      ]
+    },
+    {
+      "id": "RUNNER-LEGACY",
+      "criterion": "Old workflow schema still works",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/runner-skill-graph.test.ts",
+          "name": "legacy workflow stays compatible, and unsupported skills mode is rejected"
+        }
+      ]
+    },
+    {
+      "id": "SKILLS-POLICY",
+      "criterion": "Required/optional/off effective selection",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/skill-policy.test.ts",
+          "name": "required cannot be silently omitted; off is a hard exclusion even when requested"
+        }
+      ]
+    },
+    {
+      "id": "SKILLS-SOURCE",
+      "criterion": "Pinned SHA integrity and version drift fail closed",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/upstream-pins.test.ts",
+          "name": "upstream pin rejects edited bytes, untracked files, moved commits and unsafe key paths"
+        }
+      ]
+    },
+    {
+      "id": "SKILLS-BROWSER",
+      "criterion": "Browser worker only reads exact assigned source",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/browser-skill-delivery.test.ts",
+          "name": "worker tool registry cannot trust task, role or session IDs provided by a model"
+        }
+      ]
+    },
+    {
+      "id": "SKILLS-CODEX",
+      "criterion": "Codex native install is mandatory for signed assignments",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/codex-skills.test.ts",
+          "name": "missing required signature, wrong secret, and unsigned assignment stop before Codex execution"
+        }
+      ]
+    },
+    {
+      "id": "MCP-DEFAULT-DENY",
+      "criterion": "OAuth bearer alone does not authorize a ChatGPT chat",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/chat-access.test.ts",
+          "name": "authenticated MCP gateway rejects unapproved calls, supports owner grants and revocation"
+        }
+      ]
+    },
+    {
+      "id": "MCP-WORKER-GRANT",
+      "criterion": "Signed exact worker chat proof and scoped authorization",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/chat-worker-grants.test.ts",
+          "name": "malicious worker assertions, wrong chat/role/turn and copied nonces do not grant"
+        }
+      ]
+    },
+    {
+      "id": "MCP-APP-ONE-SHOT",
+      "criterion": "No duplicate authorization widgets after approval",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/chat-access-auto-resume.test.ts",
+          "name": "cached successful operation must never display authorization form"
+        }
+      ]
+    },
+    {
+      "id": "MCP-APP-RETRY",
+      "criterion": "Wrong password cannot trigger host continuation",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/chat-access-auto-resume.test.ts",
+          "name": "bad password never invokes the host continuation APIs"
+        }
+      ]
+    },
+    {
+      "id": "MCP-OAUTH-DURABILITY",
+      "criterion": "OAuth refresh crash safe",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/connector-auth-crash.test.ts",
+          "name": "refresh crash after durable commit never resurrects consumed refresh"
+        }
+      ]
+    },
+    {
+      "id": "BROWSER-RESUME",
+      "criterion": "Worker retains exact saved Project URL after corrections",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/runner-skill-graph.test.ts",
+          "name": "strict review loop reuses exact browser chats and task PR across requested corrections"
+        }
+      ]
+    },
+    {
+      "id": "BROWSER-NO-REPLAY",
+      "criterion": "No ambiguous post-submit replay",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/runner-skill-graph.test.ts",
+          "name": "strict ambiguous browser result cannot replay an already submitted turn"
+        }
+      ]
+    },
+    {
+      "id": "CODEX-PROCESS",
+      "criterion": "Codex JSONL turn finishes while process alive",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/codex-executor.test.ts",
+          "name": "finishes a Codex JSONL worker turn while its child remains alive"
+        }
+      ]
+    },
+    {
+      "id": "OWNER-REVIEW",
+      "criterion": "Main Agent only final authority, no auto merge",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/main-agent-final-review.test.ts",
+          "name": "independent Main Agent check receives evidence but never auto-approves or merges"
+        }
+      ]
+    },
+    {
+      "id": "OWNER-REWORK",
+      "criterion": "Same PR, sessions and graph after changes requested",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/runner-skill-graph.test.ts",
+          "name": "strict Main Agent handoff survives restarts and accepts corrections in the same PR/sessions"
+        }
+      ]
+    },
+    {
+      "id": "TASK-TIMELINE",
+      "criterion": "Owner-only redacted bounded status",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/pipeline-diagnostics.test.ts",
+          "name": "task timeline retains only safe phase, skill version, review and source details"
+        }
+      ]
+    },
+    {
+      "id": "DIAG-REDACT",
+      "criterion": "Sensitive diagnostic journal values absent",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/pipeline-diagnostics.test.ts",
+          "name": "audit journal is bounded to last 150 records, removes sensitive cause and rejects tampering"
+        }
+      ]
+    },
+    {
+      "id": "MULTI-TASK-STRESS",
+      "criterion": "No tokens reused across 32 parallel simulated Issues",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/browser-chaos-stress.test.ts",
+          "name": "CHAOS: 32 isolated tasks x six turns, two worker tabs, MCP completion, no cross-task token mixing"
+        }
+      ]
+    },
+    {
+      "id": "GIT-HOOKS-OPTOUT",
+      "criterion": "Upstream optional Git hooks are disabled",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/spec-kit-extensions.test.ts",
+          "name": "all 18 original Spec Kit Git hooks are disabled, manual commands preserved"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-KIT-UPSTREAM",
+      "criterion": "Original core Spec Kit scaffold pinned and intact",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/spec-kit-scaffold.test.ts",
+          "name": "official pinned Spec Kit Codex scaffold preserves all core SDD skills"
+        }
+      ]
+    },
+    {
+      "id": "SKILLS-NO-SUBAGENTS",
+      "criterion": "Conflicting Superpowers orchestration blocked",
+      "status": "automated",
+      "evidence": [
+        {
+          "file": "tests/skill-preflight.test.ts",
+          "name": "rejects dynamically dispatched workers and competing original orchestration/plan skills"
+        }
+      ]
+    },
+    {
+      "id": "LIVE-GITHUB-LINKS",
+      "criterion": "Actual Epic child Issues and PR links are validated on GitHub",
+      "status": "live_pending",
+      "liveIssue": 150,
+      "check": "Verify live links, dependencies, staged worker reports against real GitHub Issue/PR data",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-FEATURE-SDD",
+      "criterion": "End-to-end actual product feature from approved design to original SDD and final judgment",
+      "status": "live_pending",
+      "liveIssue": 150,
+      "check": "Run real feature with original Spec Kit skill commands, browser developer/reviewer and owner acceptance",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-BUGFIX",
+      "criterion": "Actual browser worker invokes original upstream Bugfix assess/fix/test",
+      "status": "live_pending",
+      "liveIssue": 150,
+      "check": "Run real GitHub regression Issue with browser/Codex and independent reviewer",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-ASSESS",
+      "criterion": "Original Assess run in actual ChatGPT without code/PR",
+      "status": "live_pending",
+      "liveIssue": 150,
+      "check": "Run original assess commands with real evidence, recommendation and owner handoff",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-BROWSER-CODEX",
+      "criterion": "Real ChatGPT→Codex fallback uses same Issue/PR",
+      "status": "live_pending",
+      "liveIssue": 150,
+      "check": "Demonstrate needs_local_worker and host-only capability limitation with pinned skills",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-WEB-IOS",
+      "criterion": "Actual Staging plugin works in ChatGPT Web and iPhone",
+      "status": "live_pending",
+      "liveIssue": 151,
+      "check": "Verify OAuth form and no duplicates, native App or Safari fallback on real devices",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-STAGING-ISOLATION",
+      "criterion": "Proof of distinct remote MCP/Cloudflare resource and copied authentication",
+      "status": "live_pending",
+      "liveIssue": 151,
+      "check": "Verify full staging-connected plugin; confirm production connector unchanged",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-CHAOS",
+      "criterion": "Actual connection interruption, replay, isolation and signed grant stress",
+      "status": "live_pending",
+      "liveIssue": 152,
+      "check": "Run bounded staging-owned chaos/host scenarios and cleanup verification",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-DOCS",
+      "criterion": "New agent can follow Russian tutorial for feature/bugfix/assess",
+      "status": "live_pending",
+      "liveIssue": 153,
+      "check": "Review README, AGENTS.md and actual command behavior, rollback docs",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-PRODUCTION-GATE",
+      "criterion": "Production release explicitly approved; code rollback to pinned Git SHA is available; local auth may be redone",
+      "status": "live_pending",
+      "liveIssue": 154,
+      "check": "Independent release gate and Git SHA rollback readiness; no mandatory secrets/profile backup; never claim before release",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-OWNER-REPORT",
+      "criterion": "Final product owner handoff and limits documented",
+      "status": "live_pending",
+      "liveIssue": 154,
+      "check": "Provide completed Epic acceptance and honest remaining limitations",
+      "evidence": []
+    }
+  ]
+}

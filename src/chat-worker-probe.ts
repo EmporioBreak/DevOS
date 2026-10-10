@@ -135,6 +135,13 @@ export class ChatWorkerProbeRegistry {
     writeFileSync(this.path(nonce), JSON.stringify({ ...row, mac: this.signed(row) }), { flag: "wx", mode: 0o600 });
     return { status: "issued" as const, nonce, expires_in_seconds: TTL_MS / 1000 };
   }
+  /** Compatibility alias for the original Staging wait hint. Never use the
+   * obsolete unbounded directory scan; Production's bounded HMAC-verified
+   * implementation is the sole source of truth.
+   */
+  hasPendingFor(fingerprint: string | undefined, now = Date.now()): boolean {
+    return this.hasFreshPending(fingerprint, now);
+  }
   /** Local trusted executor only; NEVER expose through MCP or an HTTP route.
    * An untrusted model cannot reach this API; the caller must first prove a
    * provider-authored exact-chat tool result, not text or arguments. */

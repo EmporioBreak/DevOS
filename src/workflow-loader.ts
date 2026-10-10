@@ -46,6 +46,8 @@ export function parseWorkflow(value: unknown): Workflow {
 
   const owner =
     record.owner === undefined ? undefined : parseOwner(record.owner);
+  if(record.skillsMode!==undefined && record.skillsMode!=="strict")
+    throw new Error("Unsupported Runner skills mode");
   const start = requireNonEmptyString(record.start, "Workflow start");
 
   if (!Array.isArray(record.workers) || record.workers.length === 0) {
@@ -82,6 +84,7 @@ export function parseWorkflow(value: unknown): Workflow {
       ...(pr === undefined ? {} : { pr }),
     },
     ...(owner === undefined ? {} : { owner }),
+    ...(record.skillsMode==="strict"?{skillsMode:"strict" as const}:{}),
     start,
     workers,
   };

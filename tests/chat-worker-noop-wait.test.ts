@@ -29,3 +29,21 @@ test("worker grant wait returns only after the independent grant predicate succe
   setTimeout(() => { granted = true; }, 20);
   assert.equal(await waiting, true);
 });
+
+
+test("an already-qualified worker wait survives probe consumption before grant", async () => {
+  const controller = new AbortController();
+  const signedPendingWasVerified = true;
+  let nonceStillExists = true;
+  let signedGrant = false;
+  const wait = waitForWorkerGrant(
+    () => signedPendingWasVerified,
+    () => signedGrant,
+    controller.signal,
+    1_000,
+  );
+  nonceStillExists = false; // trusted observer consumed the signed challenge
+  assert.equal(nonceStillExists, false);
+  setTimeout(() => { signedGrant = true; }, 15);
+  assert.equal(await wait, true, "only the subsequently committed independent grant authorizes");
+});

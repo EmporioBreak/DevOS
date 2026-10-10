@@ -470,6 +470,122 @@ test("loopback HTTP refuses anonymous/invalid bearer, serves OAuth discovery and
     );
     await client.connect(transport as Transport);
     const tools = await client.listTools();
+    // The skill preference UI/API is available only after owner chat access
+    // has already been approved. It never reopens the password widget.
+    await mkdir(join(root, "config"), { recursive: true });
+    for (const file of ["devos-skills.json", "devos-skill-policy.json",
+      "devos-quality-methods.json", "devos-upstreams.lock.json",
+      "devos-speckit-stage-pins.json"])
+      await writeFile(join(root, "config", file),
+        await readFile(join(process.cwd(), "config", file)));
+    const policyTool = tools.tools.find(t => t.name === "devos_skill_policy_get") as any;
+    assert.equal(policyTool?._meta?.ui?.resourceUri, "ui://devos/skill-policy-v1.html");
+    assert.equal(policyTool?._meta?.["openai/widgetAccessible"],true);
+    const setterDescriptor=tools.tools.find(t=>t.name==="devos_skill_policy_set") as any;
+    assert.equal(setterDescriptor?._meta?.["openai/widgetAccessible"],true);
+    assert.ok(tools.tools.some(t => t.name === "devos_skill_policy_set"));
+    const timeline=await client.callTool({name:"devos_pipeline_status",arguments:{
+      repo:"EmporioBreak/DevOS",issue:748}});
+    assert.equal(timeline.isError,undefined);
+    assert.equal((timeline.structuredContent as {state:string})?.state,"not_started");
+    const skillDiag = await client.callTool({name:"devos_skill_diagnostics",arguments:{}});
+    assert.equal(skillDiag.isError,undefined);
+    assert.equal((skillDiag.structuredContent as {skills:unknown[]}).skills.length,17);
+    const policy = await client.callTool({name:"devos_skill_policy_get",arguments:{}});
+    assert.equal(policy.isError,undefined);
+    const data = policy.structuredContent as {
+      fingerprint:string;skills:Array<{id:string}>;
+    };
+    assert.ok(data);
+    assert.match(data.fingerprint,/^[0-9a-f]{64}$/);
+    assert.equal(data.skills.length,17);
+    assert.doesNotMatch(JSON.stringify(policy), /authorization_required|approval_pending/);
+    const ownerNotWorker=await client.callTool({name:"devos_skill_manifest",arguments:{}});
+    assert.equal(ownerNotWorker.isError,true);
+    assert.match(JSON.stringify(ownerNotWorker),/server-verified active DevOS worker grant/);
+    const policyUpdate = await client.callTool({
+      name:"devos_skill_policy_set",
+      arguments:{skill_id:"superpowers-test-driven-development",
+        mode:"optional",scope:"global",expected_fingerprint:data.fingerprint},
+    });
+    assert.equal(policyUpdate.isError,undefined);
+    assert.equal((policyUpdate.structuredContent as {updated:boolean}).updated,true);
+    const widget = await client.readResource({uri:"ui://devos/skill-policy-v1.html"});
+    assert.match("text" in widget.contents[0]! ? widget.contents[0].text : "",
+      /DevOS — навыки/);
+    const resources = await client.listResources();
+    assert.ok(resources.resources.some(r=>r.uri==="ui://devos/skill-policy-v1.html"));
+    // An unapproved chat with the same OAuth client is not entitled to the
+    // owner's preferences or the settings MCP App. This must NOT make
+    // the original authorization form appear on ordinary tool results.
+    const otherClient = new Client({name:"unapproved-chat",version:"1"},{capabilities:{}});
+    const otherTransport = new StreamableHTTPClientTransport(new URL(base+"/mcp"),{
+      requestInit:{headers:{Authorization:"Bearer "+tokens.access_token,
+        "x-openai-session":"different-unapproved-chat"}},
+    });
+    try {
+      await otherClient.connect(otherTransport as Transport);
+      const otherTools = await otherClient.listTools();
+      const otherPolicyTool = otherTools.tools.find(t=>t.name==="devos_skill_policy_get") as any;
+      assert.equal(otherPolicyTool?._meta?.ui,undefined);
+      assert.equal(otherPolicyTool?._meta?.["openai/widgetAccessible"],undefined);
+      const otherResources = await otherClient.listResources();
+      assert.ok(!otherResources.resources.some(r=>r.uri==="ui://devos/skill-policy-v1.html"));
+      await assert.rejects(otherClient.readResource({uri:"ui://devos/skill-policy-v1.html"}));
+      const deniedTimeline=await otherClient.callTool({name:"devos_pipeline_status",arguments:{
+        repo:"EmporioBreak/DevOS",issue:748}});
+      assert.match(JSON.stringify(deniedTimeline),/authorization_required|missing_session/);
+      assert.doesNotMatch(JSON.stringify(deniedTimeline),/reviewLoops|sourceStatus|workerId/);
+      const deniedDiag = await otherClient.callTool({name:"devos_skill_diagnostics",arguments:{}});
+      assert.match(JSON.stringify(deniedDiag),/authorization_required|missing_session/);
+      assert.doesNotMatch(JSON.stringify(deniedDiag),/sourceStatus|pinnedCommit/);
+      const refused = await otherClient.callTool({name:"devos_skill_policy_get",arguments:{}});
+      assert.match(JSON.stringify(refused),/authorization_required|missing_session/);
+      assert.doesNotMatch(JSON.stringify(refused),/"skills":\[/);
+      // Cached tool schemas are public metadata, NOT a grant. A chat
+      // sharing the approved owner's OAuth client still cannot read files,
+      // update Git-backed skill settings or access any task-scoped skill.
+      const privateFile=join(root,"unapproved-session-must-not-write.txt");
+      for(const request of [
+        {name:"read_file",arguments:{path:join(root,"config","devos-skills.json")}},
+        {name:"write_file",arguments:{path:privateFile,content:"BAD_SIDE_EFFECT"}},
+        {name:"devos_skill_policy_set",arguments:{
+          skill_id:"superpowers-test-driven-development",mode:"off",scope:"global",
+          expected_fingerprint:data.fingerprint,
+        }},
+        {name:"devos_skill_update_preview",arguments:{
+          skill_id:"superpowers-writing-plans",candidate_json:"{}",
+        }},
+        {name:"devos_skill_manifest",arguments:{}},
+        {name:"devos_skill_search",arguments:{query:"test-driven"}},
+        {name:"devos_skill_read",arguments:{
+          skill_id:"superpowers-test-driven-development",resource:"SKILL.md",
+        }},
+        {name:"devos_task_status",arguments:{issue:4321}},
+      ]) {
+        const denied=await otherClient.callTool(request);
+        assert.match(JSON.stringify(denied),
+          /authorization_required|missing_session/,
+          request.name+" must be denied in an unapproved chat");
+        assert.doesNotMatch(JSON.stringify(denied),
+          /BAD_SIDE_EFFECT|root-cause-tracing|SKILL.md\".*content|\"skills\":\[/);
+        assert.doesNotMatch(JSON.stringify(denied),
+          /openai\/outputTemplate|ui:\/\/devos\/skill-policy/,
+          "ordinary denied tools must not repeat native auth forms");
+      }
+      await assert.rejects(readFile(privateFile,"utf8"),/ENOENT/);
+      assert.equal((await readFile(join(root,"config","devos-skill-policy.json"),"utf8"))
+        .includes('"mode": "off"'),false);
+      const ordinary=otherTools.tools.filter(t=>[
+        "read_file","write_file","devos_skill_manifest","devos_skill_read",
+        "devos_skill_update_preview"].includes(t.name)) as any[];
+      for(const item of ordinary){
+        assert.equal(item._meta?.["openai/outputTemplate"],undefined);
+        assert.equal(item._meta?.ui,undefined);
+      }
+    } finally {
+      await otherClient.close();
+    }
     assert.ok(tools.tools.some((t) => t.name === "read_file"));
     for (const requiredTool of [
       "set_config_value",
@@ -1366,4 +1482,29 @@ test("live connector ownership without identity is ambiguous, not stale", () => 
     ),
     true,
   );
+});
+
+
+test("cloudflare staging tunnel config and URL validation are fail-closed", () => {
+  assert.deepEqual(connectorModule.connectorConfig({ gatewayPort: 8788, ngrokApiPort: 4042, tunnel: "cloudflare" }), {
+    gatewayPort: 8788, ngrokApiPort: 4042, tunnel: "cloudflare",
+  });
+  assert.deepEqual(connectorModule.connectorConfig({}), {
+    gatewayPort: 8787, ngrokApiPort: 4041,
+  });
+  for (const tunnel of ["", "foo", "trycloudflare.com", null])
+    assert.throws(() => connectorModule.connectorConfig({ tunnel }));
+  assert.equal(connectorModule.cloudflareQuickTunnelUrl(
+    "2026-10-09 INF | https://test-stage-123.trycloudflare.com | OK"
+  ), "https://test-stage-123.trycloudflare.com/");
+  for (const log of [
+    "https://evil.tld",
+    "https://test-stage-123.trycloudflare.com.evil.tld",
+    "https://trycloudflare.com",
+    "no public endpoint",
+  ]) assert.equal(connectorModule.cloudflareQuickTunnelUrl(log), undefined);
+  assert.match(connectorModule.formatConnectorStatus({
+    lifecycle: "healthy", supervisor: "owned", runtimeAlive: true,
+    localHealthy: true, ngrokRegistered: true, tunnel: "cloudflare",
+  }), /cloudflare HTTPS endpoint registered/);
 });

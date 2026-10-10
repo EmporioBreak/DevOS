@@ -77,6 +77,10 @@ export interface OrchestratorOptions {
   mainAgentDecision?: "approved" | "changes_requested";
   finalizeTask?: (state: RunState) => Promise<void>;
   resolveTask?: (task: TaskRef) => Promise<TaskRef>;
+  /** Mandatory for v2: reverify signed per-worker graph before every dispatch. */
+  verifyAssignedWorkerSkills?: (workerId:string) => Promise<{
+    stage:string|null;manifestSha256:string;
+  }>;
   onEvent?: (event: OrchestrationEvent) => void | Promise<void>;
   enableWorkerReports?: boolean;
   maxWorkerRuns?: number;
@@ -171,6 +175,14 @@ export class Orchestrator {
       await this.assertBudgets(state);
       const worker = workers.get(state.currentWorkerId);
       if (!worker) throw new Error(`Unknown worker: ${state.currentWorkerId}`);
+      let skillAssignment: {stage:string|null;manifestSha256:string}|undefined;
+      if(workflow.skillsMode==="strict") {
+        if(!this.options.verifyAssignedWorkerSkills)
+          throw new Error("Strict Runner requires verified frozen worker assignments");
+        skillAssignment=await this.options.verifyAssignedWorkerSkills(worker.id);
+        if(!skillAssignment || !/^[a-f0-9]{64}$/.test(skillAssignment.manifestSha256))
+          throw new Error("Missing verified Runner worker stage/skills");
+      }
 
       const executor = this.options.executors.get(worker.executor);
       if (!executor) throw new Error(`Missing executor: ${worker.executor}`);
@@ -299,10 +311,22 @@ export class Orchestrator {
           projectRoot: this.options.projectRoot,
           prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot,
             workerReportToken ? { turn: state.completedRuns, token: workerReportToken } : undefined) +
+            (skillAssignment ? (
+              "\n\nDevOS 2 STRICT assigned skill manifest SHA-256: "+
+              skillAssignment.manifestSha256+
+              ". Original Spec Kit stage: "+(skillAssignment.stage??"none")+
+              ". Read your exact assigned skills via devos_skill_manifest and "+
+              "devos_skill_read in this already verified worker chat before executing "+
+              "the task. Do not invent, override or dispatch additional workers."
+            ) : "") +
             (browserTurnToken
               ? "\n\nDevOS browser attempt ID: " + state.activeReport!.tokenHash + ". This is a non-secret correlation identifier; do not repeat it in your final answer or GitHub comments."
               : ""),
           workerId: worker.id,
+          ...(worker.executor === "codex" ? {
+            codexSkills: { task: activeWorkflow.task, workerId: worker.id,
+              mandatory: workflow.skillsMode === "strict" },
+          } : {}),
           ...(worker.executor === "chatgpt_browser"
             ? {
                 knownBrowserSessions: knownBrowserSessions!,
@@ -347,6 +371,9 @@ export class Orchestrator {
           output = await executor.run({
             projectRoot: this.options.projectRoot,
             prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot),
+            workerId: worker.id,
+            codexSkills: { task: activeWorkflow.task, workerId: worker.id,
+              mandatory: workflow.skillsMode === "strict" },
             onSession,
           });
         } else if (
@@ -661,7 +688,7 @@ export function buildWorkerPrompt(
       : "If the task truly requires capabilities unavailable in your environment after you attempted it, return needs_local_worker instead of failed.",
     ...(worker.executor === "chatgpt_browser" && report ? [
       "This is a DevOS-owned browser worker conversation. Before the FIRST operational Desktop Commander or first-party DevOS MCP call in this turn, call the safe devos_worker_probe tool exactly once, with no arguments. This does not itself authorize any operation; the trusted local browser owner verifies its provider-structured tool response in this exact worker chat.",
-      "Then check devos_noop for approved=true before using operational Mac/DevOS tools. A brief delay in local proof verification is possible; at most two bounded retries, no rapid polling. If unavailable/unapproved, do not operate the Mac; report the blocker accurately.",
+      "After devos_worker_probe returns status=issued, call devos_noop exactly once with no arguments and await its result. The gateway may briefly wait for independent, signed, exact-chat proof; the probe alone NEVER grants permission. Only approved=true permits operational Mac/DevOS tools or devos_worker_report. If denied/worker_proof_pending, do not request owner authorization, use Mac tools, fabricate an MCP report, repeat the probe or replay this turn; explain the blocker in text.",
       "Do not request owner passwords, use devos_authorize_chat, supply your chat URL as proof, or reuse devos_worker_report turn tokens for authorization.",
     ] : []),
     ...(report ? [

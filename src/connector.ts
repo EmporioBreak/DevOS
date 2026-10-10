@@ -29,6 +29,7 @@ import {
 export { startGateway } from "./connector-gateway.js";
 export const NGROK_VERSION = "3.39.11";
 export const DESKTOP_VERSION = "0.2.52";
+export type ConnectorTunnel = "ngrok" | "cloudflare";
 export type ConnectorAction =
   | "setup"
   | "doctor"
@@ -57,20 +58,23 @@ export { desktopCommand, safeEnvironment } from "./connector-process.js";
 export function connectorConfig(config: unknown): {
   gatewayPort: number;
   ngrokApiPort: number;
+  tunnel?: ConnectorTunnel;
 } {
   if (
     !config ||
     typeof config !== "object" ||
     Array.isArray(config) ||
     Object.keys(config).some(
-      (k) => !["version", "gatewayPort", "ngrokApiPort"].includes(k),
+      (k) => !["version", "gatewayPort", "ngrokApiPort", "tunnel"].includes(k),
     ) ||
     ("version" in config && config.version !== 1)
   )
     throw new Error(
-      "Invalid connector config; allowed fields: version: 1, gatewayPort, ngrokApiPort. Secrets belong in process environment or project .env.",
+      "Invalid connector config; allowed fields: version: 1, gatewayPort, ngrokApiPort, tunnel. Secrets belong in process environment or project .env.",
     );
-  const c = config as { gatewayPort?: number; ngrokApiPort?: number };
+  const c = config as { gatewayPort?: number; ngrokApiPort?: number; tunnel?: string };
+  if (c.tunnel !== undefined && !["ngrok", "cloudflare"].includes(c.tunnel))
+    throw new Error("Connector tunnel must be ngrok or cloudflare.");
   const gatewayPort = c.gatewayPort ?? 8787,
     ngrokApiPort = c.ngrokApiPort ?? 4041;
   if (
@@ -82,7 +86,7 @@ export function connectorConfig(config: unknown): {
     throw new Error(
       "Invalid connector ports; use distinct ports from 1024 to 65535.",
     );
-  return { gatewayPort, ngrokApiPort };
+  return { gatewayPort, ngrokApiPort, ...(c.tunnel === "cloudflare" ? { tunnel: "cloudflare" as const } : {}) };
 }
 async function readConfig(root: string) {
   try {
@@ -95,7 +99,7 @@ async function readConfig(root: string) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT")
       return connectorConfig({});
     throw new Error(
-      "Invalid .devos/connector/config.json; use version: 1 and non-secret ports only.",
+      "Invalid .devos/connector/config.json; use version: 1, tunnel and non-secret ports only.",
     );
   }
 }
@@ -253,6 +257,33 @@ async function publicEndpoint(
     return undefined;
   }
 }
+export function cloudflareQuickTunnelUrl(output: string): string | undefined {
+  // cloudflared writes the public URL to stderr; never trust arbitrary hosts.
+  const match = output.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com(?=\/|\s|$|[)\]\x7d,;|])/i);
+  return match ? publicIdentity(match[0]).href : undefined;
+}
+
+async function tunnelEndpoint(
+  config: { gatewayPort: number; ngrokApiPort: number; tunnel?: ConnectorTunnel },
+  stateUrl?: string,
+): Promise<string | undefined> {
+  if (config.tunnel !== "cloudflare")
+    return publicEndpoint(config.ngrokApiPort, config.gatewayPort);
+  // Unlike ngrok, Quick Tunnel has no local discovery API. A URL is valid
+  // only while the owned runtime and its local gateway are alive; this
+  // does not prove that Cloudflare's public edge is reachable.
+  return stateUrl && cloudflareQuickTunnelUrl(stateUrl) === stateUrl ? stateUrl : undefined;
+}
+
+async function checkCloudflared() {
+  const result = spawnSync("cloudflared", ["--version"], {
+    encoding: "utf8", timeout: 10_000, maxBuffer: 16_384,
+    env: safeEnvironment(process.env),
+  });
+  if (result.status !== 0 || !result.stdout.startsWith("cloudflared version "))
+    throw new Error("Missing cloudflared; install the official Cloudflare Tunnel CLI.");
+}
+
 async function health(port: number) {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/health`, {
@@ -275,6 +306,7 @@ export interface ConnectorStatusSnapshot {
   runtimeAlive: boolean;
   localHealthy: boolean;
   ngrokRegistered: boolean;
+  tunnel?: ConnectorTunnel;
   restartAttempt?: number;
   maxRestartAttempts?: number;
   lastFailureComponent?: string;
@@ -293,7 +325,7 @@ export function formatConnectorStatus(snapshot: ConnectorStatusSnapshot): string
     : "";
   return (
     `Connector ${snapshot.lifecycle}; supervisor ${snapshot.supervisor}; runtime ${snapshot.runtimeAlive ? "running" : "stopped"}; ` +
-    `local gateway ${snapshot.localHealthy ? "healthy" : "unavailable"}; ngrok ${snapshot.ngrokRegistered ? "HTTPS endpoint registered" : "unavailable"}` +
+    `local gateway ${snapshot.localHealthy ? "healthy" : "unavailable"}; ${snapshot.tunnel ?? "ngrok"} ${snapshot.ngrokRegistered ? "HTTPS endpoint registered" : "unavailable"}` +
     `${restart}${failure}; public reachability not tested.\n`
   );
 }
@@ -369,6 +401,7 @@ export async function connectorBackgroundRunning(root: string): Promise<boolean>
 async function startBackground(root: string, config: {
   gatewayPort: number;
   ngrokApiPort: number;
+  tunnel?: ConnectorTunnel;
 }, secrets: ConnectorSecrets) {
   const dir = join(root, ".devos/connector");
   const serviceFile = join(dir, backgroundStateName);
@@ -433,7 +466,7 @@ async function startBackground(root: string, config: {
     } catch {}
     const local = await health(config.gatewayPort);
     const publicUrl = local
-      ? await publicEndpoint(config.ngrokApiPort, config.gatewayPort)
+      ? await tunnelEndpoint(config, connectorState.publicUrl)
       : undefined;
     if (
       publicUrl &&
@@ -621,14 +654,16 @@ export async function connector(
         throw new Error("Desktop Commander dependency install failed.");
       await checkDesktop();
     }
-    try {
-      await checkedVersion(binary);
-    } catch {
-      await installNgrok(root);
-    }
+    if ((await readConfig(root)).tunnel !== "cloudflare") {
+      try {
+        await checkedVersion(binary);
+      } catch {
+        await installNgrok(root);
+      }
+    } else await checkCloudflared();
     await mkdir(dir, { recursive: true, mode: 0o700 });
     process.stdout.write(
-      `Connector software ready: Desktop Commander ${DESKTOP_VERSION}, ngrok ${NGROK_VERSION}.\n`,
+      `Connector software ready: Desktop Commander ${DESKTOP_VERSION}, ${(await readConfig(root)).tunnel}.\n`,
     );
     return;
   }
@@ -650,8 +685,8 @@ export async function connector(
       } catch {}
     }
     const local = alive && (await health(config.gatewayPort));
-    const url = alive
-      ? await publicEndpoint(config.ngrokApiPort, config.gatewayPort)
+    const url = alive && local
+      ? await tunnelEndpoint(config, state.publicUrl)
       : undefined;
     const background = await backgroundState(root);
     let supervisor = "foreground-or-absent";
@@ -670,6 +705,7 @@ export async function connector(
       runtimeAlive: alive,
       localHealthy: local,
       ngrokRegistered: !!url && url === state.publicUrl,
+      ...(config.tunnel ? { tunnel: config.tunnel } : {}),
       ...(state.restartAttempt !== undefined ? { restartAttempt: state.restartAttempt } : {}),
       ...(state.maxRestartAttempts !== undefined ? { maxRestartAttempts: state.maxRestartAttempts } : {}),
       ...(state.lastFailureComponent ? { lastFailureComponent: state.lastFailureComponent } : {}),
@@ -687,7 +723,8 @@ export async function connector(
     }
   }
   await checkDesktop();
-  await checkedVersion(binary);
+  if (config.tunnel !== "cloudflare") await checkedVersion(binary);
+  else await checkCloudflared();
   const secrets = await loadConnectorSecrets(root);
   ownerAuth(secrets.ownerSecret);
   if (action === "start") {
@@ -698,7 +735,7 @@ export async function connector(
     const lock = await acquire(root);
     await new Promise<void>((ok) => lock.close(() => ok()));
     process.stdout.write(
-      "Local software/config/auth present. ngrok credentials and public connectivity not tested.\n",
+      `Local software/config/auth present. ${config.tunnel} public connectivity not tested.\n`,
     );
     return;
   }
@@ -777,7 +814,7 @@ export async function connector(
         if (!announcedReady) {
           announcedReady = true;
           process.stdout.write(
-            `Connector ready: ${new URL("/mcp", publicUrl).href}. OAuth required. Foreground; Ctrl+C stops gateway, ngrok and Desktop Commander.\n`,
+            `Connector ready: ${new URL("/mcp", publicUrl).href}. OAuth required. Foreground; Ctrl+C stops gateway, tunnel and Desktop Commander.\n`,
           );
         }
       },
@@ -909,6 +946,7 @@ export async function connectorRuntime(root: string) {
       root: softwareRoot,
       chatAccessRoot: root,
       port: config.gatewayPort,
+      jsonResponseOnly: config.tunnel === "cloudflare",
       ownerSecret: ownerAuth(process.env.DEVOS_CONNECTOR_OWNER_SECRET),
       oauthClientsPath: join(root, ".devos/connector/oauth-clients.json"),
       oauthStatePath: join(root, ".devos/connector/oauth-state.enc"),
@@ -932,50 +970,49 @@ export async function connectorRuntime(root: string) {
       });
     }
     if (stopping) return;
-    await writeFile(
-      join(dir, "ngrok.yml"),
-      `version: "2"\nweb_addr: 127.0.0.1:${config.ngrokApiPort}\nconsole_ui: false\nupdate_check: false\n`,
-      { mode: 0o600 },
-    );
-    // Only the ngrok process receives its account credential. No request inspector.
-    child = spawn(
-      join(root, ".devos/tools/ngrok"),
-      ngrokArgs(root, config.gatewayPort),
-      {
-        cwd: root,
-        stdio: "ignore",
-        env: {
-          ...safeEnvironment(process.env),
-          NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN,
-        },
-      },
-    );
     let exited = false;
-    const exit = new Promise<void>((ok) => {
-      child!.once("error", () => {
-        exited = true;
-        ok();
+    let url: string | undefined;
+    if (config.tunnel !== "cloudflare") {
+      await writeFile(
+        join(dir, "ngrok.yml"),
+        `version: "2"\nweb_addr: 127.0.0.1:${config.ngrokApiPort}\nconsole_ui: false\nupdate_check: false\n`,
+        { mode: 0o600 },
+      );
+      child = spawn(join(root, ".devos/tools/ngrok"), ngrokArgs(root, config.gatewayPort), {
+        cwd: root, stdio: "ignore",
+        env: { ...safeEnvironment(process.env), NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN },
       });
-      child!.once("exit", () => {
-        exited = true;
-        ok();
+    } else {
+      // Quick Tunnel for staging: random hostname, no Cloudflare credentials.
+      // Limit read bytes; do not forward cloudflared logs or secrets.
+      child = spawn("cloudflared",
+        ["tunnel", "--no-autoupdate", "--url", `http://127.0.0.1:${config.gatewayPort}`],
+        { cwd: root, stdio: ["ignore", "ignore", "pipe"],
+          env: safeEnvironment(process.env) },
+      );
+      let captured = "";
+      child.stderr?.on("data", (chunk: Buffer) => {
+        captured = (captured + chunk.toString("utf8")).slice(-16_384);
+        url ??= cloudflareQuickTunnelUrl(captured);
       });
+    }
+    const exit = new Promise<void>(ok => {
+      child!.once("error", () => { exited = true; ok(); });
+      child!.once("exit", () => { exited = true; ok(); });
     });
     const deadline = Date.now() + 25_000;
-    let url: string | undefined;
     while (!stopping && !exited && Date.now() < deadline) {
-      url = await publicEndpoint(config.ngrokApiPort, config.gatewayPort);
+      if (config.tunnel !== "cloudflare")
+        url = await publicEndpoint(config.ngrokApiPort, config.gatewayPort);
       if (url) break;
       await delay(100);
     }
     if (!url || stopping || exited) {
-      const component = failureComponent ?? "ngrok";
+      const component = failureComponent ?? (config.tunnel ?? "ngrok");
       throw Object.assign(
-        new Error(
-          component === "desktop_commander"
-            ? "Desktop Commander transport closed unexpectedly."
-            : "ngrok startup/registration failed.",
-        ),
+        new Error(component === "desktop_commander"
+          ? "Desktop Commander transport closed unexpectedly."
+          : `${config.tunnel} startup/registration failed.`),
         { component },
       );
     }
@@ -983,8 +1020,8 @@ export async function connectorRuntime(root: string) {
     process.send?.({ publicUrl: url });
     await Promise.race([exit, stopRequested]);
     if (!stopping) {
-      throw Object.assign(new Error("ngrok exited unexpectedly."), {
-        component: "ngrok",
+      throw Object.assign(new Error(`${config.tunnel} exited unexpectedly.`), {
+        component: config.tunnel ?? "ngrok",
       });
     }
     if (failureComponent) {

@@ -125,12 +125,20 @@ export class ChatWorkerGrantRegistry {
       renameSync(temp,this.file);
     } finally { try{unlinkSync(temp)}catch{} }
   }
-  isGranted(fingerprint: string | undefined, now=Date.now()): boolean {
-    if (!fingerprint || !FINGERPRINT.test(fingerprint)) return false;
+  /** Trusted task identity, resolved from the MACed grant and live host state.
+   * Model-provided repo/issue/worker_id cannot be used as a substitute. */
+  activeIdentity(
+    fingerprint: string | undefined, now=Date.now(),
+  ): { repo: string; issue: number; workerId: string; turn: number } | null {
+    if (!fingerprint || !FINGERPRINT.test(fingerprint)) return null;
     try {
       const grant=this.read().find(g=>g.fingerprint===fingerprint && g.expiresAt>now);
-      return !!grant && activeWorker(this.root,grant);
-    } catch { return false; }
+      if (!grant || !activeWorker(this.root,grant)) return null;
+      return {repo:grant.repo,issue:grant.issue,workerId:grant.workerId,turn:grant.turn};
+    } catch { return null; }
+  }
+  isGranted(fingerprint: string | undefined, now=Date.now()): boolean {
+    return this.activeIdentity(fingerprint,now)!==null;
   }
   /** Called only by the trusted local browser executor. The nonce alone does
    * nothing; caller must establish provider-structured exact-chat evidence. */

@@ -8,6 +8,27 @@ const MAX_WINDOW_MS = 2 * 60_000;
 const HISTORY_INTERVAL_MS = 7_000;
 const MAX_HISTORY_CHECKS = 12;
 
+/** A path alone is not provider provenance: unrelated origins can emit the
+ * same URL path. Only a successful HTTPS response from the saved ChatGPT
+ * conversation's exact origin can feed the privileged worker verifier. */
+export function isExactWorkerHistoryEndpoint(
+  responseUrl: string, exactChatUrl: string,
+): boolean {
+  try {
+    const expected = new URL(exactChatUrl);
+    const candidate = new URL(responseUrl);
+    const id = /\/c\/([^/?#]+)$/.exec(expected.pathname)?.[1];
+    return expected.protocol === "https:" && !!id &&
+      candidate.origin === expected.origin &&
+      candidate.pathname === "/backend-api/conversations/" + id;
+  } catch { return false; }
+}
+export function isExactWorkerHistoryResponse(
+  responseUrl: string, status: number, exactChatUrl: string,
+): boolean {
+  return status === 200 && isExactWorkerHistoryEndpoint(responseUrl, exactChatUrl);
+}
+
 /** Read the provider's structured response for ONE exact saved worker chat.
  * A separate temporary page avoids reloading/resubmitting the worker turn.
  * Never search arbitrary chats, the sidebar, assistant text, or tool arguments. */
@@ -24,19 +45,24 @@ async function readExactHistory(
   try {
     verifier = await workerPage.context().newPage();
     await workerPage.bringToFront().catch(() => {});
-    const id = /\/c\/([^/?#]+)$/.exec(new URL(url).pathname)?.[1];
-    if (!id) return null;
-    const responseWait = verifier.waitForResponse(response => {
-      try {
-        return new URL(response.url()).pathname === "/backend-api/conversations/" + id &&
-          response.status() === 200;
-      } catch { return false; }
-    }, { timeout: 14_000 });
+    // Accept even an explicit denial from the exact provider endpoint so
+    // diagnostics can distinguish HTTP 401/404 from an absent response.
+    // Neither denial nor a different-origin response can grant access.
+    const responseWait = verifier.waitForResponse(response =>
+      // A same-origin POST or other non-history response must never prove
+      // worker identity, even when its path and JSON resemble a history read.
+      response.request().method() === "GET" &&
+      isExactWorkerHistoryEndpoint(response.url(), url),
+      { timeout: 14_000 });
     void responseWait.catch(() => {});
     await verifier.goto(url, { waitUntil: "domcontentloaded", timeout: 14_000 });
     if (signal.aborted || verifier.url() !== url || workerPage.url() !== url) return null;
     const response = await responseWait;
     if (signal.aborted || verifier.url() !== url || workerPage.url() !== url) return null;
+    if (response.status() !== 200) {
+      debugLog("browser.worker-access", { phase: "provider-history", decision: "http-unavailable", httpStatus: response.status() });
+      return null;
+    }
     const history: unknown = await response.json();
     return exactWorkerHistoryProof(history, url, userMessageId, resourceUri, exactPrompt);
   } catch { return null; }

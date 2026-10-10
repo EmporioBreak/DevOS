@@ -5,6 +5,13 @@ import type { TaskRef } from "../workflow.js";
 import { dirname, join } from "node:path";
 import { JsonStateStore } from "../json-state-store.js";
 import type { WorkerStatus } from "../workflow.js";
+import { readSkillPolicy, policyFingerprint, updateSkillPreference, writeSkillPolicy } from "../skill-policy.js";
+import { parseSkillLibrary } from "../skills-library.js";
+import { SKILL_POLICY_WIDGET_URI } from "../skill-policy-widget.js";
+import { BrowserSkillDelivery, type VerifiedWorkerIdentity } from "../browser-skill-delivery.js";
+import { getSkillsDiagnostics, previewSkillsUpdate } from "../skill-diagnostics.js";
+import { readPipelineSnapshot } from "../pipeline-diagnostics.js";
+import type { WorkerSkillContext } from "../skill-policy.js";
 
 const REPORT_STATUSES = new Set<WorkerStatus>([
   "done", "approved", "changes_requested", "needs_local_worker", "failed",
@@ -18,10 +25,13 @@ function reportPath(root: string, task: TaskRef, turn: WorkerReportTurn): string
     `turn-${turn.turn}-${turn.tokenHash}.json`);
 }
 type Arguments = Record<string, unknown>;
-type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
+type ToolResult = { content: Array<{ type: "text"; text: string }>;
+  isError?: boolean; structuredContent?: Record<string, unknown> };
 
 function textResult(value: unknown): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(value) }] };
+  return { content: [{ type: "text", text: JSON.stringify(value) }],
+    ...(value && typeof value === "object" && !Array.isArray(value)
+      ? { structuredContent: value as Record<string, unknown> } : {}) };
 }
 function input(value: unknown): Arguments {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -43,6 +53,94 @@ function exactKeys(args: Arguments, allowed: string[]) {
 }
 
 export const DEVOS_TOOLS = [
+  {
+    name: "devos_pipeline_status",
+    title: "DevOS Issue pipeline timeline",
+    description: "Read-only owner-only Issue stage, worker skill versions, review handoff and bounded audit events. No chat URLs, tokens or private paths.",
+    inputSchema:{type:"object",properties:{
+      repo:{type:"string"},issue:{type:"integer",minimum:1},
+    },required:["repo","issue"],additionalProperties:false},
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+  },
+  {
+    name: "devos_skill_diagnostics",
+    title: "DevOS Skills diagnostics",
+    description: "Read-only owner-only audit of the pinned Skills Library, effective policy and optional GitHub Issue/worker skill set; no credentials or private profile paths returned.",
+    inputSchema: {type:"object",properties:{
+      repo:{type:"string"},issue:{type:"integer",minimum:1},
+      worker_id:{type:"string"},role:{type:"string"},
+      phase:{type:"string",enum:["planning","execution"]},
+      spec_kit_stage:{type:["string","null"]},
+      optional_candidates:{type:"array",items:{type:"string"}},
+    },additionalProperties:false},
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+  },
+  {
+    name: "devos_skill_update_preview",
+    title: "Review a pinned skill version diff",
+    description: "Read-only preview of proposed SKILL.md/assets version hashes and adaptation dependencies. This never installs, applies, merges or deploys a skill. Main Agent approval and a reviewed GitHub PR are still required.",
+    inputSchema:{type:"object",properties:{
+      skill_id:{type:"string"},
+      candidate_json:{type:"string",maxLength:65536,
+        description:"JSON Skills Library entry for the candidate revision; never send credentials"},
+    },required:["skill_id","candidate_json"],additionalProperties:false},
+    annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+  },
+  {
+    name: "devos_skill_manifest",
+    title: "List skills assigned to this DevOS browser worker",
+    description: "Read the exact pinned skill list for this active verified DevOS browser worker. Identity comes from the server's host-confirmed chat grant, never tool arguments. An ordinary owner chat cannot impersonate a worker.",
+    inputSchema: {type:"object",properties:{},additionalProperties:false},
+    annotations: {readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+  },
+  {
+    name: "devos_skill_search",
+    title: "Search this worker's assigned DevOS skills",
+    description: "Search only pinned skills assigned to the current verified browser worker; cannot enumerate other projects or workers.",
+    inputSchema: {type:"object",properties:{query:{type:"string",maxLength:120}},
+      required:["query"],additionalProperties:false},
+    annotations: {readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+  },
+  {
+    name: "devos_skill_read",
+    title: "Read an assigned pinned DevOS skill resource",
+    description: "Read SKILL.md or named references/scripts/assets of a skill already assigned to this verified browser worker. Strict SHA-256 and path checks; returns read-only resources, never executes scripts.",
+    inputSchema: {type:"object",properties:{
+      skill_id:{type:"string"},resource:{type:"string"},
+    },required:["skill_id","resource"],additionalProperties:false},
+    annotations: {readOnlyHint:true,destructiveHint:false,openWorldHint:false},
+  },
+  {
+    name: "devos_skill_policy_get",
+    title: "DevOS skill preferences",
+    description: "Read available Skills Library names and versioned global/project/role/task preferences. Requires an already owner-approved DevOS chat. Call when user asks to configure skills, not automatically in a new chat.",
+    inputSchema: {
+      type: "object", properties: {}, additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    _meta: { ui: { resourceUri: SKILL_POLICY_WIDGET_URI },
+      "openai/outputTemplate": SKILL_POLICY_WIDGET_URI,
+      "openai/widgetAccessible": true },
+  },
+  {
+    name: "devos_skill_policy_set",
+    title: "Update DevOS skill preference",
+    description: "Set one skill mode required/optional/off at global/project/role/task scope. Requires an already owner-approved DevOS chat. Read devos_skill_policy_get first; pass its exact fingerprint to avoid overwriting concurrent settings. Does not start a DevOS worker or modify GitHub automatically.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string", description: "Registered Skills Library ID" },
+        mode: { type: "string", enum: ["required","optional","off"] },
+        scope: { type: "string", enum: ["global","project","role","task"] },
+        context: { type: "string", description: "project owner/repo, role name, or task owner/repo#issue; omit for global" },
+        expected_fingerprint: { type: "string", description: "64-hex current policy fingerprint returned by devos_skill_policy_get" },
+      },
+      required: ["skill_id","mode","scope","expected_fingerprint"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    _meta: { "openai/widgetAccessible": true },
+  },
   {
     name: "devos_task_status",
     title: "DevOS task status",
@@ -81,7 +179,7 @@ export const DEVOS_TOOLS = [
 ] as const;
 
 export class DevosToolRegistry {
-  constructor(private readonly root: string) {}
+  constructor(private readonly root: string, private readonly ownerSecret?: string) {}
 
   has(name: string): boolean {
     return DEVOS_TOOLS.some(tool => tool.name === name);
@@ -91,7 +189,10 @@ export class DevosToolRegistry {
     return DEVOS_TOOLS.map(tool => ({
       ...tool,
       inputSchema: structuredClone(tool.inputSchema),
-      _meta: { securitySchemes: [{ type: "oauth2", scopes: ["mcp:tools"] }] },
+      _meta: {
+        ...("_meta" in tool ? tool._meta : {}),
+        securitySchemes: [{ type: "oauth2", scopes: ["mcp:tools"] }],
+      },
     }));
   }
 
@@ -131,11 +232,106 @@ export class DevosToolRegistry {
     throw new Error("MCP report observer stopped");
   }
 
-  async call(name: string, argumentsValue: unknown): Promise<ToolResult> {
+  async call(
+    name: string, argumentsValue: unknown,
+    trustedWorker?: VerifiedWorkerIdentity | null,
+  ): Promise<ToolResult> {
     if (!this.has(name)) throw new Error("Unknown DevOS tool");
     try {
       const args = input(argumentsValue);
+      if (name === "devos_skill_manifest" || name === "devos_skill_search" ||
+          name === "devos_skill_read") {
+        if (!trustedWorker)
+          throw new Error("Skill access requires a server-verified active DevOS worker grant");
+        if (!this.ownerSecret) throw new Error("Server owner secret required for pinned browser skills");
+        const delivery = new BrowserSkillDelivery(this.root,this.ownerSecret);
+        if (name === "devos_skill_manifest") {
+          exactKeys(args, []);
+          return textResult({skills:await delivery.list(trustedWorker)});
+        }
+        if (name === "devos_skill_search") {
+          exactKeys(args, ["query"]);
+          if (typeof args.query !== "string") throw new Error("Invalid skill search query");
+          return textResult({skills:await delivery.search(trustedWorker,args.query)});
+        }
+        exactKeys(args, ["skill_id","resource"]);
+        if (typeof args.skill_id !== "string" || typeof args.resource !== "string")
+          throw new Error("Invalid pinned skill resource request");
+        return textResult(await delivery.read(trustedWorker,args.skill_id,args.resource));
+      }
+      if (name === "devos_skill_diagnostics") {
+        exactKeys(args, ["repo","issue","worker_id","role","phase",
+          "spec_kit_stage","optional_candidates"]);
+        const anyContext=Object.keys(args).length>0;
+        let context:WorkerSkillContext|undefined;
+        if (anyContext) {
+          if (typeof args.repo!=="string" || typeof args.issue!=="number" ||
+              !Number.isSafeInteger(args.issue) || args.issue<=0 ||
+              typeof args.worker_id!=="string" || typeof args.role!=="string" ||
+              (args.phase!=="planning" && args.phase!=="execution") ||
+              (args.spec_kit_stage!==null && typeof args.spec_kit_stage!=="string") ||
+              (args.optional_candidates!==undefined &&
+                (!Array.isArray(args.optional_candidates) ||
+                 args.optional_candidates.some(x=>typeof x!=="string"))))
+            throw new Error("Complete Issue/worker/role/phase/stage context required");
+          context={repo:args.repo,issue:args.issue,workerId:args.worker_id,
+            role:args.role,phase:args.phase,
+            specKitStage:args.spec_kit_stage as string|null,
+            optionalCandidates:args.optional_candidates as string[]|undefined ?? []};
+        }
+        return textResult(await getSkillsDiagnostics(this.root,{
+          ...(this.ownerSecret?{ownerSecret:this.ownerSecret}:{}),
+          ...(context?{context}:{}),
+        }));
+      }
+      if (name === "devos_skill_update_preview") {
+        exactKeys(args,["skill_id","candidate_json"]);
+        if (typeof args.skill_id!=="string" ||
+            typeof args.candidate_json!=="string" ||
+            Buffer.byteLength(args.candidate_json)>65_536)
+          throw new Error("Invalid skill update preview arguments");
+        const candidate:unknown=JSON.parse(args.candidate_json);
+        return textResult(await previewSkillsUpdate(this.root,args.skill_id,
+          candidate as Parameters<typeof previewSkillsUpdate>[2]));
+      }
+      if (name === "devos_skill_policy_get" || name === "devos_skill_policy_set") {
+        const catalog = parseSkillLibrary(JSON.parse(
+          await readFile(join(this.root, "config", "devos-skills.json"), "utf8")));
+        const current = await readSkillPolicy(this.root);
+        if (name === "devos_skill_policy_get") {
+          exactKeys(args, []);
+          return textResult({
+            version: 1,
+            fingerprint: policyFingerprint(current),
+            policy: current,
+            skills: catalog.skills.map(skill => ({
+              id: skill.id, name: skill.name, description: skill.description,
+              version: skill.version, origin: skill.source.kind,
+            })),
+          });
+        }
+        exactKeys(args, ["skill_id", "mode", "scope", "context", "expected_fingerprint"]);
+        if (typeof args.skill_id !== "string" || typeof args.mode !== "string" ||
+            typeof args.scope !== "string" ||
+            typeof args.expected_fingerprint !== "string")
+          throw new Error("Invalid skill preference update arguments");
+        const preference = {
+          skillId: args.skill_id,
+          mode: args.mode,
+          scope: args.scope,
+          ...(args.context === undefined ? {} : {context: args.context}),
+        };
+        const policy = updateSkillPreference(current,
+          preference as Parameters<typeof updateSkillPreference>[1], catalog);
+        const fingerprint = await writeSkillPolicy(this.root,policy,args.expected_fingerprint);
+        return textResult({updated:true,policy,fingerprint,
+          git_status:"Local Git-backed settings updated; commit/PR remains Main Agent responsibility"});
+      }
       const task = taskFrom(args);
+      if(name === "devos_pipeline_status"){
+        exactKeys(args,["repo","issue"]);
+        return textResult(await readPipelineSnapshot(this.root,task,this.ownerSecret));
+      }
       if (name === "devos_task_status") {
         exactKeys(args, ["repo", "issue"]);
         const state = await new JsonStateStore(this.root, task).load();

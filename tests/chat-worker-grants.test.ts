@@ -43,6 +43,9 @@ test("one exact active worker gets passwordless access, unrelated session remain
     const c=pending.issue(fpA,5_000_000);assert.equal(c.status,"issued");if(c.status!=="issued")return;
     assert.equal(grants.bindVerified(c.nonce,task,"developer",1,urlA,5_000_100),true);
     assert.equal(grants.isGranted(fpA,5_000_101),true);
+    assert.deepEqual(grants.activeIdentity(fpA,5_000_101),
+      {repo:task.repo,issue:task.issue,workerId:"developer",turn:1});
+    assert.equal(grants.activeIdentity(fpB,5_000_101),null);
     const lockPath=join(root,".devos","locks","EmporioBreak%2FDevOS-issue-99.lock");
     const savedLock=await readFile(lockPath,"utf8");
     const forgedLock=JSON.parse(savedLock);
