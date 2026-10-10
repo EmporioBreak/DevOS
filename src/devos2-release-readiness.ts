@@ -15,22 +15,11 @@ export interface VerifiedLiveGate {
   /** A provider-backed event identifier, not model narrative. */
   sourceRef:string;
 }
-export interface ProductionBackupProof{
-  productionSha:string;
-  /** This identifier must be private, never a backup path or secret in GitHub. */
-  backupId:string;
-  components:string[];
-  restoreDryRunVerified:boolean;
-  /** The actual current-production resource identity, compared by trusted host. */
-  productionResourceFingerprint:string;
-  sourceRef:string;
-}
 export interface LiveReleaseProvider{
   /** Must independently resolve real issue, tests and owner acceptance. */
   verifyGate(record:VerifiedLiveGate,expected:{
     criterion:string;issue:number;stagingSha:string;
   }):Promise<boolean>;
-  verifyBackup(proof:ProductionBackupProof,stagingSha:string):Promise<boolean>;
 }
 export interface ReleaseReadiness{
   status:"blocked"|"ready_for_owner_release_decision";
@@ -41,7 +30,6 @@ export interface ReleaseReadiness{
   postReleasePending:string[];
   /** Missing/pending live checks; never implicitly accepted. */
   blockers:string[];
-  backupVerified:boolean;
   manualReleaseDecisionRequired:true;
   mayMerge:false;
   mayTouchProduction:false;
@@ -52,7 +40,6 @@ export async function inspectDevos2ReleaseReadiness(input:{
   /** Exact pinned release candidate commit, not branch name. */
   stagingSha:string;
   gates?:VerifiedLiveGate[];
-  backup?:ProductionBackupProof;
   provider?:LiveReleaseProvider;
   matrix?:unknown;
 }):Promise<ReleaseReadiness>{
@@ -102,24 +89,9 @@ export async function inspectDevos2ReleaseReadiness(input:{
         " (Issue #"+criterion.liveIssue+")");
     }else verified++;
   }
-  let backupVerified=false;
-  const backup=input.backup;
-  if(!backup){
-    blockers.push("Missing private Production backup and restoration proof");
-  }else if(!SHA.test(backup.productionSha) ||
-      !TOKEN.test(backup.backupId) || !TOKEN.test(backup.sourceRef) ||
-      !TOKEN.test(backup.productionResourceFingerprint) ||
-      !backup.restoreDryRunVerified ||
-      !Array.isArray(backup.components)||
-      !["config","oauth","sessions","state","browser_profile","executable"].every(c=>
-        backup.components.includes(c))||
-      backup.components.some(c=>!safe(c,30))||
-      !provider || !await provider.verifyBackup(backup,stagingSha)){
-    blockers.push("Production backup or restore proof not independently verified");
-  }else backupVerified=true;
   return {status:blockers.length?"blocked":"ready_for_owner_release_decision",
     stagingSha:SHA.test(stagingSha)?stagingSha:null,
-    tracked:pending.length,verified,blockers,backupVerified,
+    tracked:pending.length,verified,blockers,
     postReleasePending:afterRelease.map(x=>x.id),
     manualReleaseDecisionRequired:true,mayMerge:false,mayTouchProduction:false,
     mayCloseEpic:false};

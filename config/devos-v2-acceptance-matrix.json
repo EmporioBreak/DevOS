@@ -473,10 +473,10 @@
     },
     {
       "id": "LIVE-PRODUCTION-GATE",
-      "criterion": "Production release is explicitly approved and rollback tested",
+      "criterion": "Production release explicitly approved; code rollback to pinned Git SHA is available; local auth may be redone",
       "status": "live_pending",
       "liveIssue": 154,
-      "check": "Independent release gate, backup and rollback validation; never claim before release",
+      "check": "Independent release gate and Git SHA rollback readiness; no mandatory secrets/profile backup; never claim before release",
       "evidence": []
     },
     {

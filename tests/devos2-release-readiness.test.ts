@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {readFile} from "node:fs/promises";
-import {inspectDevos2ReleaseReadiness,inspectDevos2PostReleaseEvidence,type VerifiedLiveGate,
-  type ProductionBackupProof,type LiveReleaseProvider} from "../src/devos2-release-readiness.js";
+import {inspectDevos2ReleaseReadiness,inspectDevos2PostReleaseEvidence,
+  type VerifiedLiveGate,type LiveReleaseProvider} from "../src/devos2-release-readiness.js";
 
 const projectRoot=process.cwd(), stagingSha="e".repeat(40);
 const matrix=JSON.parse(await readFile(
@@ -15,94 +15,75 @@ const gates=():VerifiedLiveGate[]=>pending.map(x=>({
  testRun:"signed-local-run-for-"+x.id,
  status:"passed" as const,sourceRef:"provider-attested-"+x.id,
 }));
-const backup=():ProductionBackupProof=>({
- productionSha:"a".repeat(40),backupId:"verified-private-backup-01",
- sourceRef:"host-restoration-proof-01",restoreDryRunVerified:true,
- productionResourceFingerprint:"prod-oauth-resource-sha256",
- components:["config","oauth","sessions","state","browser_profile","executable"],
-});
 const provider:LiveReleaseProvider={
  async verifyGate(actual,expect){return actual.sourceRef===
     "provider-attested-"+expect.criterion &&
    actual.issue===expect.issue && actual.stagingSha===expect.stagingSha;},
- async verifyBackup(actual,sha){return actual.sourceRef==="host-restoration-proof-01" &&
-    sha===stagingSha&&actual.restoreDryRunVerified;},
 };
 
-test("DevOS 2 current live release gate remains BLOCKED with no authenticated evidence",async()=>{
+test("DevOS 2 current live release gate remains BLOCKED without independently verified E2E",async()=>{
  const report=await inspectDevos2ReleaseReadiness({projectRoot,stagingSha});
  assert.equal(report.status,"blocked");
  assert.equal(report.verified,0);
  assert.equal(report.tracked,9);
  assert.deepEqual(report.postReleasePending,["LIVE-PRODUCTION-GATE","LIVE-OWNER-REPORT"]);
- assert.ok(report.blockers.length>=report.tracked+1);
+ assert.equal(report.blockers.length,report.tracked);
+ assert.ok(report.blockers.every(x=>x.includes("live gate")));
  assert.equal(report.manualReleaseDecisionRequired,true);
  assert.equal(report.mayMerge,false);
  assert.equal(report.mayTouchProduction,false);
  assert.equal(report.mayCloseEpic,false);
- assert.equal(report.backupVerified,false);
+ assert.equal("backupVerified" in report,false,
+   "the owner explicitly waived mandatory live backup/restore evidence");
 });
 
-test("fake model self-report or stale SHA never unlocks Production",async()=>{
+test("untrusted model self-report or stale SHA never unlocks Production",async()=>{
  const fake=await inspectDevos2ReleaseReadiness({projectRoot,stagingSha,
-   gates:gates(),backup:backup()});
+   gates:gates()});
  assert.equal(fake.status,"blocked");
  assert.equal(fake.verified,0);
  const stale=await inspectDevos2ReleaseReadiness({projectRoot,stagingSha,
-   provider,gates:gates().map(x=>({...x,stagingSha:"b".repeat(40)})),
-   backup:backup()});
+   provider,gates:gates().map(x=>({...x,stagingSha:"b".repeat(40)}))});
  assert.equal(stale.status,"blocked");
  assert.ok(stale.blockers.some(x=>x.includes("Unverified/stale")));
  assert.equal(stale.mayMerge,false);
- const invalidBackup=await inspectDevos2ReleaseReadiness({projectRoot,stagingSha,
-   provider,gates:gates(),backup:{...backup(),restoreDryRunVerified:false}});
- assert.equal(invalidBackup.status,"blocked");
- assert.ok(invalidBackup.blockers.some(x=>x.includes("restore proof")));
 });
 
-test("all provider-attested stage proofs yield owner decision required, never automatic merge",async()=>{
+test("all provider-attested pre-release proof yields human release decision, no backup required",async()=>{
  const ready=await inspectDevos2ReleaseReadiness({projectRoot,stagingSha,
-   provider,gates:gates(),backup:backup()});
+   provider,gates:gates()});
  assert.equal(ready.status,"ready_for_owner_release_decision");
  assert.equal(ready.verified,ready.tracked);
- assert.equal(ready.backupVerified,true);
+ assert.deepEqual(ready.blockers,[]);
  assert.equal(ready.manualReleaseDecisionRequired,true);
  assert.equal(ready.mayMerge,false);
  assert.equal(ready.mayTouchProduction,false);
  assert.equal(ready.mayCloseEpic,false);
 });
 
-test("missing mobile result, fabricated ID, duplicate evidence and unsafe release labels fail closed",async()=>{
+test("GitHub rollback and reauthorization acceptance never bypass missing Web/iOS live proof",async()=>{
  const incomplete=await inspectDevos2ReleaseReadiness({projectRoot,stagingSha,
-   provider,gates:gates().filter(x=>x.id!=="LIVE-WEB-IOS"),backup:backup()});
+   provider,gates:gates().filter(x=>x.id!=="LIVE-WEB-IOS")});
  assert.equal(incomplete.status,"blocked");
  assert.match(incomplete.blockers.join(" "),/LIVE-WEB-IOS/);
+ assert.equal(incomplete.mayTouchProduction,false);
+});
+
+test("fabricated ID, duplicate evidence and unsafe release labels fail closed",async()=>{
  await assert.rejects(inspectDevos2ReleaseReadiness({projectRoot,stagingSha,
-   provider,gates:[...gates(),gates()[0]!],backup:backup()}),/Invalid independent live release evidence count|duplicate/);
+   provider,gates:[...gates(),gates()[0]!]}),/Invalid independent live release evidence count|duplicate/);
  const corrupted=gates();
  corrupted[0]={...corrupted[0]!,issue:999};
  await assert.rejects(inspectDevos2ReleaseReadiness({projectRoot,stagingSha,
-   provider,gates:corrupted,backup:backup()}),/Invalid or duplicate live release evidence/);
+   provider,gates:corrupted}),/Invalid or duplicate live release evidence/);
  const labels=gates();
  labels[0]={...labels[0]!,testRun:"secret\ntoken="};
  await assert.rejects(inspectDevos2ReleaseReadiness({projectRoot,stagingSha,
-   provider,gates:labels,backup:backup()}),/Invalid or duplicate/);
+   provider,gates:labels}),/Invalid or duplicate/);
  const unexpected=gates();
  unexpected[0]={...unexpected[0]!,id:"LIVE-FORGED"};
  await assert.rejects(inspectDevos2ReleaseReadiness({projectRoot,stagingSha,
-   provider,gates:unexpected,backup:backup()}),/unexpected live criterion/);
-});
-
-test("release cannot pass without all six private backup components and tested restore",async()=>{
- const missing=await inspectDevos2ReleaseReadiness({projectRoot,stagingSha,
-   provider,gates:gates(),backup:{
-    ...backup(),components:["config","oauth","sessions","state","executable"],
-   }});
- assert.equal(missing.status,"blocked");
- assert.equal(missing.backupVerified,false);
- const wrongKey=await inspectDevos2ReleaseReadiness({projectRoot,stagingSha,
-   provider,gates:gates(),backup:{...backup(),sourceRef:"model-says-backup-good"}});
- assert.equal(wrongKey.status,"blocked");
+   provider,gates:unexpected}),/unexpected live criterion/);
 });
 
 test("release matrix validation still rejects counterfeit automated evidence",async()=>{
@@ -112,7 +93,7 @@ test("release matrix validation still rejects counterfeit automated evidence",as
    matrix:altered}),/Evidence test is absent/);
 });
 
-test("actual post-release evidence is independent and never authorizes automatic Epic closure",async()=>{
+test("actual post-release evidence stays independent and never auto-closes Epic",async()=>{
  const post=matrix.entries.filter((x:{liveIssue?:number})=>x.liveIssue===154);
  const proofs:VerifiedLiveGate[]=post.map((x:{id:string})=>({
   id:x.id,issue:154,stagingSha,status:"passed",testRun:"production-host-smoke-123",
