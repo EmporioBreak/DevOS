@@ -23,7 +23,7 @@ FR-02 — Durable delivery: persisted command prepared → uniquely claimed befo
 
 FR-03 — Browser lifecycle: one shared persistent Camoufox profile/OS browser root **per project**, one top-level window per eligible Issue, and worker tabs scoped to the correct Issue window. Only task A final approval closes A; B stays intact. Profile ownership and possible old Node process relaunch are checked before any browser launch. Preserve and safely adopt existing trusted legacy sessions without kill/reset/copied profile.
 
-FR-04 — Conversation continuity: existing Issue+worker → same saved Project conversation; new Issue+worker → fresh Project conversation; user-created private chats cannot be inferred through sidebar traversal. Browser user auth and MCP grant remain distinct. Revoked grant can never be inherited by a new chat.
+FR-04 — Issue-scoped conversation continuity: while one Issue is active, its exact worker ID resumes the same saved Project conversation (including review corrections, runtime restart, and read-only recovery). A new Issue ALWAYS receives a fresh worker identity, fresh Project conversation, fresh signed grant and zero inherited worker chat context, even if the worker has the same role/name. User-created private chats cannot be inferred through sidebar traversal. Browser user auth and MCP grant remain distinct. Revoked grant can never be inherited by a new chat.
 
 FR-05 — Browser evidence: one bounded provider DOM adapter owns selectors and structured observations; document id + navigation epoch + exact conversation must match before any mutation. On A→B→A navigation, stale A callbacks cannot send. A tab listing error is unknown, not zero tabs. Human/active draft/safety/restriction/verification screens stop automation.
 
@@ -35,6 +35,8 @@ FR-08 — Observability/recovery: structured bounded, redacted events for owners
 
 FR-09 — Backward-compatible security: no second connector or browser profile, no credentials copied or extracted from browser, no provider protection bypass, no hidden account switch, and no automatic coercion of unknown provider API. New adapter is opt-in and must not change outstanding #214/#224/#226/#232 signed turns during rollout.
 
+FR-10 — Worker context lifetime equals the GitHub Issue lifetime, **not** the CoS reusable-agent lifetime. Main Agent alone maintains the durable cross-Issue project context. While Issue is active/running/final_review_required/changes_requested, predeclared worker chats, task-scoped MCP grants and history remain available ONLY for rework on that same Issue. When Main Agent approves and Issue genuinely reaches completed, revoke task-scoped worker grants, stop accepting any worker sends/revival on its old task leases, close only that Issue's browser window/tabs after confirmed teardown, and retire worker conversation bindings from executable routing. Preserve necessary GitHub diff, reports, decision history and audit evidence, but never reactivate or seed a new Issue from prior worker chat history. A newly opened Issue starts with new worker conversations and explicitly scoped Main Agent-provided context; never silently copy prior worker memory.
+
 ## Acceptance examples
 
 A. Two independently signed Issues have distinct window leases, worker tabs, conversations and MCP grants within one Camoufox profile/process; cleanup A cannot remove B.
@@ -44,6 +46,7 @@ D. Multiple changed browser tabs, including A→B→A, stale callbacks, same wor
 E. Saved ambiguous turn 6 of #226 is preserved; new logic cannot replay it or launch a second profile. Verified read-only recovery or explicit irrecoverable blocker is visible.
 F. Main Agent busy → notification stays pending; original private writable chat verified → one message; after ambiguity → no duplicate; changes_requested makes a new review round, not a new worker chat.
 G. Real headed Production ChatGPT E2E, independent security review, full build/tests; a mocked Playwright case does not substitute.
+H. On changes_requested for Issue A, same declared worker resumes the same A chat; after A is genuinely completed, its grants and execution routes are retired, only A's window is closed, Issue B's browser context remains intact, and Issue C (even with the same role names) starts with entirely fresh worker conversations, grants and input context. Old A audit artifacts remain readable but never grant a new turn.
 
 ## Explicit non-goals
 
