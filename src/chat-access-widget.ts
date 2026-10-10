@@ -25,7 +25,7 @@ const MAX_TICKETS = 128;
 const TICKET_TTL_MS = 5 * 60_000;
 const MAX_ATTEMPTS = 3;
 
-function ownerPassword(root: string, override?: string): string | undefined {
+export function ownerPassword(root: string, override?: string): string | undefined {
   let value = override || process.env.DEVOS_CHAT_ACCESS_PASSWORD?.trim();
   if (!value) {
     try {
