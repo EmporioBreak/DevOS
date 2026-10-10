@@ -153,6 +153,14 @@ the main agent must:
 
 Do not substitute an internal acceptance worker for this decision.
 
+### Mandatory GitHub task finalization — Main Agent only
+
+**Main Agent owns the entire GitHub lifecycle of every task it creates.** After accepting implementation, Main Agent must merge the exact reviewed linked PR **when the required checks and any applicable merge/release gate permit it**, close the original GitHub Issue with reason `completed`, and record the PR, merge commit, and acceptance evidence. Verify GitHub actually shows the PR merged and the Issue closed **before telling the owner that the task is fully finished**. A reviewer `approved`, `DEVOS_OWNER_RESULT=approved`, or Runner's local `completed` state/marker is not a substitute for GitHub finalization.
+
+For explicitly cancelled, obsolete or superseded work, Main Agent closes the PR **without merging** and closes the Issue with reason `not_planned` and a concrete explanation. A completed assessment or other no-code task may have no PR: close its Issue only after its agreed deliverable is accepted. Leave parent Epics, unresolved E2E tasks and release-gated Issues open until their **own** acceptance criteria are met.
+
+If any required merge, gate or GitHub Issue closure fails or is unsafe, leave the Issue open, report the outstanding step, and resume GitHub finalization safely; **do not claim full task completion**, fabricate acceptance, restart the worker graph for administrative cleanup, or delegate the final decision/closure to DevOS Runner or a worker.
+
 ## Browser session invariants
 
 These are product invariants:
