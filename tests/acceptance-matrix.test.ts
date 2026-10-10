@@ -17,11 +17,13 @@ test("Epic 121 acceptance matrix maps every automated item to a real enabled reg
   assert.ok(report.matrix.entries.some(x=>x.id==="SKILLS-CODEX"));
 });
 
-test("live Web/iPhone, staging and production release cannot be marked PASS by simulated tests",async()=>{
+test("live Web/iPhone and Production isolation cannot be marked PASS by simulated tests",async()=>{
   const checked=await verifyAcceptanceMatrix(root,source);
   const pending=checked.matrix.entries.filter(x=>x.status==="live_pending");
   assert.ok(pending.every(x=>!!x.check&&!!x.liveIssue));
   assert.ok(pending.some(x=>x.liveIssue===151&&x.id==="LIVE-WEB-IOS"));
+  assert.ok(pending.some(x=>x.liveIssue===151&&x.id==="LIVE-PRODUCTION-ISOLATION"));
+  assert.ok(!pending.some(x=>x.id==="LIVE-STAGING-ISOLATION"));
   assert.ok(pending.some(x=>x.liveIssue===154&&x.id==="LIVE-PRODUCTION-GATE"));
   const fabricated=structuredClone(source);
   const i=fabricated.entries.findIndex((x:{id:string})=>x.id==="LIVE-WEB-IOS");
@@ -53,4 +55,28 @@ test("cross-component coverage contains all necessary original pathways and rele
     assert.ok(ids.some(id=>id.startsWith(category+"-")),category);
   const followups=new Set(report.matrix.entries.filter(x=>x.status==="live_pending").map(x=>x.liveIssue));
   assert.deepEqual([...followups].sort(),[150,151,152,153,154]);
+});
+
+
+test("live matrix must not require retired Staging MCP, Cloudflare or copied OAuth",async()=>{
+ const verified=await verifyAcceptanceMatrix(root,source);
+ const web=verified.matrix.entries.find(x=>x.id==="LIVE-WEB-IOS")!;
+ const isolation=verified.matrix.entries.find(x=>x.id==="LIVE-PRODUCTION-ISOLATION")!;
+ assert.equal(web.status,"live_pending");
+ assert.equal(isolation.status,"live_pending");
+ assert.match(web.criterion,/Production DevOS MCP/);
+ assert.match(isolation.check!,/distinct real host sessions/);
+ assert.match(isolation.check!,/Staging MCP off/);
+ assert.match(isolation.check!,/shared Camoufox identity/);
+ for(const entry of [web,isolation]){
+   assert.doesNotMatch(entry.criterion,/Staging plugin|Cloudflare resource|copied authentication/i);
+   assert.equal(entry.liveIssue,151);
+ }
+ const obsolete=structuredClone(source);
+ const bad=obsolete.entries.find((x:{id:string})=>x.id==="LIVE-PRODUCTION-ISOLATION");
+ bad.criterion="Proof of distinct remote MCP/Cloudflare resource and copied authentication";
+ await assert.rejects(verifyAcceptanceMatrix(root,obsolete),/Production-only MCP contract/);
+ const fake=structuredClone(source);
+ fake.entries.find((x:{id:string})=>x.id==="LIVE-WEB-IOS").status="automated";
+ await assert.rejects(verifyAcceptanceMatrix(root,fake),/Automated acceptance cannot claim live result/);
 });

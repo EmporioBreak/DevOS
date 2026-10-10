@@ -135,3 +135,28 @@ Staging MCP, не возвращает приватный Project/chat URL, cook
 входе доказывает только Web Project + наличие composer, **не** browser-worker
 signed report и не iPhone. Отдельный Web/iPhone live gate остаётся
 `live_pending` до независимой приёмки **обоих** клиентов.
+
+
+## Актуальный live contract вместо отключённого Staging (#151)
+
+Владелец окончательно отказался от второго Staging MCP/Cloudflare и
+копирования OAuth или профиля (2026-10-10). Исправлен live acceptance manifest:
+
+- `LIVE-WEB-IOS` — реальные Web + native iPhone через **оригинальный
+  Production DevOS MCP**, on-demand owner approval, отсутствие повторных
+  форм, Safari fallback, без нарушения общего Camoufox profile;
+- `LIVE-PRODUCTION-ISOLATION` — **реально другой** неавторизованный ChatGPT
+  разговор получает отказ, подтверждённый owner-чат работает и настоящий
+  DevOS-created worker получает доступ **только** по доказанному подписанному
+  grant; второй gateway выключен, OAuth и Camoufox не копируются;
+- `LIVE-CHAOS` — только Production-owned сценарии реального разрыва,
+  восстановления и отсутствия replay; старый staging-only stress не считать
+  успешным живым доказательством;
+- `LIVE-PRODUCTION-GATE` — факт разрешённого релиза на Git SHA, целостность
+  локального OAuth/Camoufox и кодовый rollback, без обязательного backup.
+
+Старый машинный идентификатор `LIVE-STAGING-ISOLATION` заменён на
+`LIVE-PRODUCTION-ISOLATION` **до появления любых подтверждённых E2E записей**.
+Это не автоматическое выполнение gate: всё девять prerelease live-критериев
+остаются pending. Исторические доказательства Staging не переносить в новые
+Production-only acceptance claims.

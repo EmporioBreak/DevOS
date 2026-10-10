@@ -28,6 +28,8 @@ test("DevOS 2 current live release gate remains BLOCKED without independently ve
  assert.equal(report.tracked,9);
  assert.deepEqual(report.postReleasePending,["LIVE-PRODUCTION-GATE","LIVE-OWNER-REPORT"]);
  assert.equal(report.blockers.length,report.tracked);
+ assert.ok(report.blockers.some(x=>x.includes("LIVE-PRODUCTION-ISOLATION")));
+ assert.ok(!report.blockers.some(x=>x.includes("LIVE-STAGING-ISOLATION")));
  assert.ok(report.blockers.every(x=>x.includes("live gate")));
  assert.equal(report.manualReleaseDecisionRequired,true);
  assert.equal(report.mayMerge,false);
