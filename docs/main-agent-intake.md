@@ -57,6 +57,12 @@ A verified assessment returns `assessment_only`, not
 `approved_for_issue` to **Main Agent**, not a permit for Runner
 to create its own agents or decide which GitHub Issue comes next.
 
+## Task-specific worker team and acceptance coverage
+
+Before signing the exact Issue graph, Main Agent must map **each applicable production-readiness acceptance check** to its scenario, required tools/environment, independent evidence, named predeclared worker, and failure/rework route. Select roles based on the concrete task's risk (for example, a real UI journey, auth/isolation, concurrency/recovery or deploy/rollback), **not** a fixed roster or an automatic developer+reviewer-only template. Record a task-specific reason when a check is not applicable. A small low-risk change may need just a developer and an independent reviewer, while a complex feature may justify distinct specialist verification.
+
+Design the graph only after assigning this evidence coverage. Each chosen executor must actually support the intended action: headless/browser scripts do not prove a requested human-style visual GUI interaction. An independent reviewer remains mandatory for implementation, but its generic approval cannot replace missing specialized E2E/security/reliability evidence. Rework routes must return to declared existing workers on the same Issue/PR and re-verify impacted checks. Pin the complete coverage and graph in the owner-approved Issue before Runner starts. If any required check has no capable executor, block or revise the plan through fresh trusted owner consent; Runner must not invent another role.
+
 ## Current integration limit
 
 This PR supplies deterministic routing, a strict contract and a
