@@ -21,6 +21,8 @@ This repository is operated through DevOS. New local Codex sessions should treat
 
 DevOS saves exact conversation URLs for browser-worker conversations it creates and resumes them through task-scoped session state. It does not attempt to identify or recover the URL of an arbitrary user-created ChatGPT conversation through MCP requests, markers, or ChatGPT UI traversal.
 
+**Parallel Issue architecture (new #239 scope; not yet deployed):** Main Agent may supervise multiple independently owner-approved GitHub Issues at once, each with its own one-Issue Runner graph, worker chats/grants, window, outbox namespace, and separate final-review/cleanup state. Parallel tasks MUST NOT be merged into one graph, granted automatically or served by a sleeping worker from another Issue. Their browser operations share ONE authorized project Camoufox/profile and broker; one failed/busy Issue does not stop others. A single Main Agent conversation receives serialized, deduplicated final-review notifications for every ready Issue and decides each independently. **The single writable Production checkout/no worktrees remains exclusive:** code edits, Git branch switches and commits from different Issues must be serialized by a verified task-scoped write lease; merely having parallel browser workers does not authorize concurrent conflicting repository writes. Actual multi-Issue Production sends require owner-signed exact plans, regression and live E2E; #232 remains on hold. After genuine completed, delete only that Issue's worker chats as already required.
+
 ## MCP chat authorization: on demand, with worker isolation
 
 **Never request authorization just because a new ChatGPT conversation starts.**
