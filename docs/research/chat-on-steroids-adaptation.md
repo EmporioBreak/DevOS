@@ -36,14 +36,14 @@ The highest-value shift is from **worker executor owns a page and submits a prom
 
 ### Deliberate DevOS worker-lifetime difference
 
-CoS deliberately retains sleeping workers for future unrelated assignments. DevOS **does not**: the Main Agent holds the durable project history, while each worker and its ChatGPT conversation exist only for one GitHub Issue. Within an unfinished Issue, developer/reviewer can resume their **same** exact conversations on `changes_requested`. Once Main Agent has actually accepted and the Issue is `completed`, the worker's task-bound grant, browser-tab ownership and executable conversation routing are retired; no future Issue can reuse or inherit that worker's conversation/context. Historical signed reports, PR comments and code remain auditable and may be selectively summarized by Main Agent for a fresh worker; this is not worker-to-worker memory transfer. CoS's **durable outbox/tab-command protocol** is the inspiration; its **cross-task reusable sleeping-agent model is explicitly rejected**. The shared browser process/profile is a separate resource and may survive completed Issue A while Issue B continues.
+CoS deliberately retains sleeping workers for future unrelated assignments. DevOS **does not**: the Main Agent holds the durable project history, while each worker and its ChatGPT conversation exist only for one GitHub Issue. Within an unfinished Issue, developer/reviewer can resume their **same** exact conversations on `changes_requested`. Once Main Agent has actually accepted and the Issue is verified closed as `completed`, the worker's task-bound grant and browser-tab ownership are retired, and the broker must **delete the actual owned worker conversations from ChatGPT account history** with exact account-level confirmation and idempotent durable cleanup; no future Issue can reuse or inherit their context. Historical signed reports, PR comments and code remain auditable and may be selectively summarized by Main Agent for a fresh worker; this is not worker-to-worker memory transfer. CoS's **durable outbox/tab-command protocol** is the inspiration; its **cross-task reusable sleeping-agent model is explicitly rejected**. The shared browser process/profile is a separate resource and may survive completed Issue A while Issue B continues.
 
 ### Four identities that must not collapse
 
 ```
 DevOS signed task / approved graph
     └─ worker (stable: repo + Issue + worker ID)
-       ├─ ChatGPT conversation (durable, may persist after window closes)
+       ├─ ChatGPT worker conversation (durable only within active Issue; delete from account after verified completion)
        ├─ browser command (unique command ID + exact worker turn)
        │   └─ claim (runtime incarnation + task window/tab + document/nav epoch)
        │      └─ provider user-message receipt (exact conversation + user ID)
@@ -79,6 +79,12 @@ type CommandPhase =
 ```
 
 No one can call `claim` twice; after one successful claim, non-confirmed actions never automatically return to `prepared`. A known true pre-submit failure is a separate cryptographically/host-evidenced cancellation, never derived from the absence of a POST observer. A call can query its prior receipt by command ID; it cannot generate another submission. Late results must carry their original claim, not the tab's current URL/title. An A→B→A navigation with same URL is a different document/epoch.
+
+### Owner-selected deletion of worker chats (not CoS sleeping workers)
+
+The owner requires **actual removal of each completed Issue's DevOS-created worker conversation from ChatGPT account history**, rather than leaving it in the account for potential future reuse. This happens only after final Main Agent product approval and verified GitHub Issue closure as `completed` (and merge when applicable), after signed reports and required task audit evidence are secured. Broker—not the worker itself—first revokes all task-specific grants and active sends and then deletes only the exact locally owned provider conversation IDs using an authorized per-chat UI operation with its own durable claim, provider-level confirmation, and crash/ACK-loss reconciliation. Do not replace Delete with Archive, remove an entire Project, delete user/Main Agent conversations, or delete another Issue's chat. If deletion is unverified, report cleanup pending and preserve minimum protected receipt metadata without keeping entire transcripts. During changes_requested/rework, retain the original chats intact. An unresolved send must not be obliterated by cleanup. ChatGPT removal from the account is immediate on successful provider deletion, while OpenAI backend retention and 30-day scheduled deletion remain under provider policy, not within DevOS control.
+
+This explicitly **replaces** the earlier research assumption “historical worker chat remains on account after Issue completion.” The authoritative long-term record is Main Agent + GitHub artifacts, not worker chat history.
 
 ### Migration order
 
