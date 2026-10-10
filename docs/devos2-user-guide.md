@@ -1,6 +1,6 @@
 # DevOS 2 — руководство по разработке и эксплуатации
 
-Это **Staging-руководство к Epic #121**, а не заявление о состоявшемся выпуске. Новая архитектура пока собрана в цепочке изолированных draft PR. Автоматические проверки прошли, однако реальные ChatGPT Web/iPhone E2E, исходные оригинальные worker skill calls и перенос в Production ещё не приняты.
+Это руководство по **уже развёрнутой в Production DevOS 2** в рамках Epic #121. Рабочая установка обновлена владельцем 2026-10-10; актуальный Production Git SHA сверяйте с `git rev-parse HEAD`, а не с историческим коммитом первого развёртывания. **Полная E2E-приёмка всё ещё открыта:** реальные ChatGPT Web/iPhone, неавторизованный чужой чат и полный browser-worker feature/bugfix/assess не подтверждены. Наличие собранного кода и положительный transport-smoke не означает принятую функциональность.
 
 ## 1. Принцип и состав системы
 
@@ -54,17 +54,17 @@
 
 Приоритет: **task → role → project → global**. Изменение во время активной Issue не меняет уже подписанный manifest. Смена версии требует обновления pinned источника, проверки всех assets и отдельного reviewed update, а не замены файла `SKILL.md` под тем же version.
 
-Примеры действующих CLI интерфейсов **для чтения** (из корня локального staging checkout):
+Примеры настоящих **read-only CLI** на установленном Production (из корня рабочего DevOS checkout; команды проверены на действующем `main` 2026-10-10):
 
 ```sh
-./devos-staging skills status
-./devos-staging skills issue EmporioBreak/DevOS 144 developer developer execution implement superpowers-test-driven-development
+./devos skills status
+./devos skills issue EmporioBreak/DevOS 153 developer developer execution implement superpowers-test-driven-development
 ```
 
-Первый показывает registry и SHA, второй — диагностический effective/frozen profile конкретной Issue. Для предварительного сравнения зарегистрированного навыка с локальным candidate JSON:
+Первый на реальном Production вернул 17 установленных навыков, 0 недоступных, 0 ошибок целостности и две pinned upstream базы. Второй **выполнен** для Issue #153 в read-only режиме: вернул `currentIssue` и verified effective profile с одним выбранным навыком, не запускал Runner или browser worker. Это диагностика, не разрешение исполнять произвольную задачу и не настоящая проверка browser E2E. Для предварительного сравнения зарегистрированного навыка с локальным candidate JSON:
 
 ```sh
-./devos-staging skills preview superpowers-test-driven-development path/to/candidate.json
+./devos skills preview superpowers-test-driven-development path/to/candidate.json
 ```
 
 Последняя команда — **preview, не изменение/установка**. Идея обновления затем идёт в reviewed Git commit/PR. Писать в `config` напрямую без expected fingerprint опасно.
@@ -80,7 +80,7 @@ devos_pipeline_status({repo, issue})
 
 `devos_skill_policy_get/set` требуют авторизацию **конкретного чата** (а не просто OAuth клиента). `devos_pipeline_status` показывает owner-only sanitized timeline, signed skills, stage и причины отсутствующих optional; ни токены, ни saved ChatGPT URL не публикуются. Browser workers получают лишь свои исходные навыки через `devos_skill_manifest/search/read` при **server-verified grant**. Никакое утверждение модели «я reviewer» не даёт права доступа.
 
-## 6. Runner, Staging, повторы и диагностика
+## 6. Runner, Production, повторы и диагностика
 
 Только когда Main Agent уже зафиксировал полный graph и получил настоящие approvals, existing Runner можно вызывать из project-local checkout:
 
@@ -92,20 +92,26 @@ devos_pipeline_status({repo, issue})
 
 Имена машинных статусов worker: `done`, `approved`, `changes_requested`, `needs_local_worker`, `failed`. Финальная задача возвращает `final_review_required`; это ещё не `completed`. Browser may-have-submitted **никогда** не отправляется повторно лишь потому, что SSE или MCP отчёт оборвались. Точный URL ранее созданного Project-чата сохраняется, нельзя заменять его новым разговором «на глазок».
 
-**Staging и Production различаются**: независимый Staging checkout, Mac MCP/Cloudflare на :8788 и copied Camoufox profile; рабочий Production ngrok/MCP на :8787. Нет права сбрасывать production OAuth или restart в рамках QA. Cloudflare Quick Tunnel имеет временный hostname и JSON-only MCP response, поэтому его доступность не доказывает работающий ChatGPT Web/iPhone plugin.
+**Рабочий режим с 2026-10-10 — только Production MCP:** ngrok и MCP на локальном порту :8787. Отдельный Staging MCP/Cloudflare :8788 **отключён по решению владельца**, не запускать его ради тестов. Существующий Camoufox профиль общий; не разделять, не заменять, не очищать cookies/OAuth. Успех HTTP 200/401 или обычного Mac tool в текущем чате не доказывает работу другого ChatGPT-чата или iPhone. Старые Staging-документы оставлены как история, а не инструкция по запуску.
 
-Проверенные read-only/локальные команды без отправки ChatGPT turn:
+**Production-only проверка на работающем Mac**, без отправки ChatGPT turn и без изменений OAuth/браузера:
 
 ```sh
-npm run build
-npx tsx --test tests/acceptance-matrix.test.ts
-npm test
-node scripts/staging-isolation-smoke.mjs
-npx tsx scripts/staging-public-mcp.smoke.ts
-npx tsx scripts/staging-safe-chaos.smoke.ts
+# Выполнять из чистого Production checkout; только чтение/HTTP отрицательные запросы
+node scripts/devos2-production-postrelease.smoke.mjs
+
+# Проверки исходников и безопасный synthetic stress — из отдельной worktree
+# c установленными node_modules, НЕ в рабочем checkout
+./node_modules/.bin/tsx --test tests/acceptance-matrix.test.ts
+./node_modules/.bin/tsx scripts/devos2-production-safe-chaos.smoke.ts \
+  /path/to/Production-DevOS /path/to/isolated-DevOS-worktree
 ```
 
-На Staging было **520/520 PASS** в полном автоматическом прогоне (#149) и **73/73 PASS** в отдельном безопасном stress (#152). Настоящий Camoufox открыл ChatGPT Project и показал composer, но первый отправляемый QA-turn #150 завершился по deadline после потенциальной отправки. Локальный one-shot marker запрещает опасный повтор. **Не запускайте тестовый prompt повторно** просто ради зелёного отчёта; точная проверка возможна лишь при доказанной идентичности того же хода. ChatGPT iPhone plugin/authorization App ещё не принят (#151).
+Первый скрипт реально прошёл **13/13** HTTP/auth-negative/checkout/profile-presence критериев. Второй — **73/73** синтетических тестов и временный browser lifecycle smoke; он не открывает реальные чаты и не использует Production профиль. Рабочий MCP остаётся на месте. Не запускать старые `staging-*` скрипты, ожидающие работающий порт 8788.
+
+**Отдельное наблюдение через реальный ChatGPT MCP:** в существующем разрешённом owner-чате выполнены успешные `write_file → read_file → start_process` для случайно названного временного файла, точная строка совпала, файл удалён. После этого `devos_noop` вернул `approved=true` без повторной авторизации, Production `/health` сохранил HTTP 200. Это подтверждает цепочку **текущий ChatGPT-чат → Production MCP → Mac**, но не интерфейс iPhone, не другой чат и не browser-worker grant. На практике проверка должна выполняться с новым одноразовым именем, без паролей и без изменения рабочих файлов.
+
+Исторически на Staging было **520/520 PASS** (#149); после Production deployment прогон регрессий в изолированной worktree — **575/575 PASS**, а Production-only synthetic stress — **73/73 PASS** (#152). Настоящий Camoufox открыл ChatGPT Project и показал composer, но первый отправляемый QA-turn #150 завершился по deadline после потенциальной отправки. Локальный one-shot marker запрещает опасный повтор. **Не запускайте тестовый prompt повторно** просто ради зелёного отчёта; точная проверка возможна лишь при доказанной идентичности того же хода. ChatGPT iPhone plugin/authorization App ещё не принят (#151).
 
 ## 7. FAQ и восстановление
 
@@ -115,7 +121,7 @@ npx tsx scripts/staging-safe-chaos.smoke.ts
 
 **Можно ли взять upstream Superpowers как есть?** Если он требует собственные subagents, Git branching, автоматический merge, rival review orchestration или отдельный план — нет. Сохраняйте immutable upstream и назначайте проверенный `devos-*` вариант с отдельной атрибуцией/commit pin.
 
-**Почему зелёные тесты не означают релиз?** Автоматические fixture callbacks не доказывают настоящую пользовательскую авторизацию, ChatGPT Mobile App или GitHub review. Матрица `config/devos-v2-acceptance-matrix.json` различает автоматическое покрытие и живые обязательства #150–154. Пока последние не закрыты, Staging не продвигается в Production.
+**Почему зелёные тесты не означают полную приёмку?** Автоматические fixture callbacks не доказывают настоящую пользовательскую авторизацию чужого чата, ChatGPT Mobile App или GitHub review. DevOS 2 **уже работает в Production**, однако матрица `config/devos-v2-acceptance-matrix.json` отделяет синтетическое покрытие от обязательных живых проверок #150–154. До их подтверждения Epic #121 не закрывать и не считать продукт полностью принятым.
 
 **Как откатывать?** Зафиксировать проверенный Production Git SHA и его наличие на GitHub; при проблеме вернуть исходный код к нему с сохранением `.env`, `.devos`, OAuth/worker state и фактического Camoufox-профиля. Не переносить Staging secrets, профиль и URL в Production. Владелец допускает повторную штатную авторизацию ChatGPT/MCP (обычно несколько минут), поэтому создание полного приватного backup/restore не является обязательным условием релиза; PR #206 необязателен и исключён из release stack. Git rollback **не** восстанавливает cookie, OAuth или состояние задач, если они были повреждены: предварительно исключить их удаление/перезапись из процедуры. Не применять `reset --hard`/`rm -rf` как шаг по умолчанию и не публиковать секреты. Реальный Web/iOS smoke и проверка авторизации остаются обязательными.
 

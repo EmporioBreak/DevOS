@@ -91,3 +91,20 @@ test("Production-only stress instructions do not silently demand the retired Sta
  assert.match(guide,/independentlyVerifiedE2e/);
  assert.match(guide,/не запускает Staging MCP/);
 });
+
+
+test("actual Production guide offers deployed CLI and smoke, never retired Staging commands",async()=>{
+ const guide=await read("docs/devos2-user-guide.md");
+ assert.match(guide,/уже развёрнутой в Production DevOS 2/);
+ assert.match(guide,/\.\/devos skills status/);
+ assert.match(guide,/\.\/devos skills issue EmporioBreak\/DevOS 153 developer developer execution implement/);
+ assert.match(guide,/scripts\/devos2-production-postrelease\.smoke\.mjs/);
+ assert.match(guide,/scripts\/devos2-production-safe-chaos\.smoke\.ts/);
+ assert.doesNotMatch(guide,/\.\/devos-staging skills/);
+ assert.doesNotMatch(guide,/node scripts\/staging-isolation-smoke/);
+ assert.doesNotMatch(guide,/npx tsx scripts\/staging-safe-chaos\.smoke/);
+ assert.doesNotMatch(guide,/Staging не продвигается в Production/);
+ assert.doesNotMatch(guide,/перенос в Production ещё не приняты/);
+ assert.match(guide,/не запускать его ради тестов/);
+ assert.match(guide,/реальные.*iPhone.*не подтверждены/i);
+});
