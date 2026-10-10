@@ -1,11 +1,78 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createConnection, createServer } from "node:net";
-import { browserRuntimePaths, closeSharedBrowserRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
+import { assertSavedConversationTaskOwner, browserRuntimePaths, browserTaskKey, canonicalConversationIdentity, closeSharedBrowserRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
 import { BrowserPreSubmitFailureError, type ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
+
+test("conversation ownership ignores mutable Project slugs but distinguishes exact saved chats", () => {
+  assert.equal(
+    canonicalConversationIdentity("https://chatgpt.com/g/old-project-slug/c/conv-1"),
+    canonicalConversationIdentity("https://chatgpt.com/g/new-project-slug/c/conv-1"),
+  );
+  assert.notEqual(
+    canonicalConversationIdentity("https://chatgpt.com/g/project/c/conv-1"),
+    canonicalConversationIdentity("https://chatgpt.com/g/project/c/conv-2"),
+  );
+  assert.throws(() => canonicalConversationIdentity("https://chatgpt.com/g/project"), /conversation identity/);
+});
+
+test("saved conversation state from another Issue blocks cross-task reuse", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-conversation-owner-"));
+  const stateDir = join(root, ".devos", "state");
+  const taskA = { repo: "owner/repo", issue: 41 };
+  const taskB = { repo: "owner/repo", issue: 42 };
+  try {
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, "owner%2Frepo-issue-41.json"), JSON.stringify({
+      task: taskA,
+      sessions: { developer: "https://chatgpt.com/g/old-slug/c/shared-conversation" },
+    }));
+    await assert.rejects(
+      assertSavedConversationTaskOwner(root, taskB, "https://chatgpt.com/g/new-slug/c/shared-conversation"),
+      /already recorded for owner\/repo#41/,
+    );
+    await assert.doesNotReject(assertSavedConversationTaskOwner(root, taskA, "https://chatgpt.com/g/new-slug/c/shared-conversation"));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("one project runtime namespaces two Issues and closing one leaves the other live", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-project-"));
+  const taskA = { repo: "owner/repo", issue: 74 };
+  const taskB = { repo: "owner/repo", issue: 75 };
+  const pathsA = browserRuntimePaths(root, taskA.repo, taskA.issue);
+  const pathsB = browserRuntimePaths(root, taskB.repo, taskB.issue);
+  const calls: string[] = [];
+  const closed: string[] = [];
+  const executor = {
+    async run(request: { task?: typeof taskA; browserTurnId?: string }) {
+      calls.push(`${browserTaskKey(request.task!)}:${request.browserTurnId}`);
+      return { text: request.task!.issue.toString() };
+    },
+    async closeTask(task: typeof taskA) { closed.push(browserTaskKey(task)); return task.issue === taskA.issue; },
+    async close() {},
+  } as unknown as ChatGptBrowserExecutor;
+  try {
+    assert.equal(pathsA.socket, pathsB.socket, "Issues in one checkout must use the same runtime socket");
+    assert.notEqual(browserTaskKey(taskA), browserTaskKey(taskB), "task identity remains distinct inside the runtime");
+    await startSharedBrowserServer(pathsA.socket, pathsA.metadata, executor);
+    const clientA = new SharedBrowserExecutor(pathsA.socket, taskA);
+    const clientB = new SharedBrowserExecutor(pathsB.socket, taskB);
+    assert.equal((await clientA.run({ projectRoot: root, prompt: "same", workerId: "developer", browserTurnId: "0:developer" })).text, "74");
+    assert.equal((await clientB.run({ projectRoot: root, prompt: "same", workerId: "developer", browserTurnId: "0:developer" })).text, "75");
+    assert.equal(calls.length, 2, "same worker/turn names in different Issues must never deduplicate");
+    await closeSharedBrowserRuntime(root, taskA);
+    assert.deepEqual(closed, [browserTaskKey(taskA)]);
+    assert.equal((await clientB.run({ projectRoot: root, prompt: "next", workerId: "developer", browserTurnId: "1:developer" })).text, "75");
+  } finally {
+    await closeSharedBrowserRuntime(root, taskB).catch(() => undefined);
+    await rm(pathsA.socket, { force: true });
+    await rm(pathsA.metadata, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("shared runtime carries session updates and keeps its executor across client disconnects", async () => {
   const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-"));
