@@ -74,6 +74,35 @@ test("one project runtime namespaces two Issues and closing one leaves the other
   }
 });
 
+test("failed task-local close never terminates another retained Issue runtime", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-close-isolation-"));
+  const taskA = { repo: "owner/repo", issue: 74 };
+  const taskB = { repo: "owner/repo", issue: 75 };
+  const paths = browserRuntimePaths(root, taskA.repo, taskA.issue);
+  let alive = true;
+  const executor = {
+    async run(request: { task: typeof taskA }) { return { text: String(request.task.issue) }; },
+    async closeTask(task: typeof taskA) {
+      if (task.issue === taskA.issue) throw new Error("simulated task window close failure");
+      return false;
+    },
+    async close() { alive = false; },
+  } as unknown as ChatGptBrowserExecutor;
+  try {
+    await startSharedBrowserServer(paths.socket, paths.metadata, executor);
+    await assert.rejects(closeSharedBrowserRuntime(root, taskA), /simulated task window close failure|cleanup unconfirmed/);
+    assert.equal(alive, true, "failed scoped close must not close shared browser");
+    const other = new SharedBrowserExecutor(paths.socket, taskB);
+    assert.equal((await other.run({ projectRoot: root, prompt: "retained", workerId: "developer" })).text, "75");
+    assert.match(await readFile(paths.metadata, "utf8"), /"pid"/);
+  } finally {
+    await closeSharedBrowserRuntime(root, taskB).catch(() => undefined);
+    await rm(paths.socket, { force: true });
+    await rm(paths.metadata, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("shared runtime carries session updates and keeps its executor across client disconnects", async () => {
   const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-"));
   const task = { repo: "owner/repo", issue: 74 };

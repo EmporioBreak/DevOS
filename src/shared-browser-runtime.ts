@@ -185,21 +185,11 @@ export async function closeSharedBrowserRuntime(root: string, task: { repo: stri
   }
 
   if (!graceful) {
-    const existing = owner ?? await readMetadata(paths.metadata);
-    if (existing) {
-      await signalOwnedRuntime(existing.pid, existing.identity);
-      try {
-        const socket = await connect(paths.socket, 250);
-        socket.destroy();
-        throw new Error("Shared browser cleanup unconfirmed: runtime socket still accepts connections");
-      } catch (error) {
-        if (error instanceof Error && error.message.includes("cleanup unconfirmed")) throw error;
-      }
-    } else if (connected) {
-      throw gracefulError instanceof Error
-        ? gracefulError
-        : new Error("Shared browser cleanup unconfirmed: connected runtime has no valid ownership metadata");
-    }
+    // An ambiguous task-local close must never kill the shared process: other
+    // Issues may still own windows, sessions and in-flight turns within it.
+    throw gracefulError instanceof Error
+      ? gracefulError
+      : new Error("Shared browser task cleanup unconfirmed: other task leases may exist");
   }
   // Check the *process*, not merely the IPC socket. The detached browser
   // runtime may retain an event loop with zero visible tabs.
