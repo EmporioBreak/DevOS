@@ -22,6 +22,12 @@
 - [ ] T013 Independent code/security/provider terms review; Main Agent final judgment, change requests same PR/Issue, no premature merge or Issue closure.
 - [ ] T014 Document migration/rollback procedures, avoid legacy orphans and preserve CoS MIT attribution for any substantial port.
 
+## Explicit Issue-scoped worker lifecycle (owner decision)
+
+- [ ] T018 TDD: same Issue / same predeclared worker returns to same saved Project conversation after `changes_requested` and safe restart; a new Issue, including one reusing the same worker role/name, MUST get a new conversation, clean prompt context and separately signed grant.
+- [ ] T019 TDD: only genuinely approved `completed` retires that Issue's grants, worker executable session mappings, tabs and window; no completed worker from A can receive a new turn in B; B's window/profile/MCP grants continue unharmed. Late worker reports, stale document epochs and ambiguous active sends cannot regain execution authority or be silently deleted.
+- [ ] T020 Verify no CoS-style sleeping agent pool/reassignment, persistent cross-Issue worker memory, or auto-import of previous worker chats. Main Agent retains long-term project understanding; GitHub records remain as audit and task-handoff artifacts.
+
 ## Parallel work safety
 - #232 explicitly must not be touched.
 - #224/#226/#228 existing PR and exact chat/session states stay unchanged until separately reconciled; this Issue is not a back door for replay of #226 turn 6.
