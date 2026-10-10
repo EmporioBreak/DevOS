@@ -108,3 +108,20 @@ test("actual Production guide offers deployed CLI and smoke, never retired Stagi
  assert.match(guide,/не запускать его ради тестов/);
  assert.match(guide,/реальные.*iPhone.*не подтверждены/i);
 });
+
+
+test("Production read-only Web login blocker is documented without claiming iPhone acceptance",async()=>{
+ const [guide,gate,script]=await Promise.all([
+  read("docs/devos2-user-guide.md"),read("docs/devos2-release-gate.md"),
+  read("scripts/devos2-production-web-readonly.smoke.ts")]);
+ for(const doc of [guide,gate]){
+  assert.match(doc,/devos2-production-web-readonly\.smoke\.ts/);
+  assert.match(doc,/iPhone/);
+  assert.match(doc,/Camoufox/);
+ }
+ assert.match(gate,/blocked_login_required/);
+ assert.match(gate,/loginRedirect=true/);
+ assert.match(script,/profile_in_use_refusing_concurrent_launch/);
+ assert.match(script,/chatMessageSent:false/);
+ assert.match(script,/independentlyVerifiedE2e/);
+});

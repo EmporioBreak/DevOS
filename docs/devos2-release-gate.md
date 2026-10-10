@@ -101,3 +101,37 @@ health, Git HEAD и чистота checkout, отсутствие Staging listen
 PASS. Код работающего Production не изменён; никаких реальных worker turns
 или iPhone проверок не было. Поэтому V04 принимает только
 `pass_non_destructive_only`, а 9 live gates остаются pending.
+
+
+## Реальная проверка входа ChatGPT Web в Production Camoufox — 2026-10-10
+
+В отличие от HTTP health и синтетических тестов, выполнена **одна** настоящая
+навигация браузера Camoufox с уже существующим Production-профилем и его
+сохранённым fingerprint. Она **не** создавала новый browser worker,
+не посылала сообщение, не вводила логины и не обращалась к MCP.
+
+Результат: ChatGPT HTTPS ответил `200`, но перенаправил на страницу **входа**,
+вместо настроенного DevOS Project; `projectScope=false`,
+`loginRedirect=true`, `editorVisible=false`. Это **`blocked_login_required`**,
+а не успешный Web/E2E, и ничего не говорит о нативном ChatGPT iPhone.
+После выхода browser fingerprint sidecar hash не изменился, процессы браузера
+закрылись (0 оставшихся). Браузерное хранилище может обновляться при обычном
+запуске persistent context; не заявлять его побайтовую неизменность.
+
+После **штатного интерактивного входа владельца в этот же Camoufox-профиль**,
+а не через пароль в чат или инструмент MCP, можно вручную запустить
+**одну новую read-only проверку** без повтора уже отправленных worker turns:
+
+```sh
+# Из корня чистого Production checkout, только при отсутствии действующего
+# Camoufox процесса в этом же профиле; никаких сообщений не отправлять
+./node_modules/.bin/tsx scripts/devos2-production-web-readonly.smoke.ts
+```
+
+Скрипт **откажется** работать при конкурирующем Camoufox, отсутствующей
+закреплённой identity или незаданном Project, не создаёт дополнительный
+Staging MCP, не возвращает приватный Project/chat URL, cookies, сообщения,
+пароли, fingerprint или URL авторизации. `web_navigation_pass` при новом
+входе доказывает только Web Project + наличие composer, **не** browser-worker
+signed report и не iPhone. Отдельный Web/iPhone live gate остаётся
+`live_pending` до независимой приёмки **обоих** клиентов.

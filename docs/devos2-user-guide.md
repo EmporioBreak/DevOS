@@ -128,3 +128,16 @@ node scripts/devos2-production-postrelease.smoke.mjs
 Дальнейшие технические контракты: [Runner и Skills](runner-skill-integration.md), [политика выбора](skill-policy.md), [оригинальный Spec Kit](spec-kit-predevelopment.md), [Bugfix](spec-kit-bugfix.md), [Assess](spec-kit-assessment.md), [матрица приёмки](devos-v2-verification-matrix.md), [реальный Staging blocker](live-staging-e2e-readiness.md), [безопасная диагностика browser-worker grant](worker-authorization-live-runbook.md), [MCP Web/iOS ограничения](staging-plugin-transport-readiness.md).
 
 Реальные read-only проверки установленного Production см. в [release gate](devos2-release-gate.md) и `scripts/devos2-production-postrelease.smoke.mjs`.
+
+
+**Диагностика входа через Camoufox (2026-10-10):** штатная read-only
+навигация по настроенному DevOS Project из общего Production профиля
+получила ChatGPT HTTP 200, но редирект на **login** вместо проекта.
+Безопасное наблюдение записано в [release gate](devos2-release-gate.md);
+исходная Web-сессия требует повторного штатного входа владельца **в тот же
+профиль**. После этого допускается однократная проверка
+`./node_modules/.bin/tsx scripts/devos2-production-web-readonly.smoke.ts`
+без worker сообщений. Не пытаться получать, переносить или вводить пароли,
+refresh cookies и подтверждения через текст чата; не копировать профиль.
+Даже если Web открывается, iPhone и подписанный browser-worker turn необходимо
+подтверждать отдельно.
