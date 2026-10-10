@@ -7,7 +7,7 @@
   "workers": [
     {
       "id": "cos_broker_developer_local", "executor": "codex",
-      "prompt": "Implement the exact approved #239 original Spec Kit on the sole Production checkout. Start with TDD RED for durable command claims/receipt, document epochs and two-Issue ownership. Reuse source patterns from pinned CoS only with MIT attribution and compatibility review; never start another Camoufox/profile, replay #226 turn 6, modify #232 or self-approve. Work in the same Draft PR #240 and write real test evidence.",
+      "prompt": "Implement the exact approved #239 original Spec Kit on the sole Production checkout. Worker chat/context/grant lives only for the current Issue: reuse on changes_requested, retire after signed completion, never reuse for another Issue. Start with TDD RED for durable command claims/receipt, document epochs and two-Issue ownership. Reuse source patterns from pinned CoS only with MIT attribution and compatibility review; never start another Camoufox/profile, replay #226 turn 6, modify #232 or self-approve. Work in the same Draft PR #240 and write real test evidence.",
       "on": {"done": "cos_security_auditor_local", "failed": null}
     },
     {
