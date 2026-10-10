@@ -7,7 +7,7 @@ import { createConnection, createServer } from "node:net";
 import { spawn } from "node:child_process";
 import { dirname } from "node:path";
 import { captureProcessIdentity } from "../src/process-identity.js";
-import { assertSavedConversationTaskOwner, browserRuntimePaths, legacyBrowserRuntimePaths, findOwnedLegacyBrowserRuntime, browserTaskKey, canonicalConversationIdentity, closeSharedBrowserRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
+import { assertSavedConversationTaskOwner, browserRuntimePaths, legacyBrowserRuntimePaths, findOwnedLegacyBrowserRuntime, browserTaskKey, canonicalConversationIdentity, ensureSharedBrowserRuntime, closeSharedBrowserRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
 import { BrowserPreSubmitFailureError, type ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
 
 test("conversation ownership ignores mutable Project slugs but distinguishes exact saved chats", () => {
@@ -375,6 +375,18 @@ test("pre-existing exact Issue worker may reconnect to its own live legacy IPC w
     assert.equal(await findOwnedLegacyBrowserRuntime(root,task,config),null,"must never attach without existing saved worker conversation");
     await writeFile(join(stateDir,"owner%2Frepo-issue-311.json"),JSON.stringify({task,currentWorkerId:"developer",completedRuns:2,sessions:{developer:"https://chatgpt.com/c/existing"}}));
     assert.equal(await findOwnedLegacyBrowserRuntime(root,task,config),legacy.socket);
+    await assert.rejects(
+      ensureSharedBrowserRuntime(root,{...task,issue:312},config),
+      /retained legacy browser runtime/,
+      "a live legacy Node runtime can restart its old profile even if no native Camoufox is currently running",
+    );
+    assert.equal(await findOwnedLegacyBrowserRuntime(root,task,config),legacy.socket,
+      "blocked new-Issue launch must preserve verified legacy IPC and worker conversation");
+    await assert.rejects(readFile(project.metadata), { code: "ENOENT" },
+      "blocked new-Issue launch must not claim or persist a second project runtime");
+    assert.equal((await ensureSharedBrowserRuntime(root,task,config)).kind,"chatgpt_browser",
+      "the existing Issue must still attach to its own approved legacy IPC");
+
     assert.equal(await findOwnedLegacyBrowserRuntime(root,{...task,issue:312},config),null);
     assert.equal(await findOwnedLegacyBrowserRuntime(root,task,{...config,profileDir:join(root,"other")}),null);
     assert.equal(await findOwnedLegacyBrowserRuntime(root,task,{...config,projectUrl:"https://chatgpt.com/g/other"}),null);

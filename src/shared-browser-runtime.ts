@@ -112,6 +112,47 @@ export class SharedBrowserExecutor implements Executor {
   }
 }
 
+/** A legacy detached Node runtime can relaunch its browser after the native
+ * Camoufox process exits. A profile process scan alone therefore cannot
+ * authorize a new shared context. This is a read-only ownership fence, not a
+ * migration: only exact, live, same-profile legacy owners block startup.
+ * Never kill their processes or rewrite their saved task/chat state here. */
+async function retainedLegacyProfileOwners(root: string, config: ChatGptBrowserConfig): Promise<string[]> {
+  const directory = join(root, ".devos", "browser-runtime");
+  const shared = browserRuntimePaths(root, "", 0).metadata;
+  let entries: string[];
+  try { entries = await readdir(directory); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const owners: string[] = [];
+  for (const entry of entries.filter(name => name.endsWith(".json"))) {
+    const path = join(directory, entry);
+    if (path === shared) continue;
+    const metadata = await readMetadata(path);
+    if (!metadata) throw new Error("Unverifiable legacy browser ownership metadata; refusing concurrent profile startup");
+    const actual = await captureProcessIdentity(metadata.pid);
+    if (!actual) continue; // stale owner: no live process to race a new launch
+    if (!sameProcessIdentity(metadata.identity, actual))
+      throw new Error("Legacy browser process identity changed; refusing concurrent profile startup");
+    const argv = actual.commandLine?.split(/\s+/) ?? [];
+    const marker = argv.lastIndexOf("--devos-browser-runtime");
+    if (marker < 0 || argv[marker + 1] !== root)
+      throw new Error("Unverifiable live legacy browser runtime; refusing concurrent profile startup");
+    const repo = argv[marker + 2], issue = Number(argv[marker + 3]);
+    // Project-wide processes have the socket at argument 2 rather than a
+    // repo+Issue pair, and are excluded by their deterministic metadata path.
+    if (!repo || !Number.isSafeInteger(issue) || issue <= 0 ||
+        argv[marker + 4] !== metadata.socket ||
+        legacyBrowserRuntimePaths(root, { repo, issue }).metadata !== path)
+      throw new Error("Unverifiable live legacy browser task owner; refusing concurrent profile startup");
+    if (argv[marker + 6] !== config.profileDir) continue;
+    owners.push(`${repo}#${issue}`);
+  }
+  return owners;
+}
+
 export async function ensureSharedBrowserRuntime(
   root: string,
   task: { repo: string; issue: number },
@@ -121,6 +162,11 @@ export async function ensureSharedBrowserRuntime(
   await mkdir(paths.dir, { recursive: true });
   await mkdir(dirname(paths.socket), { recursive: true, mode: 0o700 });
   if (await connectOwnedRuntime(paths.socket, paths.metadata, 500, config)) {
+    // An already running shared process does not make live legacy owners
+    // safe: either legacy Node runtime could still launch the same profile.
+    const retained = await retainedLegacyProfileOwners(root, config);
+    if (retained.length)
+      throw new Error(`Refusing shared Camoufox use: retained legacy browser runtime(s) ${retained.join(", ")} can relaunch the same profile`);
     return new SharedBrowserExecutor(paths.socket, task);
   }
   // A pre-migration #214/#226 browser may still own the Production profile.
@@ -151,6 +197,9 @@ export async function ensureSharedBrowserRuntime(
         throw new Error("Project browser runtime owner is live but its socket is unavailable; refusing to replace a possibly active task window");
       }
     }
+    const legacyOwners = await retainedLegacyProfileOwners(root, config);
+    if (legacyOwners.length)
+      throw new Error(`Refusing shared Camoufox startup: retained legacy browser runtime(s) ${legacyOwners.join(", ")} can relaunch the same profile; migrate ownership safely first`);
     const profileOwners = await profileProcesses(config.profileDir);
     if (profileOwners.length) {
       throw new Error(`Refusing to launch a second Camoufox context for the shared profile; live process owner(s): ${profileOwners.map(owner => owner.pid).join(", ")}`);
