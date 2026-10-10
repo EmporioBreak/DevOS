@@ -51,6 +51,13 @@
 - [ ] T031 RED/GREEN: A changes_requested resumes its original worker chats while B is final-approved/merged/completed and **only B's verified DevOS-created worker chats** are deleted; C and shared Camoufox remain intact. Full E2E requires genuine headed observations and independent signed status.
 - [ ] T032 Gradual live rollout proof: isolated one-Issue reliability, 2-Issue parallel, 3-Issue + Main Agent busy/owner wake queue, task-local deletion; independently verify throughput/backpressure, bounded memory and one shared browser profile. Without verified signoff do not activate Production parallel sends.
 
+## Multi-project resource ownership and automatic cleanup (owner clarification)
+
+- [ ] T037 RED/GREEN: project-agnostic managed workspace provisioning based on canonical target remote/repository, trusted base checkout, authorized integration branch, and `project/repo + Issue + branch` identity; no hardcoded DevOS repo, common global Issue IDs or assumption that all target projects share one Git checkout.
+- [ ] T038 RED/GREEN: concurrently execute different repos with equal Issue numbers/worker IDs, different base branch names, and separate managed worktree parents; ensure Project A's Git operations, temporary workers, browser/auth ownership and cleanup never affect B.
+- [ ] T039 RED/GREEN: durable ownership registry with path/common-dir/branch/lease verification and automated idempotent post-merge/completed cleanup for multiple target repos; detect owned orphan worktrees after a crash, clean verified safe entries and leave user-created or dirty/unmerged/active unknown entries untouched.
+- [ ] T040 Real disposable two-repository fixture E2E: onboarding, create two separate issue worktrees per project, concurrent independent commits/tests, merge accepted tasks into configured integration branches, verify GitHub completion in a test harness, delete only completed owned worktrees and merged feature branches, restart/reconcile with zero orphan proliferation. No Production user repo, old #232 workspace or live ChatGPT session may be a cleanup target.
+
 ## Preliminary safe preparation evidence (before owner-reviewed production wiring)
 
 - [x] T015 Add isolated transport-neutral identity matcher and TDD RED→GREEN tests (not yet a trusted host observation or authorization oracle): exact project/Issue/worker/runtime/profile/window/tab/document/navigation epoch, A→B→A, signed-turn/command/payload/provider receipt IDs. `src/browser-command-identity.ts` is a pure matcher, not a second outbox, browser executor, signer or proof source.
@@ -59,7 +66,7 @@
 
 ## Managed temporary worktrees and mandatory cleanup
 
-- [ ] T033 RED/GREEN: concurrent tasks A/B create exactly one separately owned temporary worktree per Issue; both can modify and test independent branches without switching the permanent Production checkout.
+- [ ] T033 RED/GREEN: concurrent tasks A/B in arbitrary configured repositories create exactly one separately owned temporary worktree per repo+Issue, enabling independent edits/tests without switching that target repo's base checkout or the DevOS control-plane Production checkout.
 - [ ] T034 RED/GREEN: after Main Agent acceptance, exact PR merged and GitHub Issue verified closed completed, quiesce task writers then remove only its clean, task-owned worktree and verified merged feature branch, leaving other Issues and main intact.
 - [ ] T035 RED/GREEN: refuse destructive cleanup on dirty/untracked/ignored content, unmerged commits, active or ambiguous worker turn, wrong path/branch, foreign/symlinked workspace, incomplete GitHub closure; simulate crash/restart and idempotent cleanup without force pruning.
 - [ ] T036 Actual disposable Git fixture E2E for concurrent create/edit/commit/merge/delete plus orphan detection, stable registry and limited quota; independent review and signed owner acceptance. Never retroactively remove old #232 or trusted legacy worktrees.
