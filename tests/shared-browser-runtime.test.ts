@@ -4,7 +4,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createConnection, createServer } from "node:net";
-import { assertSavedConversationTaskOwner, browserRuntimePaths, browserTaskKey, canonicalConversationIdentity, closeSharedBrowserRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
+import { spawn } from "node:child_process";
+import { dirname } from "node:path";
+import { captureProcessIdentity } from "../src/process-identity.js";
+import { assertSavedConversationTaskOwner, browserRuntimePaths, legacyBrowserRuntimePaths, findOwnedLegacyBrowserRuntime, browserTaskKey, canonicalConversationIdentity, closeSharedBrowserRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
 import { BrowserPreSubmitFailureError, type ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
 
 test("conversation ownership ignores mutable Project slugs but distinguishes exact saved chats", () => {
@@ -341,5 +344,43 @@ test("unowned socket cannot be closed as if it were a DevOS browser runtime", as
     await new Promise<void>(resolve => server.close(() => resolve()));
     await rm(paths.socket, { force: true });
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test("pre-existing exact Issue worker may reconnect to its own live legacy IPC without spawning a second profile",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"devos-legacy-browser-"));
+  const task={repo:"owner/repo",issue:311};
+  const config={projectUrl:"https://chatgpt.com/g/project",profileDir:join(root,"profile"),headless:false};
+  const legacy=legacyBrowserRuntimePaths(root,task);
+  const project=browserRuntimePaths(root,task.repo,task.issue);
+  const stateDir=join(root,".devos","state");
+  await mkdir(legacy.dir,{recursive:true});
+  await mkdir(stateDir,{recursive:true});
+  const server=createServer(socket=>socket.end());
+  let child:ReturnType<typeof spawn>|undefined;
+  try{
+    assert.notEqual(legacy.socket,project.socket);
+    assert.notEqual(legacy.metadata,project.metadata);
+    assert.equal(await findOwnedLegacyBrowserRuntime(root,task,config),null);
+    await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(legacy.socket,resolve)});
+    child=spawn(process.execPath,["-e","setInterval(()=>{},1000)","--", "--devos-browser-runtime",root,task.repo,String(task.issue),legacy.socket,config.projectUrl,config.profileDir,"0"],{stdio:"ignore"});
+    let identity=await captureProcessIdentity(child.pid!);
+    for(let i=0;i<40&&!identity;i++){
+      await new Promise(resolve=>setTimeout(resolve,25));
+      identity=await captureProcessIdentity(child.pid!);
+    }
+    assert.ok(identity);
+    await writeFile(legacy.metadata,JSON.stringify({pid:child.pid,identity,socket:legacy.socket}),{mode:0o600});
+    assert.equal(await findOwnedLegacyBrowserRuntime(root,task,config),null,"must never attach without existing saved worker conversation");
+    await writeFile(join(stateDir,"owner%2Frepo-issue-311.json"),JSON.stringify({task,currentWorkerId:"developer",completedRuns:2,sessions:{developer:"https://chatgpt.com/c/existing"}}));
+    assert.equal(await findOwnedLegacyBrowserRuntime(root,task,config),legacy.socket);
+    assert.equal(await findOwnedLegacyBrowserRuntime(root,{...task,issue:312},config),null);
+    assert.equal(await findOwnedLegacyBrowserRuntime(root,task,{...config,profileDir:join(root,"other")}),null);
+    assert.equal(await findOwnedLegacyBrowserRuntime(root,task,{...config,projectUrl:"https://chatgpt.com/g/other"}),null);
+  }finally{
+    child?.kill("SIGTERM");
+    await new Promise<void>(resolve=>server.close(()=>resolve()));
+    await rm(root,{recursive:true,force:true});
   }
 });

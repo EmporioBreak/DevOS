@@ -16,6 +16,7 @@ import type { ChatGptBrowserConfig } from "./browser-config.js";
 import { profileProcesses, terminateOwnedBrowser, type OwnedBrowserProcess } from "./owned-browser-process.js";
 import type { TaskRef, WorkerOutput } from "./workflow.js";
 import { captureProcessIdentity, processExists, sameProcessIdentity, type ProcessIdentity } from "./process-identity.js";
+import { JsonStateStore } from "./json-state-store.js";
 
 type WireMessage =
   | { type: "run"; request: Omit<WorkerRequest, "onSession"> }
@@ -37,6 +38,42 @@ export function browserRuntimePaths(root: string, repo: string, issue: number) {
   const key = createHash("sha256").update(root).digest("hex").slice(0, 20);
   const dir = join(root, ".devos", "browser-runtime");
   return { dir, socket: join(tmpdir(), `devos-browser-${key}.sock`), metadata: join(dir, `${key}.json`), lock: join(dir, `${key}.lock`) };
+}
+
+/** Old per-Issue runtime path: used only to resume an already saved
+ * worker conversation while the signed owner graph migrates in place.
+ * Never use a legacy runtime to start a new Issue. */
+export function legacyBrowserRuntimePaths(root: string, task: TaskRef) {
+  const key=createHash("sha256").update(`${root}\0${task.repo}#${task.issue}`).digest("hex").slice(0,20);
+  const dir=join(root,".devos","browser-runtime");
+  return {dir,socket:join(tmpdir(),`devos-browser-${key}.sock`),
+    metadata:join(dir,`${key}.json`),lock:join(dir,`${key}.lock`)};
+}
+
+/** Exact legacy process/socket/session proof. A successful return means ONLY
+ * that this one EXISTING task can continue through its original live IPC.
+ * It is not migration and must never claim other tasks or global ownership. */
+export async function findOwnedLegacyBrowserRuntime(
+  root:string,task:TaskRef,config:ChatGptBrowserConfig,
+):Promise<string|null>{
+  const state=await new JsonStateStore(root,task).load();
+  if(!state || state.completionApproved ||
+      state.task?.repo!==task.repo || state.task.issue!==task.issue ||
+      Object.keys(state.sessions).length===0)return null;
+  const paths=legacyBrowserRuntimePaths(root,task);
+  const owner=await readMetadata(paths.metadata);
+  if(!owner || owner.socket!==paths.socket)return null;
+  const live=await captureProcessIdentity(owner.pid);
+  if(!live || !sameProcessIdentity(owner.identity,live))return null;
+  // The legacy node never recorded project/profile config in its metadata.
+  // Check the exact process argv rather than trusting a guessed socket.
+  const argv=live.commandLine?.split(/\s+/)??[];
+  const marker=argv.lastIndexOf("--devos-browser-runtime");
+  const expected=[root,task.repo,String(task.issue),paths.socket,
+    config.projectUrl,config.profileDir,config.headless?"1":"0"];
+  if(marker<0 || expected.some((arg,i)=>argv[marker+i+1]!==arg))return null;
+  if(!await connectOwnedRuntime(paths.socket,paths.metadata,500))return null;
+  return paths.socket;
 }
 
 export function browserTaskKey(task: TaskRef): string {
@@ -86,6 +123,11 @@ export async function ensureSharedBrowserRuntime(
   if (await connectOwnedRuntime(paths.socket, paths.metadata, 500, config)) {
     return new SharedBrowserExecutor(paths.socket, task);
   }
+  // A pre-migration #214/#226 browser may still own the Production profile.
+  // Resume only its own previously saved worker conversation through the
+  // EXACT verified old per-Issue runtime; never spawn a second Camoufox.
+  const legacySocket=await findOwnedLegacyBrowserRuntime(root,task,config);
+  if(legacySocket)return new SharedBrowserExecutor(legacySocket,task);
 
   let lock;
   try { lock = await open(paths.lock, "wx", 0o600); }
