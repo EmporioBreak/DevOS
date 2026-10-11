@@ -124,6 +124,51 @@ export class OwnerTaskApprovalStore {
        !p.receiptId)return {approved:false};
     return {approved:true,approval_ref:"devos-owner-approval:"+p.receiptId};
   }
+  /** All receipts are verified before an owner destination is considered.
+   * Never pick the first signed receipt or the only chat registry grant.
+   */
+  private signedReceipts():Receipt[] {
+    if(!existsSync(this.dir))return [];
+    const directory=lstatSync(this.dir);
+    if(!directory.isDirectory()||directory.isSymbolicLink()||(directory.mode&0o077)!==0)
+      throw new Error("Unsafe owner approval directory");
+    const files=readdirSync(this.dir).filter(x=>x.endsWith(".json"));
+    if(files.length>4096)throw new Error("Owner receipt inventory capacity exceeded");
+    return files.map(name=>{
+      const id=name.slice(0,-5);
+      if(!ID.test(id))throw new Error("Unexpected owner approval receipt name");
+      const path=join(this.dir,name),stat=lstatSync(path);
+      if(!stat.isFile()||stat.isSymbolicLink()||(stat.mode&0o077)!==0||stat.size>8192)
+        throw new Error("Unsafe owner approval receipt");
+      let signed:SignedReceipt;
+      try{signed=JSON.parse(readFileSync(path,"utf8")) as SignedReceipt;}
+      catch{throw new Error("Malformed owner approval receipt");}
+      if(signed?.receipt?.version!==1||signed.receipt.id!==id||
+          !/^chat_[a-f0-9]{64}$/.test(signed.receipt.fingerprint)||
+          !H.test(signed.mac)||!fixedEqual(this.mac(signed.receipt),signed.mac))
+        throw new Error("Owner approval receipt integrity check failed");
+      canonical(signed.receipt.review);
+      return signed.receipt;
+    });
+  }
+
+  /** Select only a unique exact task+PR approval; multiple signed revisions
+   * are ambiguous even if they originate from the same owner chat. */
+  resolveOwnerChatForTask(task:{repo:string;issue:number;pr:number}):
+    {fingerprint:string;approvedReference:string;kind:"private"|"share_label"}|null {
+    if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(task.repo)||
+        !Number.isSafeInteger(task.issue)||task.issue<1||
+        !Number.isSafeInteger(task.pr)||task.pr<1)
+      throw new Error("Invalid exact owner wake-up task identity");
+    const matches=this.signedReceipts().filter(x=>
+      x.review.repo===task.repo&&x.review.issue===task.issue&&x.review.pr===task.pr);
+    if(matches.length===0)return null;
+    const reference=JSON.stringify(matches[0]!.review);
+    if(matches.some(x=>JSON.stringify(x.review)!==reference))
+      throw new Error("Ambiguous owner wake-up approvals for different signed task revisions");
+    return this.resolveOwnerChat(matches[0]!.review);
+  }
+
   /** Read-only owner wake-up binding. An approval receipt is signed for a
    * SPECIFIC task/PR/revision AND originating chat fingerprint. Do not choose
    * from the ChatAccessRegistry's unrelated or multiply-approved chats.
@@ -133,30 +178,10 @@ export class OwnerTaskApprovalStore {
   resolveOwnerChat(expectedInput:OwnerTaskReview):
     {fingerprint:string;approvedReference:string;kind:"private"|"share_label"}|null {
     const expected=canonical(expectedInput);
-    if(!existsSync(this.dir))return null;
-    const directory=lstatSync(this.dir);
-    if(!directory.isDirectory()||directory.isSymbolicLink()||(directory.mode&0o077)!==0)
-      throw new Error("Unsafe owner approval directory");
-    const files=readdirSync(this.dir).filter(x=>x.endsWith(".json"));
-    if(files.length>4096)throw new Error("Owner receipt inventory capacity exceeded");
     const fingerprints=new Set<string>();
-    for(const name of files){
-      const id=name.slice(0,-5);
-      if(!ID.test(id))throw new Error("Unexpected owner approval receipt name");
-      const path=join(this.dir,name),stat=lstatSync(path);
-      if(!stat.isFile()||stat.isSymbolicLink()||(stat.mode&0o077)!==0||stat.size>8192)
-        throw new Error("Unsafe owner approval receipt");
-      let signed:SignedReceipt;
-      try{signed=JSON.parse(readFileSync(path,"utf8")) as SignedReceipt;}
-      catch{throw new Error("Malformed owner approval receipt")}
-      if(signed?.receipt?.version!==1||signed.receipt.id!==id||
-          !/^chat_[a-f0-9]{64}$/.test(signed.receipt.fingerprint)||
-          !H.test(signed.mac)||!fixedEqual(this.mac(signed.receipt),signed.mac))
-        throw new Error("Owner approval receipt integrity check failed");
-      const actual=canonical(signed.receipt.review);
-      if(JSON.stringify(actual)===JSON.stringify(expected))
-        fingerprints.add(signed.receipt.fingerprint);
-    }
+    for(const receipt of this.signedReceipts())
+      if(JSON.stringify(receipt.review)===JSON.stringify(expected))
+        fingerprints.add(receipt.fingerprint);
     if(fingerprints.size>1)throw new Error("Ambiguous multiple signed owner chat bindings for exact task");
     if(fingerprints.size===0)return null;
     const fingerprint=[...fingerprints][0]!;
