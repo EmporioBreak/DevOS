@@ -164,7 +164,7 @@ test("authenticated MCP gateway rejects unapproved calls, supports owner grants 
     await mkdir(join(root, ".devos", "state"), { recursive: true });
     await writeFile(workerStatePath, JSON.stringify({
       currentWorkerId: "developer", completedRuns: 0,
-      activeReport: { workerId: "developer", turn: 0 },
+      activeReport: { workerId: "developer", turn: 0, expiresAt: Date.now() + 60_000 },
       sessions: { developer: url }, mainAgentReviewPending: false, completionApproved: false,
     }));
     const lockPath=join(root,".devos","locks","EmporioBreak%2FDevOS-issue-99.lock");
