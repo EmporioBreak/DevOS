@@ -17,8 +17,7 @@ import { profileProcesses, terminateOwnedBrowser, type OwnedBrowserProcess } fro
 import type { TaskRef, WorkerOutput } from "./workflow.js";
 import { captureProcessIdentity, processExists, sameProcessIdentity, type ProcessIdentity } from "./process-identity.js";
 import { JsonStateStore } from "./json-state-store.js";
-import { BrowserCommandBroker, type BrowserCommand } from "./browser-command-broker.js";
-import type { BrowserDocumentObservation } from "./browser-command-identity.js";
+import { BrowserCommandBroker } from "./browser-command-broker.js";
 import { parseEnvFile } from "./connector-env.js";
 import type { OwnerWakeupDeliveryRequest } from "./owner-wakeup-handoff.js";
 import type { WakeupStatus } from "./owner-wakeup-ledger.js";
@@ -31,12 +30,8 @@ type WireMessage =
   | { type: "error"; message: string; kind?: "browser_pre_submit" | "browser_resume_unavailable" | "browser_post_submit" | "generic" }
   | { type: "closed" }
   | { type: "task_closed" }
-  | { type: "broker_prepare"; command: BrowserCommand }
-  | { type: "broker_claim"; commandId: string; observed: BrowserDocumentObservation }
-  | { type: "broker_ambiguous"; commandId: string }
   | { type: "owner_wakeup"; request: OwnerWakeupDeliveryRequest }
   | { type: "owner_wakeup_result"; status: WakeupStatus }
-  | { type: "broker_result"; value?: unknown };
 
 interface PendingTurn {
   promise: Promise<WorkerOutput>;
@@ -136,27 +131,6 @@ export class SharedBrowserExecutor implements Executor {
     }finally{socket.destroy();}
   }
 
-  async prepareBrowserCommand(command: BrowserCommand): Promise<void> {
-    await this.brokerRequest({ type: "broker_prepare", command });
-  }
-  async claimBrowserCommand(commandId: string, observed: BrowserDocumentObservation): Promise<boolean> {
-    return await this.brokerRequest<boolean>({ type: "broker_claim", commandId, observed });
-  }
-  async markBrowserCommandAmbiguous(commandId: string): Promise<void> {
-    await this.brokerRequest({ type: "broker_ambiguous", commandId });
-  }
-  private async brokerRequest<T = void>(request: WireMessage): Promise<T> {
-    const socket = await connect(this.socketPath);
-    const lines = readLines(socket);
-    socket.write(`${JSON.stringify(request)}\n`);
-    try {
-      for await (const message of lines) {
-        if (message.type === "broker_result") return message.value as T;
-        if (message.type === "error") throw new Error(message.message);
-      }
-      throw new Error("Shared browser runtime disconnected during broker operation");
-    } finally { socket.destroy(); }
-  }
 }
 
 /** Deliver only through a runtime already proven to belong to this project.
@@ -454,7 +428,7 @@ export async function runBrowserRuntime(args: string[]): Promise<void> {
     broker,
     root,
   );
-  await startSharedBrowserServer(socketPath, paths.metadata, executor, { projectUrl, profileDir, headless: headless === "1" }, broker);
+  await startSharedBrowserServer(socketPath, paths.metadata, executor, { projectUrl, profileDir, headless: headless === "1" });
 }
 
 export function canonicalConversationIdentity(sessionId: string): string {
@@ -504,7 +478,6 @@ export async function startSharedBrowserServer(
   metadataPath: string,
   executor: ChatGptBrowserExecutor,
   config?: { projectUrl: string; profileDir: string; headless: boolean },
-  broker?: BrowserCommandBroker,
 ): Promise<void> {
   const server: Server = createServer();
   let closing = false;
@@ -548,29 +521,17 @@ export async function startSharedBrowserServer(
     if (!hasOtherTasks) await stopRuntime();
     return hasOtherTasks;
   };
-  server.on("connection", socket => { void handleSocket(socket, executor, turns, closeTask, broker); });
+  server.on("connection", socket => { void handleSocket(socket, executor, turns, closeTask); });
   const stop = () => { if (!closing) { closing = true; void executor.close().finally(async () => { server.close(); await rm(socketPath, { force: true }); await rm(metadataPath, { force: true }); process.removeListener("SIGTERM",stop); process.removeListener("SIGINT",stop); }); } };
   process.once("SIGTERM", stop); process.once("SIGINT", stop);
 }
 
-async function handleSocket(socket: Socket, executor: ChatGptBrowserExecutor, turns: Map<string, PendingTurn>, closeTask: (task: TaskRef,reviewRound:number,authorizationMac:string) => Promise<boolean>, broker?: BrowserCommandBroker): Promise<void> {
+async function handleSocket(socket: Socket, executor: ChatGptBrowserExecutor, turns: Map<string, PendingTurn>, closeTask: (task: TaskRef,reviewRound:number,authorizationMac:string) => Promise<boolean>): Promise<void> {
   const lines = readLines(socket);
   for await (const message of lines) {
-    if (message.type.startsWith("broker_")) {
-      try {
-        if (!broker) throw new Error("Browser command broker is unavailable");
-        if (message.type === "broker_prepare") await broker.prepare(message.command);
-        else if (message.type === "broker_claim") {
-          const value = await broker.claim(message.commandId, message.observed);
-          socket.write(`${JSON.stringify({ type: "broker_result", value })}\n`);
-          continue;
-        } else if (message.type === "broker_ambiguous") await broker.markAmbiguous(message.commandId);
-        else throw new Error("Invalid browser broker IPC operation");
-        socket.write('{"type":"broker_result"}\n');
-      } catch (error) {
-        socket.write(`${JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) })}\n`);
-      }
-      continue;
+    if (message.type !== "run" && message.type !== "close_task" && message.type !== "owner_wakeup") {
+      socket.end(`${JSON.stringify({ type: "error", message: "Unsupported shared browser IPC operation" })}\n`);
+      return;
     }
     if (message.type === "close_task") {
       try {

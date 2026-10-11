@@ -20,7 +20,7 @@ async function closeApprovedTestRuntime(root:string,task:{repo:string;issue:numb
   await closeSharedBrowserRuntime(root,task);
 }
 
-test("shared runtime IPC cannot forge a provider receipt for a claimed command", async () => {
+test("shared runtime IPC cannot claim or poison a command without native authority", async () => {
   const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-broker-ipc-"));
   const task = { repo: "owner/repo", issue: 73 };
   const ownerSecret = "test-owner-secret-that-is-at-least-thirty-two-bytes";
@@ -41,16 +41,17 @@ test("shared runtime IPC cannot forge a provider receipt for a claimed command",
   const executor = { async run() { return { text: "unused" }; }, async close() {} } as unknown as ChatGptBrowserExecutor;
   try {
     const broker = new BrowserCommandBroker(root, ownerSecret);
-    await startSharedBrowserServer(paths.socket, paths.metadata, executor, undefined, broker);
-    const client = new SharedBrowserExecutor(paths.socket) as any;
-    assert.equal(typeof client.prepareBrowserCommand, "function", "browser broker IPC is missing");
-    await client.prepareBrowserCommand(command);
-    assert.equal(await client.claimBrowserCommand(command.commandId, command), true);
-    const receipt = {
-      repo: task.repo, issue: task.issue, workerId: "developer", turn: 1,
-      commandId: command.commandId, payloadSha256: command.payloadSha256,
-      conversationId: "conversation-a", messageId: "provider-message-73",
-    };
+    const state = new JsonStateStore(root, task);
+    const activeReport = { workerId: "developer", turn: 1, tokenHash: auth.reportTokenHash, expiresAt: auth.expiresAt };
+    await state.save({ task, currentWorkerId: "developer", completedRuns: 1, reviewLoops: 0,
+      sessions: { developer: "https://chatgpt.com/c/conversation-a" }, activeReport,
+      mainAgentReviewPending: false, completionApproved: false });
+    await broker.prepare(command);
+    await state.save({ task, currentWorkerId: "reviewer", completedRuns: 2, reviewLoops: 1,
+      sessions: { developer: "https://chatgpt.com/c/conversation-a" },
+      activeReport: { workerId: "reviewer", turn: 2, tokenHash: "e".repeat(64), expiresAt: Date.now() + 60_000 },
+      mainAgentReviewPending: false, completionApproved: false });
+    await startSharedBrowserServer(paths.socket, paths.metadata, executor);
     const sendForgedMessage=async(message:unknown)=>{
       const attacker=await createConnection(paths.socket);
       attacker.write(`${JSON.stringify(message)}\n`);
@@ -59,10 +60,13 @@ test("shared runtime IPC cannot forge a provider receipt for a claimed command",
       attacker.destroy();
       assert.match(response,/error/);
     };
-    await sendForgedMessage({type:"broker_receipt",commandId:command.commandId,receipt});
-    await sendForgedMessage({type:"broker_ack",commandId:command.commandId,receipt});
-    assert.equal((await broker.get(command.commandId))?.status, "claimed");
-    assert.equal(await client.claimBrowserCommand(command.commandId, command), false);
+    await sendForgedMessage({type:"broker_prepare",command});
+    await sendForgedMessage({type:"broker_claim",commandId:command.commandId,observed:command});
+    assert.equal((await broker.get(command.commandId))?.status, "prepared",
+      "untrusted socket client must not claim after the signed authority is absent/revoked");
+    await sendForgedMessage({type:"broker_ambiguous",commandId:command.commandId});
+    assert.equal((await broker.get(command.commandId))?.status, "prepared",
+      "untrusted socket client must not poison a prepared command as ambiguous");
   } finally {
     await closeApprovedTestRuntime(root, task);
     await rm(paths.socket, { force: true });
