@@ -41,6 +41,14 @@ export interface DynamicMessage {
   state: DynamicMessageState;
   providerMessageId?: string;
 }
+export interface DynamicStatusView {
+  task: TaskRef;
+  generation: number;
+  agents: Array<Pick<DynamicAgent, "id" | "role" | "executor" | "status">>;
+  messages: DynamicMessage[];
+  finalReviewRequested: boolean;
+  ownerDecision?: "approved" | "changes_requested";
+}
 export interface DynamicSnapshot {
   version: 2;
   task: TaskRef;
@@ -208,14 +216,23 @@ export class DynamicAgentBroker {
       return { state: existing, result };
     });
   }
-  async status(): Promise<DynamicSnapshot> {
+  /** Public caller-visible status does not disclose peer sessions or unrelated messages. */
+  async status(): Promise<DynamicStatusView> {
     invariant(await this.trust.verifyPolicy(this.policy), "Unapproved dynamic task policy");
     const caller = await this.trust.resolveCaller();
     const state = await this.store.load();
     invariant(state, "Dynamic task not initialized");
-    this.checked(state, caller);
-    return state;
+    const actor = this.checked(state, caller);
+    return {
+      task: state.task,
+      generation: state.generation,
+      agents: state.agents.map(({ id, role, executor, status }) => ({ id, role, executor, status })),
+      messages: state.messages.filter(m => actor.id === "main_agent" || m.from === actor.id || m.to === actor.id),
+      finalReviewRequested: state.finalReviewRequested,
+      ...(state.ownerDecision ? { ownerDecision: state.ownerDecision } : {}),
+    };
   }
+
   async admit(input: { id: string; role: string; sessionFingerprint: string }): Promise<DynamicAgent> {
     invariant(await this.trust.verifyNewAgentBinding({ ...input, task: this.policy.task }), "Unverified new agent identity");
     return this.perform((state, actor) => {
