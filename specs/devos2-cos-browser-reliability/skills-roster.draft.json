@@ -10,7 +10,7 @@
     "workerId": "cos_security_auditor_local",
     "role": "auditor",
     "phase": "execution",
-    "specKitStage": "analyze",
+    "specKitStage": null,
     "optionalCandidates": []
   },
   {
