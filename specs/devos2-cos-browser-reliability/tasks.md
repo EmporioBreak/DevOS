@@ -8,7 +8,7 @@
 - [x] T002 Source gap map and original Spec Kit drafts, no upstream code copied.
 - [x] T015 Isolated pure identity matcher `src/browser-command-identity.ts`; TDD RED/GREEN across exact command/worker/browser document/epoch/receipt.
 - [x] T016 Prior scoped test run 122/122 PASS and build PASS (historical evidence, **not** current full verification or headed E2E).
-- [x] T017 Candidate 6-role graph + skills roster drafted; **not signed or dispatched**.
+- [x] T017 Candidate five-role, all-Codex graph and matching original skill roster drafted; previous six-role browser-first E2E graph retired **before signing**, not dispatched.
 
 ## Exact next browser work (after project approval gate)
 
@@ -25,6 +25,12 @@
 - [ ] T013 Independent security/code/provider-terms review, changes_requested to the SAME developer/Issue/PR and actual re-tests; Main Agent alone makes final acceptance.
 - [ ] T014 Document safe rollout/rollback and MIT attribution if substantial upstream source is imported.
 - [ ] T018 Within unfinished Issue, same signed worker resumes original chat on `changes_requested`; a new Issue uses a fresh worker conversation/grant. Post-completion deletion is **#241**, not #239.
+
+## Actual visual testing capability and independent evidence
+
+- [ ] T026 Before dispatch of interactive E2E, local Codex QA verifies macOS GUI Accessibility/Screen Recording and actual pointer/keyboard/window interaction permissions, authorized signed-in existing Camoufox/profile ownership, disposable Issue grants and provider-compliant test scope. `command -v osascript`, `screencapture` or Playwright availability alone is NOT the result; no intentionally incapable browser-worker hop.
+- [ ] T027 Dedicated independent Codex E2E QA physically operates a headed browser via verified GUI/Computer Use, observes screenshots/video and real UI state of windows, tabs, visible messages and owner notification while using exact provider outgoing IDs and signed MCP reports. A headless/script-only test or synthesized screenshots are NOT human-equivalent visual acceptance.
+- [ ] T028 Dedicated separate Codex security/independent reviewer verifies actual source, visual QA proof, provenance of provider receipts and combined #224/#226/#239 product; any missing host-only GUI access must be reported `needs_local_worker`/blocked with concrete evidence, not silently rerouted or called PASS. E2E feedback returns to the original developer, same PR and task.
 
 ## Mandatory integration proof: #224 + #226 + #239
 
