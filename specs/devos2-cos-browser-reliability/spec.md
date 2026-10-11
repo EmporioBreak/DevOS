@@ -55,6 +55,14 @@ F. The integrated authorized #224 sender actually delivers exactly one provider-
 
 G. Combined effective #224+#226+#239 code builds and passes affected full regression, adversarial process/IPC/DOM/owner-notification tests and genuine headed signed-in ChatGPT browser E2E; original signed reviews, security check and Main Agent acceptance are recorded. No three independent mock PASS flags can replace the one integrated E2E.
 
+## Execution capability and proof — dedicated local Codex visual QA (owner correction)
+
+The owner has explicitly confirmed that DevOS's `chatgpt_browser` worker **cannot perform the required genuine real-user visual browser E2E**. Do not dispatch it as visual QA merely to generate `needs_local_worker` or claim an E2E pass from DOM/headless tests. The predeclared main developer, security auditor, host-process QA, **independent real visual GUI E2E QA**, and **independent final reviewer** for #239 use five separate `codex` executions in the ONE original Runner graph. The QA Codex worker is assigned directly, not activated as a fallback after an intentionally incapable worker. Visual QA and final reviewer may not self-approve the original implementation.
+
+Prior to native GUI actions, QA must **prove actual permission** to control/observe the logged-in macOS desktop and authenticated, safely owned original Camoufox session. Presence of `codex`, `osascript`, `screencapture`, Playwright or a console session alone is NOT proof of accessibility/screen-recording rights or provider automation compliance. Perform real visible headed interaction (pointer/keyboard/Computer Use) and inspect actual screenshots or video of observed window/tab/navigation/notification states, alongside exact original provider message IDs and authenticated signed worker reports. A scripted headless test, Playwright-only run or fabricated screenshot is not a human-equivalent visual E2E. If host GUI, provider authorization, approved disposable tasks or safe legacy ownership are missing, report a concrete blocker; never substitute an unverifiable PASS, start a second Camoufox/profile or send the ambiguous #226 turn 6.
+
+The prior owner-approval preview was bound to the **old six-worker graph and commit SHA** and cannot authorize this changed five-worker graph. Full verified exact Spec Kit SHA, five-worker graph and skills roster require fresh owner-password-backed approval before DevOS Runner or any production-affecting test.
+
 ## Required single headed user-journey acceptance
 
 1. In the already-authorized single project Camoufox/profile, launch two approved disposable Issues A and B (one top-level window each, task-specific worker tabs). No duplicate Camoufox process, connector or profile; no cross-Issue tabs/grants.
