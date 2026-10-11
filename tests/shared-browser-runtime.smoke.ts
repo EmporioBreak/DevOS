@@ -8,6 +8,7 @@ import { Camoufox, getRandomPreset } from "@camoufox/camoufox";
 import type { BrowserContext } from "playwright-core";
 import { ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
 import { profileProcesses } from "../src/owned-browser-process.js";
+import { terminateOwnedChildAndWait } from "./fixtures/owned-child-cleanup.js";
 import {
   browserRuntimePaths,
   closeSharedBrowserRuntime,
@@ -134,8 +135,20 @@ if (process.argv[2] === "--runtime-child") {
       browserRootOwnerRecorded: true,
     }));
   } finally {
-    if (child && child.exitCode === null) child.kill("SIGTERM");
+    let childStopped = !child || child.exitCode !== null || child.signalCode !== null;
+    let childStopError: unknown;
+    if (child && !childStopped) {
+      try {
+        await terminateOwnedChildAndWait(child, 8_000);
+        childStopped = true;
+      } catch (error) {
+        childStopError = error;
+      }
+    }
     await control?.close().catch(() => undefined);
-    await rm(root, { recursive: true, force: true });
+    // Never race recursive profile removal against a live owned runtime.
+    // If it cannot be proven stopped, preserve the tree for safe diagnosis.
+    if (childStopped) await rm(root, { recursive: true, force: true });
+    if (childStopError) throw childStopError;
   }
 }
