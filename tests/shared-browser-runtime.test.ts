@@ -7,7 +7,7 @@ import { createConnection, createServer } from "node:net";
 import { spawn } from "node:child_process";
 import { dirname } from "node:path";
 import { captureProcessIdentity } from "../src/process-identity.js";
-import { assertSavedConversationTaskOwner, browserRuntimePaths, legacyBrowserRuntimePaths, findOwnedLegacyBrowserRuntime, browserTaskKey, canonicalConversationIdentity, ensureSharedBrowserRuntime, closeSharedBrowserRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
+import { assertSavedConversationTaskOwner, browserRuntimePaths, legacyBrowserRuntimePaths, findOwnedLegacyBrowserRuntime, browserTaskKey, canonicalConversationIdentity, ensureSharedBrowserRuntime, closeSharedBrowserRuntime, sendOwnerWakeupToExistingRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
 import { BrowserPreSubmitFailureError, type ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
 import { BrowserCommandBroker, type BrowserCommand } from "../src/browser-command-broker.js";
 import { signBrowserCommandAuthorization } from "../src/browser-command-identity.js";
@@ -51,6 +51,28 @@ test("shared runtime IPC commits one durable browser command claim and provider 
     await rm(paths.socket, { force: true });
     await rm(paths.metadata, { force: true });
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("owner wake-up IPC uses only the already-owned project runtime", async () => {
+  const root=await mkdtemp(join(tmpdir(),"devos-owner-wakeup-ipc-"));
+  const task={repo:"owner/repo",issue:239,pr:240};
+  const paths=browserRuntimePaths(root,task.repo,task.issue);
+  const request={projectRoot:root,task,reviewRound:2,ownerFingerprint:"chat_"+"a".repeat(64),
+    approvedReference:"https://chatgpt.com/c/private-owner-chat",ownerKind:"private" as const,
+    message:"review issue 239 round 2"};
+  let received:unknown;
+  const executor={async sendOwnerWakeup(value:unknown){received=value;return "confirmed";},async close(){}} as unknown as ChatGptBrowserExecutor;
+  try{
+    await assert.rejects(sendOwnerWakeupToExistingRuntime(root,request),/No verified active shared browser runtime/);
+    await startSharedBrowserServer(paths.socket,paths.metadata,executor,
+      {projectUrl:"https://chatgpt.com/g/project",profileDir:join(root,"profile"),headless:false});
+    assert.equal(await new SharedBrowserExecutor(paths.socket,task).sendOwnerWakeup(request),"confirmed");
+    assert.deepEqual(received,request);
+    await assert.rejects(sendOwnerWakeupToExistingRuntime(root,{...request,projectRoot:root+"-other"}),/project root/);
+  }finally{
+    await closeSharedBrowserRuntime(root,task).catch(()=>undefined);
+    await rm(paths.socket,{force:true});await rm(paths.metadata,{force:true});await rm(root,{recursive:true,force:true});
   }
 });
 

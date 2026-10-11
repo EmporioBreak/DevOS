@@ -4,6 +4,7 @@ import {
   assertBrowserDocumentClaim,
   matchBrowserReceiptIdentity,
   signBrowserCommandAuthorization,
+  verifyBrowserCommandAuthorization,
   type BrowserDocumentClaim,
   type BrowserDocumentObservation,
   type BrowserProviderReceiptIdentity,
@@ -74,4 +75,37 @@ test("a fresh Project claim binds its newly assigned conversation through the ex
   };
   assert.equal(matchBrowserReceiptIdentity(freshClaim,createdConversationReceipt),true);
   assert.throws(()=>matchBrowserReceiptIdentity(freshClaim,{...createdConversationReceipt,commandId:"other-command"}),/browser provider receipt/i);
+});
+
+test("owner wake-up authorization binds the exact signed owner chat and review round",()=>{
+  const secret="test-owner-secret-that-is-at-least-thirty-two-bytes";
+  const ownerClaim:BrowserDocumentClaim={...claim,purpose:"owner_wakeup",
+    workerId:"main_agent_owner",turn:2,commandId:"owner-wakeup-239-round-2",
+    ownerFingerprint:"chat_"+"e".repeat(64),ownerBindingSha256:"f".repeat(64),
+    reportTokenHash:"1".repeat(64),conversationId:"owner-conversation",
+  };
+  ownerClaim.authorizationMac=signBrowserCommandAuthorization(ownerClaim,secret);
+  assert.equal(verifyBrowserCommandAuthorization(ownerClaim,secret),true);
+  assert.equal(verifyBrowserCommandAuthorization({...ownerClaim,ownerFingerprint:"chat_"+"a".repeat(64)},secret),false,
+    "a valid command MAC must not survive a change to the owner destination");
+  assert.equal(verifyBrowserCommandAuthorization({...ownerClaim,ownerBindingSha256:"0".repeat(64)},secret),false,
+    "a valid command MAC must bind the exact signed approval used for the destination");
+});
+
+test("owner provider receipt is bound to the approved owner and original conversation",()=>{
+  const ownerClaim:BrowserDocumentClaim={...claim,purpose:"owner_wakeup",
+    workerId:"main_agent_owner",turn:2,commandId:"owner-wakeup-239-round-2",
+    ownerFingerprint:"chat_"+"e".repeat(64),ownerBindingSha256:"f".repeat(64),
+    reportTokenHash:"1".repeat(64),conversationId:"owner-conversation",
+  };
+  const receipt:BrowserProviderReceiptIdentity={repo:ownerClaim.repo,issue:ownerClaim.issue,
+    workerId:ownerClaim.workerId,turn:ownerClaim.turn,commandId:ownerClaim.commandId,
+    payloadSha256:ownerClaim.payloadSha256,conversationId:ownerClaim.conversationId!,
+    purpose:"owner_wakeup",ownerFingerprint:ownerClaim.ownerFingerprint!,
+    ownerBindingSha256:ownerClaim.ownerBindingSha256!,messageId:"provider-owner-user-message"};
+  assert.equal(matchBrowserReceiptIdentity(ownerClaim,receipt),true);
+  assert.throws(()=>matchBrowserReceiptIdentity(ownerClaim,{...receipt,
+    ownerFingerprint:"chat_"+"a".repeat(64)}),/browser provider receipt/i);
+  assert.throws(()=>matchBrowserReceiptIdentity(ownerClaim,{...receipt,
+    conversationId:"different-owner-chat"}),/browser provider receipt/i);
 });

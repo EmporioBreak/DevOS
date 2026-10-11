@@ -77,3 +77,15 @@ test("notification deadline and cancellation are bounded without replacing an ar
     assert.equal(await q.arm(task,2),false,"armed attempt cannot be resent");
   }finally{Date.now=actual;await rm(root,{recursive:true,force:true})}
 });
+
+test("owner delivery requires the exact queued fingerprint, reference and message",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"devos-owner-wakeup-"));
+  try{
+    const q=new OwnerWakeupLedger(root,secret);
+    await q.enqueue(task,3,fp,reference,prompt);
+    assert.equal(await q.assertIntentMatches(task,3,fp,reference,prompt),"waiting");
+    await assert.rejects(q.assertIntentMatches(task,3,"chat_"+"b".repeat(64),reference,prompt),/exact queued intent/i);
+    await assert.rejects(q.assertIntentMatches(task,3,fp,"https://chatgpt.com/share/8bc799bd-7ffc-83eb-b2b0-15d6a2f558a0",prompt),/exact queued intent/i);
+    await assert.rejects(q.assertIntentMatches(task,3,fp,reference,prompt+" altered"),/exact queued intent/i);
+  }finally{await rm(root,{recursive:true,force:true})}
+});

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { profileProcesses, terminateOwnedBrowser, type OwnedBrowserProcess } from "./owned-browser-process.js";
 import { readCompletedTurn, type SubmittedTurn } from "./chatgpt-turn-recovery.js";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import { Camoufox } from "@camoufox/camoufox";
 import { loadOrCreateCamoufoxIdentity, type CamoufoxIdentity } from "./camoufox-identity.js";
 import type { BrowserContext, Page, Request as PlaywrightRequest, Response as PlaywrightResponse } from "playwright-core";
@@ -26,6 +26,14 @@ import { localWorkerAuthorization } from "./chat-worker-grants.js";
 import { classifyBrowserFailure, browserRecoveryDelayMs } from "./browser-recovery-policy.js";
 import { BrowserCommandBroker } from "./browser-command-broker.js";
 import type { BrowserDocumentClaim } from "./browser-command-identity.js";
+import type { OwnerWakeupDeliveryRequest } from "./owner-wakeup-handoff.js";
+import { writableOwnerWakeupUrl } from "./owner-wakeup-handoff.js";
+import type { WakeupStatus } from "./owner-wakeup-ledger.js";
+import { OwnerWakeupLedger } from "./owner-wakeup-ledger.js";
+import { ChatAccessRegistry } from "./chat-access.js";
+import { OwnerTaskApprovalStore } from "./owner-task-approval.js";
+import { parseEnvFile } from "./connector-env.js";
+import { signBrowserCommandAuthorization } from "./browser-command-identity.js";
 
 export class BrowserResumeUnavailableError extends Error {
   constructor(readonly sessionId: string, message: string) {
@@ -103,6 +111,7 @@ export class ChatGptBrowserExecutor implements Executor {
   private launching: Promise<BrowserContext> | undefined;
   private readonly workerPages = new Map<string, Page>();
   private readonly taskWindowPages = new Map<string, Page>();
+  private readonly ownerWakeupPages = new Map<string, Page>();
   private readonly documentEpochs = new WeakMap<Page, { documentId: string; navigationEpoch: number }>();
   private readonly tabLeaseIds = new WeakMap<Page, string>();
   private readonly runtimeIncarnation = randomUUID();
@@ -116,7 +125,146 @@ export class ChatGptBrowserExecutor implements Executor {
     private readonly onTaskWindow?: (task: TaskRef, marker: string | null) => Promise<void>,
     private readonly onTaskSession?: (task: TaskRef, sessionId: string) => Promise<void>,
     private readonly commandBroker?: BrowserCommandBroker,
+    private readonly projectRoot?: string,
   ) {}
+
+  async sendOwnerWakeup(input:OwnerWakeupDeliveryRequest):Promise<WakeupStatus>{
+    if(!this.projectRoot||resolve(input.projectRoot)!==resolve(this.projectRoot))
+      throw new Error("Owner wake-up request is not bound to this installed project runtime");
+    const ownerUrl=writableOwnerWakeupUrl({approvedReference:input.approvedReference,kind:input.ownerKind});
+    const ownerSecret=await readOwnerSigningSecret(input.projectRoot);
+    const chats=new ChatAccessRegistry(input.projectRoot,ownerSecret);
+    const approvals=new OwnerTaskApprovalStore(input.projectRoot,ownerSecret,chats);
+    const binding=approvals.resolveOwnerChatForTask(input.task);
+    if(!binding||binding.fingerprint!==input.ownerFingerprint||
+       binding.approvedReference!==input.approvedReference||binding.kind!==input.ownerKind)
+      throw new Error("Owner wake-up destination no longer matches its exact signed approval");
+    if(!this.commandBroker)throw new Error("Owner wake-up requires the canonical browser command broker");
+    const ledger=new OwnerWakeupLedger(input.projectRoot,ownerSecret);
+    const intentStatus=await ledger.assertIntentMatches(input.task,input.reviewRound,
+      input.ownerFingerprint,input.approvedReference,input.message);
+    if(intentStatus!=="waiting")return intentStatus;
+    const context=this.context;
+    if(!context)throw new Error("Owner wake-up requires the already active shared Camoufox context");
+    const taskKey=taskIdentity(input.task),marker=taskWindowMarker(input.task);
+    const taskRoot=this.taskWindowPages.get(taskKey);
+    if(!taskRoot||taskRoot.isClosed?.()||await readTaskWindowMarker(taskRoot)!==marker)
+      throw new Error("Owner wake-up requires the exact active Issue window; it will not start or reopen a browser");
+    const conversationId=conversationIdFromPrivateUrl(ownerUrl);
+    if(await ownerConversationHasWorkerOwner(input.projectRoot,ownerUrl) ||
+       [...this.workerPages.entries()].some(([key,page])=>key.startsWith(`${taskKey}\0`)&&
+         !page.isClosed?.()&&isSameChatGptConversation(ownerUrl,page.url())))
+      throw new Error("Owner wake-up target is already assigned to a worker conversation");
+    const wakeupKey=`${taskKey}\0${input.reviewRound}`;
+    let page=this.ownerWakeupPages.get(wakeupKey);
+    if(!page||page.isClosed?.()){
+      const existing:Page[]=[];
+      for(const candidate of context.pages?.()??[]){
+        if(candidate.isClosed?.()||await readTaskWindowMarker(candidate)!==marker)continue;
+        if(isSameChatGptConversation(ownerUrl,candidate.url()))existing.push(candidate);
+      }
+      if(existing.length>1)throw new Error("Multiple task-owned tabs match the signed owner conversation");
+      page=existing[0]??await openWorkerTabInSameWindow(context,taskRoot);
+      await writeTaskWindowMarker(page,marker);
+      this.ownerWakeupPages.set(wakeupKey,page);
+    }
+    await page.goto(ownerUrl,{waitUntil:"domcontentloaded",timeout:Math.min(this.timeoutMs,15_000)});
+    if(!isSameChatGptConversation(ownerUrl,page.url()))
+      throw new Error("Owner browser navigation did not reach the exact approved private conversation");
+    const document=this.trackDocument(page);
+    let tabLease=this.tabLeaseIds.get(page);
+    if(!tabLease){tabLease=randomUUID();this.tabLeaseIds.set(page,tabLease);}
+    await assertOwnerWakeupSurface(page,ownerUrl,conversationId);
+    const prepared=await prepareMessage(page,input.message,Math.min(this.timeoutMs,15_000),false);
+    if(!prepared.useButton||!(await page.locator(SEND).first().isEnabled()))
+      throw new Error("Exact visible owner Send button is unavailable");
+    await assertOwnerWakeupSurface(page,ownerUrl,conversationId,input.message);
+    const payloadSha256=createHash("sha256").update(input.message).digest("hex");
+    const commandId=`owner-wakeup-${createHash("sha256").update(JSON.stringify([
+      input.task.repo,input.task.issue,input.task.pr,input.reviewRound,input.ownerFingerprint,
+      binding.bindingSha256,payloadSha256,
+    ])).digest("hex").slice(0,48)}`;
+    const authorization={repo:input.task.repo,issue:input.task.issue,pr:input.task.pr,
+      workerId:"main_agent_owner",turn:input.reviewRound,commandId,
+      purpose:"owner_wakeup" as const,ownerFingerprint:input.ownerFingerprint,
+      ownerBindingSha256:binding.bindingSha256,
+      reportTokenHash:createHash("sha256").update(`${input.ownerFingerprint}\0${input.reviewRound}\0${payloadSha256}`).digest("hex"),
+      graphSha256:binding.bindingSha256,
+      workerManifestSha256:createHash("sha256").update(`owner-wakeup\0${input.ownerFingerprint}`).digest("hex")};
+    const claim:BrowserDocumentClaim={...authorization,
+      authorizationMac:signBrowserCommandAuthorization(authorization,ownerSecret),
+      runtimeIncarnation:this.runtimeIncarnation,
+      profileOwner:createHash("sha256").update(resolve(this.config.profileDir)).digest("hex"),
+      windowLease:marker,tabLease,documentId:document.documentId,
+      navigationEpoch:document.navigationEpoch,conversationId,payloadSha256};
+    await this.commandBroker.prepare(claim);
+    if(!(await ledger.arm(input.task,input.reviewRound)))
+      return await ledger.status(input.task,input.reviewRound)??"blocked";
+    let claimed=false,mayHaveSubmitted=false,submitted:SubmittedTurn|undefined;
+    let receiptWrite:Promise<void>|undefined;
+    let submittedRequest:PlaywrightRequest|undefined;
+    let duplicateOutgoing=false;
+    const onRequest=(request:PlaywrightRequest)=>{
+      if(!mayHaveSubmitted)return;
+      try{
+        const target=new URL(request.url());
+        if(target.origin!==new URL(ownerUrl).origin||!/^\/backend-api\/(?:f\/)?conversation\/?$/.test(target.pathname)||request.method()!=="POST")return;
+        const candidate=extractSubmittedTurn(request.postDataJSON(),input.message);
+        if(candidate?.conversationId===conversationId){
+          if(submitted)duplicateOutgoing=true;
+          else{submitted=candidate;submittedRequest=request;}
+        }
+      }catch{}
+    };
+    const onResponse=(response:PlaywrightResponse)=>{
+      if(!claimed||duplicateOutgoing||!submittedRequest||response.request()!==submittedRequest||!submitted)return;
+      if(response.status()<200||response.status()>=300)return;
+      const receipt={repo:claim.repo,issue:claim.issue,workerId:claim.workerId,
+        turn:claim.turn,commandId:claim.commandId,payloadSha256:claim.payloadSha256,
+        conversationId,messageId:submitted.messageId,purpose:"owner_wakeup" as const,
+        ownerFingerprint:claim.ownerFingerprint!,ownerBindingSha256:claim.ownerBindingSha256!};
+      receiptWrite=(async()=>{
+        await this.commandBroker!.recordProviderReceipt(commandId,receipt);
+        await this.commandBroker!.acknowledge(commandId,receipt);
+      })();
+    };
+    page.on("request",onRequest);page.on("response",onResponse);
+    try{
+      await submitOnly(page,input.message,Math.min(this.timeoutMs,15_000),async()=>{
+        await assertOwnerWakeupSurface(page,ownerUrl,conversationId,input.message);
+        const currentDocument=this.documentEpochs.get(page);
+        if(await readTaskWindowMarker(page)!==marker||!currentDocument||
+           currentDocument.documentId!==document.documentId||
+           currentDocument.navigationEpoch!==document.navigationEpoch)
+          throw new Error("Owner wake-up document or task window changed before the native Send boundary");
+        const observed={repo:claim.repo,issue:claim.issue,workerId:claim.workerId,
+          runtimeIncarnation:claim.runtimeIncarnation,profileOwner:claim.profileOwner,
+          windowLease:claim.windowLease,tabLease:claim.tabLease,documentId:claim.documentId,
+          navigationEpoch:document.navigationEpoch,conversationId};
+        claimed=await this.commandBroker!.claim(commandId,observed);
+        if(!claimed)throw new Error("Owner wake-up command was already claimed; refusing a second Send");
+        mayHaveSubmitted=true;
+      },prepared);
+      await waitForOwnerProviderReceipt(()=>receiptWrite,()=>!!submittedRequest,Math.min(this.timeoutMs,15_000));
+      await receiptWrite;
+      return await ledger.confirm(input.task,input.reviewRound,submitted!.messageId,async proof=>{
+        const record=await this.commandBroker!.get(commandId);
+        return proof.promptHash===payloadSha256&&
+          proof.referenceHash===createHash("sha256").update(input.approvedReference).digest("hex")&&
+          record?.status==="acknowledged"&&record.receipt?.messageId===proof.userMessageId&&
+          record.receipt.conversationId===conversationId&&record.command.ownerFingerprint===input.ownerFingerprint&&
+          record.command.ownerBindingSha256===binding.bindingSha256;
+      });
+    }catch(error){
+      const record=await this.commandBroker.get(commandId).catch(()=>null);
+      if(record?.status==="claimed")await this.commandBroker.markAmbiguous(commandId).catch(()=>undefined);
+      if(await ledger.status(input.task,input.reviewRound)==="armed")
+        await ledger.markAmbiguous(input.task,input.reviewRound).catch(()=>undefined);
+      throw error;
+    }finally{
+      page.off?.("request",onRequest);page.off?.("response",onResponse);
+    }
+  }
 
   async run(request: WorkerRequest): Promise<WorkerOutput> {
     const key = taskIdentity(request.task ?? request.reportTurn?.task ?? { repo: "__legacy__", issue: 0 });
@@ -488,6 +636,7 @@ export class ChatGptBrowserExecutor implements Executor {
       this.context = undefined;
       this.workerPages.clear();
       this.taskWindowPages.clear();
+      this.ownerWakeupPages.clear();
     }
     if (this.ownedProcess === owned) this.ownedProcess = undefined;
     debugLog("browser.cleanup", { phase: "context", decision: "closed" });
@@ -508,6 +657,8 @@ export class ChatGptBrowserExecutor implements Executor {
     }
     for (const page of pages) if (!page.isClosed?.()) await page.close();
     for (const [key] of owned) this.workerPages.delete(key);
+    for (const key of this.ownerWakeupPages.keys())
+      if (key.startsWith(`${taskKey}\0`)) this.ownerWakeupPages.delete(key);
     this.taskWindowPages.delete(taskKey);
     await this.onTaskWindow?.(task, null);
     const remainingPages = (this.context?.pages?.() ?? []).filter(page => !page.isClosed?.());
@@ -904,6 +1055,93 @@ function taskIdentity(task: TaskRef): string { return `${task.repo}#${task.issue
 
 function taskWindowMarker(task: TaskRef): string {
   return `devos-task-window:${createHash("sha256").update(taskIdentity(task)).digest("hex")}`;
+}
+
+async function readOwnerSigningSecret(root:string):Promise<string>{
+  const fromEnv=process.env.DEVOS_CONNECTOR_OWNER_SECRET?.trim();
+  if(fromEnv&&Buffer.byteLength(fromEnv)>=32)return fromEnv;
+  try{
+    const fromFile=parseEnvFile(await readFile(resolve(root,".env"),"utf8")).DEVOS_CONNECTOR_OWNER_SECRET?.trim();
+    if(fromFile&&Buffer.byteLength(fromFile)>=32)return fromFile;
+  }catch{}
+  throw new Error("Owner wake-up requires the existing local owner signing secret");
+}
+
+function conversationIdFromPrivateUrl(value:string):string{
+  const url=validateChatGptUrl(value);
+  const match=/\/c\/([^/]+)\/?$/.exec(url.pathname);
+  if(!match||isProvisionalChatGptConversationId(match[1]!))
+    throw new Error("Owner wake-up target has no stable private conversation ID");
+  return decodeURIComponent(match[1]!);
+}
+
+async function ownerConversationHasWorkerOwner(root:string,url:string):Promise<boolean>{
+  const directory=resolve(root,".devos","state");
+  let names:string[];
+  try{names=await readdir(directory);}
+  catch(error){
+    if((error as NodeJS.ErrnoException).code==="ENOENT")return false;
+    throw error;
+  }
+  for(const name of names.filter(value=>value.endsWith(".json"))){
+    const state=JSON.parse(await readFile(resolve(directory,name),"utf8")) as {sessions?:unknown};
+    if(!state.sessions||typeof state.sessions!=="object"||Array.isArray(state.sessions))continue;
+    for(const session of Object.values(state.sessions as Record<string,unknown>))
+      if(typeof session==="string"&&isSameChatGptConversation(url,session))return true;
+  }
+  return false;
+}
+
+export async function assertOwnerWakeupSurface(page:Page,expectedUrl:string,expectedConversationId:string,
+  expectedDraft?:string):Promise<void>{
+  const snapshot=await page.evaluate(()=>{
+    const visible=(element:Element|null):element is HTMLElement=>!!element&&
+      element instanceof HTMLElement&&element.getClientRects().length>0&&
+      getComputedStyle(element).visibility!=="hidden"&&getComputedStyle(element).display!=="none";
+    const composer=Array.from(document.querySelectorAll(
+      '[data-testid="prompt-textarea"],#prompt-textarea,textarea[placeholder*="Message"],[contenteditable="true"]'))
+      .find(element=>visible(element));
+    const composerText=composer instanceof HTMLInputElement||composer instanceof HTMLTextAreaElement
+      ? composer.value : composer?.innerText??"";
+    const send=Array.from(document.querySelectorAll(
+      '#composer-submit-button,button[data-testid="send-button"],button[aria-label*="Send"],button[type="submit"][aria-label="Отправить"]'))
+      .find(element=>visible(element)) as HTMLButtonElement|undefined;
+    const stop=Array.from(document.querySelectorAll(
+      '[data-testid="stop-button"],button[aria-label*="Stop"],button[aria-label*="stop generating"]'))
+      .some(element=>visible(element));
+    const text=(document.body?.innerText??"").slice(0,4000);
+    const route=/\/(?:g\/[^/]+\/)?c\/([^/]+)\/?$/.exec(location.pathname);
+    return {marker:"__DEVOS_OWNER_WAKEUP_SURFACE__",href:location.href,
+      conversationId:route?.[1],composerVisible:!!composer,composerText,
+      sendEnabled:!!send&&!send.disabled,stopVisible:stop,
+      loginVisible:Array.from(document.querySelectorAll('a[href*="/auth/login"],a[href*="/auth/signin"],[data-testid="login-button"]'))
+        .some(element=>visible(element)),
+      challengeVisible:/verify you are human|captcha|turnstile|cloudflare|just a moment/i.test(text)};
+  });
+  const data=snapshot as {marker?:string;href?:string;conversationId?:string;composerVisible?:boolean;
+    composerText?:string;sendEnabled?:boolean;stopVisible?:boolean;loginVisible?:boolean;challengeVisible?:boolean};
+  if(data.stopVisible)throw new Error("Owner chat is busy; deferring notification without changing its draft");
+  if(data.marker!=="__DEVOS_OWNER_WAKEUP_SURFACE__"||data.href!==expectedUrl||
+     data.conversationId!==expectedConversationId||!data.composerVisible||data.loginVisible||data.challengeVisible)
+    throw new Error(`Owner notification page is not ready (surface=${data.marker==="__DEVOS_OWNER_WAKEUP_SURFACE__"}, url=${data.href===expectedUrl}, conversation=${data.conversationId===expectedConversationId}, composer=${!!data.composerVisible}, login=${!!data.loginVisible}, challenge=${!!data.challengeVisible})`);
+  const text=normalizedSubmittedText(data.composerText??"");
+  if(expectedDraft===undefined&&text!=="")
+    throw new Error("Owner chat has an existing draft; refusing to replace it");
+  if(expectedDraft!==undefined&&text!==normalizedSubmittedText(expectedDraft))
+    throw new Error("Owner notification composer changed before Send");
+  if(expectedDraft!==undefined&&data.sendEnabled!==true)
+    throw new Error("Owner notification Send control is not ready");
+}
+
+async function waitForOwnerProviderReceipt(getReceipt:()=>Promise<void>|undefined,
+  hasMatchingRequest:()=>boolean,timeoutMs:number):Promise<void>{
+  const deadline=Date.now()+timeoutMs;
+  while(Date.now()<deadline){
+    const pending=getReceipt();
+    if(hasMatchingRequest()&&pending){await pending;return;}
+    await new Promise(resolve=>setTimeout(resolve,25));
+  }
+  throw new Error("Owner notification provider receipt is missing; the one-shot Send remains ambiguous");
 }
 
 async function readTaskWindowMarker(page: Page): Promise<string | undefined> {

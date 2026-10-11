@@ -87,7 +87,7 @@ test("emits worker result before routing and marks browser session re-entry", as
   ]);
 });
 
-test("makes needs_local_worker to local Codex routing explicit", async () => {
+test("makes verified needs_local_worker to local Codex routing explicit", async () => {
   const workflow: Workflow = {
     version: 1,
     task: { repo: "owner/product", issue: 41 },
@@ -121,6 +121,14 @@ test("makes needs_local_worker to local Codex routing explicit", async () => {
       ])],
     ]),
     stateStore: new MemoryStore(),
+    // Legacy event fixture: simulate an independent, exact host verifier.
+    // Without this callback the real Orchestrator must fail closed.
+    verifyHostOnlyFallback: async context =>
+      context.task.repo === "owner/product" &&
+      context.task.issue === 41 &&
+      context.workerId === "reviewer" &&
+      context.nextWorkerId === "local_reviewer" &&
+      context.sessionId === "review-session",
     onEvent: event => { events.push(event); },
   }).run();
 

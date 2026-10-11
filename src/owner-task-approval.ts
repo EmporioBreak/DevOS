@@ -155,7 +155,7 @@ export class OwnerTaskApprovalStore {
   /** Select only a unique exact task+PR approval; multiple signed revisions
    * are ambiguous even if they originate from the same owner chat. */
   resolveOwnerChatForTask(task:{repo:string;issue:number;pr:number}):
-    {fingerprint:string;approvedReference:string;kind:"private"|"share_label"}|null {
+    {fingerprint:string;approvedReference:string;kind:"private"|"share_label";bindingSha256:string}|null {
     if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(task.repo)||
         !Number.isSafeInteger(task.issue)||task.issue<1||
         !Number.isSafeInteger(task.pr)||task.pr<1)
@@ -176,7 +176,7 @@ export class OwnerTaskApprovalStore {
    * private /c destination + editable composer before any send.
    */
   resolveOwnerChat(expectedInput:OwnerTaskReview):
-    {fingerprint:string;approvedReference:string;kind:"private"|"share_label"}|null {
+    {fingerprint:string;approvedReference:string;kind:"private"|"share_label";bindingSha256:string}|null {
     const expected=canonical(expectedInput);
     const fingerprints=new Set<string>();
     for(const receipt of this.signedReceipts())
@@ -188,7 +188,8 @@ export class OwnerTaskApprovalStore {
     const binding=this.chats.list().find(x=>x.fingerprint===fingerprint);
     if(!binding)return null; // revoked/missing, never assume another chat
     return {fingerprint,approvedReference:binding.url,
-      kind:binding.url.includes("/share/")?"share_label":"private"};
+      kind:binding.url.includes("/share/")?"share_label":"private",
+      bindingSha256:createHash("sha256").update(JSON.stringify(expected)).digest("hex")};
   }
 
   private mac(receipt:Receipt):string {

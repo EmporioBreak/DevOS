@@ -95,6 +95,15 @@ export class OwnerWakeupLedger {
   async status(task:TaskRef,reviewRound:number):Promise<WakeupStatus|null>{
     return (await this.read(task,reviewRound))?.status??null;
   }
+  async assertIntentMatches(task:TaskRef,reviewRound:number,ownerFingerprint:string,
+    approvedReference:string,message:string):Promise<WakeupStatus>{
+    const record=await this.read(task,reviewRound);
+    if(!record||record.ownerFingerprint!==ownerFingerprint||
+       record.referenceHash!==hash(canonicalChatApprovalReference(approvedReference))||
+       record.promptHash!==hash(message))
+      throw new Error("Owner wake-up delivery does not match the exact queued intent");
+    return record.status;
+  }
   async enqueue(task:TaskRef,reviewRound:number,ownerFingerprint:string,
     approvedReference:string,message:string):Promise<WakeupStatus>{
     if(!OWNER.test(ownerFingerprint)||typeof message!=="string"||

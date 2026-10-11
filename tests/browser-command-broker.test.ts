@@ -119,3 +119,29 @@ test("separate Node processes can claim one command only once", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("broker signs owner wake-up commands only when they bind an exact owner and approval digest",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"devos-owner-command-"));
+  try{
+    const api=await loadBroker();
+    assert.ok(api,"BrowserCommandBroker implementation is missing");
+    const broker=new api.BrowserCommandBroker(root,ownerSecret);
+    const unsigned={...command,purpose:"owner_wakeup" as const,workerId:"main_agent_owner",
+      ownerFingerprint:"chat_"+"e".repeat(64),ownerBindingSha256:"f".repeat(64),
+      turn:2,commandId:"owner-wakeup-239-round-2",reportTokenHash:"1".repeat(64),
+      conversationId:"owner-conversation"};
+    const signed=await broker.signOwnerWakeup(unsigned);
+    await broker.prepare(signed);
+    assert.equal(await broker.claim(signed.commandId,signed),true);
+    const receipt={repo:signed.repo,issue:signed.issue,workerId:signed.workerId,
+      turn:signed.turn,commandId:signed.commandId,payloadSha256:signed.payloadSha256,
+      conversationId:signed.conversationId!,messageId:"provider-owner-message-2",
+      purpose:"owner_wakeup" as const,ownerFingerprint:signed.ownerFingerprint!,
+      ownerBindingSha256:signed.ownerBindingSha256!};
+    await broker.recordProviderReceipt(signed.commandId,receipt);
+    await broker.acknowledge(signed.commandId,receipt);
+    assert.equal((await broker.get(signed.commandId))?.status,"acknowledged");
+    assert.notEqual(await broker.signOwnerWakeup({...unsigned,ownerFingerprint:"chat_"+"a".repeat(64)}),signed,
+      "destination changes must produce a different signed command");
+  }finally{await rm(root,{recursive:true,force:true})}
+});

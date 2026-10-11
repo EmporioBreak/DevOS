@@ -16,7 +16,7 @@ import { runChatAccessAdmin, type ChatAccessCommand } from "./chat-access-admin.
 import { ChatAccessRegistry } from "./chat-access.js";
 import { OwnerTaskApprovalStore } from "./owner-task-approval.js";
 import { OwnerWakeupLedger } from "./owner-wakeup-ledger.js";
-import { enqueueOwnerHandoff } from "./owner-wakeup-handoff.js";
+import { buildOwnerHandoffMessage, enqueueOwnerHandoff } from "./owner-wakeup-handoff.js";
 import { parseSkillsCliArgs, runSkillsCliCommand, type SkillsCliCommand } from "./skills-cli.js";
 import { LocalCommandRunner } from "./command-runner.js";
 import { debugLog } from "./debug-log.js";
@@ -49,6 +49,7 @@ import {
   closeSharedBrowserRuntime,
   ensureSharedBrowserRuntime,
   runBrowserRuntime,
+  sendOwnerWakeupToExistingRuntime,
 } from "./shared-browser-runtime.js";
 
 /** Lazy only for a Main-Agent-planned local first stage. The signed
@@ -269,8 +270,38 @@ export async function runWorkflow(
       const notice=await enqueueOwnerHandoff({
         workflow,state,store:approvals,ledger,
       });
+      let dispatch:"not_sent"|"confirmed"|"blocked"="not_sent";
+      let reason:string|undefined;
+      if(notice==="confirmed")dispatch="confirmed";
+      else if(notice==="blocked"){dispatch="blocked";reason="ledger_blocked";}
+      else if(notice==="armed"||notice==="ambiguous"){
+        dispatch="blocked";reason="prior_delivery_attempt_not_replayed";
+      }
+      if(notice==="waiting"){
+        const owner=approvals.resolveOwnerChatForTask({repo:workflow.task.repo,
+          issue:workflow.task.issue,pr:workflow.task.pr!});
+        if(!owner)reason="signed_owner_binding_unavailable";
+        else if(owner.kind!=="private")reason="verified_private_owner_binding_required";
+        else {
+          try{
+            const status=await sendOwnerWakeupToExistingRuntime(cwd,{
+              projectRoot:cwd,
+              task:{repo:workflow.task.repo,issue:workflow.task.issue,pr:workflow.task.pr!},
+              reviewRound:state.reviewLoops!,ownerFingerprint:owner.fingerprint,
+              approvedReference:owner.approvedReference,ownerKind:owner.kind,
+              message:buildOwnerHandoffMessage(workflow.task,state.reviewLoops!),
+            });
+            if(status==="confirmed")dispatch="confirmed";
+            else {dispatch="blocked";reason=`delivery_${status}`;}
+          }catch(error){
+            dispatch="blocked";
+            reason=error instanceof Error&&error.message.includes("No verified active shared browser runtime")
+              ?"existing_shared_runtime_unavailable":"owner_wakeup_delivery_rejected";
+          }
+        }
+      }
       debugLog("owner.wakeup.intent",{issue:workflow.task.issue,status:notice,
-        dispatch:"not_sent"});
+        dispatch,...(reason?{reason}:{})});
     }catch{
       debugLog("owner.wakeup.blocked",{issue:workflow.task.issue,
         reason:"signed_owner_binding_or_local_queue_unavailable",dispatch:"not_sent"});

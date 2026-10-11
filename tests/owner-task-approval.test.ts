@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {createHash} from "node:crypto";
 import {randomBytes} from "node:crypto";
 import {chmodSync,readFileSync,writeFileSync,existsSync} from "node:fs";
 import {mkdtemp,rm} from "node:fs/promises";
@@ -124,7 +125,7 @@ test("owner wake-up target is the exact password-signed approval chat, never the
     assert.equal(f.store.submit({ticket:issued.ticket,password,confirm:"approve"}),true);
     assert.deepEqual(f.store.resolveOwnerChat(review()),{
       fingerprint:f.owner,approvedReference:"https://chatgpt.com/c/6ac799bd-7ffc-83eb-b2b0-15d6a2f558a0",
-      kind:"private",
+      kind:"private",bindingSha256:createHash("sha256").update(JSON.stringify(review())).digest("hex"),
     });
     assert.equal(f.store.resolveOwnerChat({...review(),issue:999}),null,"same chat approval does not bind another Issue");
     f.chats.revoke(f.owner);
@@ -142,6 +143,7 @@ test("owner wake-up preserves /share as a non-writable label and rejects multipl
     assert.equal(f.store.submit({ticket:first.ticket,password,confirm:"approve"}),true);
     assert.deepEqual(f.store.resolveOwnerChat(review()),{
       fingerprint:f.owner,approvedReference:share,kind:"share_label",
+      bindingSha256:createHash("sha256").update(JSON.stringify(review())).digest("hex"),
     },"public share must not be asserted to be an editable /c conversation");
     f.chats.approve(f.stranger,"https://chatgpt.com/c/8ac799bd-7ffc-83eb-b2b0-15d6a2f558a0");
     const second=f.store.issue(f.stranger,review());

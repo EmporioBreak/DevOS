@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import {
   assertBrowserDocumentClaim,
   matchBrowserReceiptIdentity,
+  signBrowserCommandAuthorization,
   verifyBrowserCommandAuthorization,
   type BrowserDocumentClaim,
   type BrowserDocumentObservation,
@@ -66,6 +67,17 @@ export class BrowserCommandBroker {
         preparedAt: new Date().toISOString(),
       });
     });
+  }
+
+  /** Sign a locally verified #225 owner destination for the same durable
+   * command outbox used by worker sends. This does not send or arm a notice. */
+  async signOwnerWakeup(command: Omit<BrowserCommand,"authorizationMac">): Promise<BrowserCommand> {
+    if(command.purpose!=="owner_wakeup"||command.workerId!=="main_agent_owner")
+      throw new Error("Owner wake-up signing requires an explicit owner command identity");
+    const candidate={...command,authorizationMac:"0".repeat(64)} as BrowserCommand;
+    validateCommand(candidate);
+    const authorizationMac=signBrowserCommandAuthorization(candidate,await this.ownerSecret());
+    return {...candidate,authorizationMac};
   }
 
   /** Returns true only to the one process that atomically claims this Send. */
@@ -243,7 +255,13 @@ export class BrowserCommandBroker {
 }
 
 function validateCommand(command: BrowserCommand): void {
+  const purpose=command?.purpose??"worker_turn";
+  const ownerValid=purpose==="worker_turn"
+    ? command?.ownerFingerprint===undefined&&command?.ownerBindingSha256===undefined
+    : purpose==="owner_wakeup"&&command?.workerId==="main_agent_owner"&&
+      /^chat_[a-f0-9]{64}$/.test(command.ownerFingerprint??"")&&HEX.test(command.ownerBindingSha256??"");
   if (!command || !REPO.test(command.repo) || !Number.isSafeInteger(command.issue) || command.issue < 1 ||
+      !ownerValid || !["worker_turn","owner_wakeup"].includes(purpose) ||
       !ID.test(command.workerId) || !Number.isSafeInteger(command.turn) || command.turn < 0 ||
       !ID.test(command.commandId) || !ID.test(command.runtimeIncarnation) || !ID.test(command.profileOwner) ||
       !ID.test(command.windowLease) || !ID.test(command.tabLease) || !ID.test(command.documentId) ||

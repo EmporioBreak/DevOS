@@ -3,7 +3,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { spawn } from "node:child_process";
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Executor, WorkerRequest } from "./executor.js";
 import {
   BrowserPreSubmitFailureError,
@@ -19,6 +19,8 @@ import { captureProcessIdentity, processExists, sameProcessIdentity, type Proces
 import { JsonStateStore } from "./json-state-store.js";
 import { BrowserCommandBroker, type BrowserCommand } from "./browser-command-broker.js";
 import type { BrowserDocumentObservation, BrowserProviderReceiptIdentity } from "./browser-command-identity.js";
+import type { OwnerWakeupDeliveryRequest } from "./owner-wakeup-handoff.js";
+import type { WakeupStatus } from "./owner-wakeup-ledger.js";
 
 type WireMessage =
   | { type: "run"; request: Omit<WorkerRequest, "onSession"> }
@@ -34,6 +36,8 @@ type WireMessage =
   | { type: "broker_receipt"; commandId: string; receipt: BrowserProviderReceiptIdentity }
   | { type: "broker_ack"; commandId: string; receipt: BrowserProviderReceiptIdentity }
   | { type: "broker_ambiguous"; commandId: string }
+  | { type: "owner_wakeup"; request: OwnerWakeupDeliveryRequest }
+  | { type: "owner_wakeup_result"; status: WakeupStatus }
   | { type: "broker_result"; value?: unknown };
 
 interface PendingTurn {
@@ -119,6 +123,21 @@ export class SharedBrowserExecutor implements Executor {
     } finally { socket.destroy(); }
   }
 
+  async sendOwnerWakeup(request:OwnerWakeupDeliveryRequest):Promise<WakeupStatus>{
+    const task=this.task??request.task;
+    if(browserTaskKey(task)!==browserTaskKey(request.task))
+      throw new Error("Owner wake-up task does not match this shared browser Issue binding");
+    const socket=await connect(this.socketPath),lines=readLines(socket);
+    socket.write(`${JSON.stringify({type:"owner_wakeup",request})}\n`);
+    try{
+      for await(const message of lines){
+        if(message.type==="owner_wakeup_result")return message.status;
+        if(message.type==="error")throw new Error(message.message);
+      }
+      throw new Error("Shared browser runtime disconnected during owner wake-up");
+    }finally{socket.destroy();}
+  }
+
   async prepareBrowserCommand(command: BrowserCommand): Promise<void> {
     await this.brokerRequest({ type: "broker_prepare", command });
   }
@@ -146,6 +165,21 @@ export class SharedBrowserExecutor implements Executor {
       throw new Error("Shared browser runtime disconnected during broker operation");
     } finally { socket.destroy(); }
   }
+}
+
+/** Deliver only through a runtime already proven to belong to this project.
+ * This helper never starts a process, profile or Camoufox context. */
+export async function sendOwnerWakeupToExistingRuntime(
+  root:string,request:OwnerWakeupDeliveryRequest,
+):Promise<WakeupStatus>{
+  if(resolve(root)!==resolve(request.projectRoot))
+    throw new Error("Owner wake-up project root does not match the caller's installed project");
+  const paths=browserRuntimePaths(root,request.task.repo,request.task.issue);
+  const metadata=await readMetadata(paths.metadata);
+  if(!metadata||metadata.socket!==paths.socket||!metadata.profileDir||
+     !(await connectOwnedRuntime(paths.socket,paths.metadata,500)))
+    throw new Error("No verified active shared browser runtime is available; owner wake-up was not sent");
+  return await new SharedBrowserExecutor(paths.socket,request.task).sendOwnerWakeup(request);
 }
 
 /** A legacy detached Node runtime can relaunch its browser after the native
@@ -387,6 +421,7 @@ export async function runBrowserRuntime(args: string[]): Promise<void> {
       });
     },
     broker,
+    root,
   );
   await startSharedBrowserServer(socketPath, paths.metadata, executor, { projectUrl, profileDir, headless: headless === "1" }, broker);
 }
@@ -518,6 +553,15 @@ async function handleSocket(socket: Socket, executor: ChatGptBrowserExecutor, tu
         socket.end(hasOtherTasks ? '{"type":"task_closed"}\n' : '{"type":"closed"}\n');
       } catch (error) {
         socket.write(`${JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) })}\n`);
+      }
+      return;
+    }
+    if(message.type==="owner_wakeup"){
+      try{
+        const status=await executor.sendOwnerWakeup(message.request);
+        socket.end(`${JSON.stringify({type:"owner_wakeup_result",status})}\n`);
+      }catch(error){
+        socket.end(`${JSON.stringify({type:"error",message:error instanceof Error?error.message:String(error)})}\n`);
       }
       return;
     }

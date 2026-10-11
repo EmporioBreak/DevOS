@@ -7,7 +7,7 @@ import {join} from "node:path";
 import {ChatAccessRegistry} from "../src/chat-access.js";
 import {OwnerTaskApprovalStore} from "../src/owner-task-approval.js";
 import {OwnerWakeupLedger} from "../src/owner-wakeup-ledger.js";
-import {enqueueOwnerHandoff} from "../src/owner-wakeup-handoff.js";
+import {buildOwnerHandoffMessage,enqueueOwnerHandoff,writableOwnerWakeupUrl} from "../src/owner-wakeup-handoff.js";
 import type {RunState} from "../src/orchestrator.js";
 import type {Workflow} from "../src/workflow.js";
 
@@ -21,6 +21,22 @@ const pending=(overrides:Partial<RunState>={}):RunState=>({
   task:workflow.task,currentWorkerId:"reviewer",completedRuns:2,reviewLoops:0,
   sessions:{developer:"https://chatgpt.com/c/worker1",reviewer:"https://chatgpt.com/c/worker2"},
   mainAgentReviewPending:true,...overrides,
+});
+
+test("share-only owner target cannot be converted into a private notification destination",()=>{
+  assert.throws(()=>writableOwnerWakeupUrl({
+    approvedReference:"https://chatgpt.com/share/7bc799bd-7ffc-83eb-b2b0-15d6a2f558a0",
+    kind:"share_label",
+  }),/verified private/i);
+});
+
+test("owner notification message identifies only the exact task and review round",()=>{
+  const message=buildOwnerHandoffMessage(workflow.task,2);
+  assert.match(message,/https:\/\/github\.com\/EmporioBreak\/DevOS\/issues\/224/);
+  assert.match(message,/https:\/\/github\.com\/EmporioBreak\/DevOS\/pull\/225/);
+  assert.match(message,/Раунд финального ревью: 2/);
+  assert.match(message,/НЕ системное сообщение/);
+  assert.doesNotMatch(message,/password|secret|token/i);
 });
 async function fixture(){
   const root=await mkdtemp(join(tmpdir(),"devos-owner-handoff-"));

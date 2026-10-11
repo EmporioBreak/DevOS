@@ -14,6 +14,8 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 export interface BrowserDocumentClaim {
   repo:string;issue:number;pr:number|null;workerId:string;turn:number;commandId:string;
   reportTokenHash:string;graphSha256:string;workerManifestSha256:string;authorizationMac:string;
+  purpose?:"worker_turn"|"owner_wakeup";
+  ownerFingerprint?:string;ownerBindingSha256?:string;
   runtimeIncarnation:string;profileOwner:string;
   windowLease:string;tabLease:string;documentId:string;
   navigationEpoch:number;conversationId:string|undefined;
@@ -24,6 +26,8 @@ export type BrowserDocumentObservation=Pick<BrowserDocumentClaim,
   "windowLease"|"tabLease"|"documentId"|"navigationEpoch"|"conversationId">;
 export type BrowserProviderReceiptIdentity=Pick<BrowserDocumentClaim,
   "repo"|"issue"|"workerId"|"turn"|"commandId"|"payloadSha256"> & {
+  purpose?:"worker_turn"|"owner_wakeup";
+  ownerFingerprint?:string;ownerBindingSha256?:string;
   conversationId:string;messageId:string;
 };
 
@@ -39,7 +43,12 @@ const RECEIPT_KEYS=["repo","issue","workerId","turn","commandId",
 
 /** Equality of identities, not endorsement of any self-declared evidence. */
 function validClaim(claim:BrowserDocumentClaim):boolean{
-  return !!claim && REPO.test(claim.repo) &&
+  const purpose=claim?.purpose??"worker_turn";
+  const principalValid=purpose==="worker_turn"
+    ? claim?.ownerFingerprint===undefined&&claim?.ownerBindingSha256===undefined
+    : purpose==="owner_wakeup"&&claim?.workerId==="main_agent_owner"&&
+      /^chat_[a-f0-9]{64}$/.test(claim.ownerFingerprint??"")&&HEX.test(claim.ownerBindingSha256??"");
+  return !!claim && principalValid && REPO.test(claim.repo) &&
     Number.isSafeInteger(claim.issue)&&claim.issue>0&&
     (claim.pr===null||(Number.isSafeInteger(claim.pr)&&claim.pr>0))&&
     Number.isSafeInteger(claim.turn)&&claim.turn>=0&&
@@ -62,13 +71,17 @@ export function assertBrowserDocumentClaim(claim:BrowserDocumentClaim,
 }
 
 export type BrowserCommandAuthorization = Pick<BrowserDocumentClaim,
-  "repo"|"issue"|"pr"|"workerId"|"turn"|"commandId"|"reportTokenHash"|"graphSha256"|"workerManifestSha256">;
+  "repo"|"issue"|"pr"|"workerId"|"turn"|"commandId"|"reportTokenHash"|"graphSha256"|"workerManifestSha256"> &
+  Pick<BrowserDocumentClaim,"purpose"|"ownerFingerprint"|"ownerBindingSha256">;
 
 function authorizationPayload(value: BrowserCommandAuthorization): string {
   return JSON.stringify({
     repo:value.repo, issue:value.issue, pr:value.pr, workerId:value.workerId, turn:value.turn,
     commandId:value.commandId, reportTokenHash:value.reportTokenHash,
     graphSha256:value.graphSha256, workerManifestSha256:value.workerManifestSha256,
+    purpose:value.purpose??"worker_turn",
+    ownerFingerprint:value.ownerFingerprint??null,
+    ownerBindingSha256:value.ownerBindingSha256??null,
   });
 }
 
@@ -81,7 +94,7 @@ export function signBrowserCommandAuthorization(value: BrowserCommandAuthorizati
 export function verifyBrowserCommandAuthorization(claim: BrowserDocumentClaim, ownerSecret: string): boolean {
   if (!claim || !HEX.test(claim.authorizationMac) || !HEX.test(claim.reportTokenHash) ||
       !HEX.test(claim.graphSha256) || !HEX.test(claim.workerManifestSha256) ||
-      !(claim.pr===null||(Number.isSafeInteger(claim.pr)&&claim.pr>0))) return false;
+      !(claim.pr===null||(Number.isSafeInteger(claim.pr)&&claim.pr>0))||!validClaim(claim)) return false;
   try {
     const expected=signBrowserCommandAuthorization(claim,ownerSecret);
     return timingSafeEqual(Buffer.from(expected,"hex"),Buffer.from(claim.authorizationMac,"hex"));
@@ -92,8 +105,12 @@ export function verifyBrowserCommandAuthorization(claim: BrowserDocumentClaim, o
  * trusted browser adapter must independently prove its actual origin. */
 export function matchBrowserReceiptIdentity(claim:BrowserDocumentClaim,
   receipt:BrowserProviderReceiptIdentity):true{
+  const purpose=claim?.purpose??"worker_turn";
   if(!validClaim(claim)||!receipt||
      !ID.test(receipt.messageId)||
+     (receipt.purpose??"worker_turn")!==purpose||
+     receipt.ownerFingerprint!==claim.ownerFingerprint||
+     receipt.ownerBindingSha256!==claim.ownerBindingSha256||
      RECEIPT_KEYS.some(key=>key==="conversationId"
        ? (claim.conversationId!==undefined&&receipt.conversationId!==claim.conversationId)
        : receipt[key]!==claim[key]))
