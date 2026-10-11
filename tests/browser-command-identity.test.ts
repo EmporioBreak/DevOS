@@ -56,6 +56,14 @@ test("native execution attestation binds the signed grant to the selected page, 
   assert.equal(verifyBrowserCommandExecution({...claim,conversationId:"foreign-chat",executionMac},secret),false);
 });
 
+test("orchestrator authorization signature binds the original outgoing payload digest",()=>{
+  const secret="test-owner-secret-that-is-at-least-thirty-two-bytes";
+  const signed=signBrowserCommandAuthorization(claim,secret);
+  assert.equal(verifyBrowserCommandAuthorization({...claim,authorizationMac:signed},secret),true);
+  assert.equal(verifyBrowserCommandAuthorization({...claim,payloadSha256:"f".repeat(64),authorizationMac:signed},secret),false,
+    "a valid grant signature must not authorize a different outgoing prompt digest");
+});
+
 test("A→B→A restores original conversation URL but never restores stale document/action authority",()=>{
   const returnedToA={...observation,documentId:"document-A2",navigationEpoch:9};
   assert.equal(returnedToA.conversationId,observation.conversationId);

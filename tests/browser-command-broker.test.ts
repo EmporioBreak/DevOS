@@ -16,6 +16,7 @@ const commandAuth = {
   repo: "EmporioBreak/DevOS", issue: 239, pr: 240, workerId: "developer", turn: 1,
   commandId: "cmd-239-1", reportTokenHash: "b".repeat(64), graphSha256: "c".repeat(64),
   workerManifestSha256: "d".repeat(64), expiresAt: Date.now() + 60_000,conversationId:"conversation-a",
+  payloadSha256:"a".repeat(64),
 };
 const unsignedCommand = {
   ...commandAuth, authorizationMac: signBrowserCommandAuthorization(commandAuth, ownerSecret),

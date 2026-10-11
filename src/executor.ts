@@ -14,7 +14,7 @@ export interface WorkerRequest {
   browserCommand?: {
     task: TaskRef; workerId: string; turn: number; commandId: string;
     reportTokenHash: string; graphSha256: string; workerManifestSha256: string; authorizationMac: string;
-    expiresAt:number;conversationId?:string;
+    expiresAt:number;conversationId?:string;payloadSha256:string;
   };
   allowToolReportedStatus?: boolean;
   // Serialized across shared-browser IPC; identifies the single authorized

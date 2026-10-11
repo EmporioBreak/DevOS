@@ -4,7 +4,7 @@ import {
 } from "./chatgpt-browser-executor.js";
 import { isCodexResumeUnavailableError } from "./codex-executor.js";
 import type { Executor } from "./executor.js";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { DevosToolRegistry, reportTokenHash } from "./mcp-tools/registry.js";
 import { type BrowserCommandAuthorization } from "./browser-command-identity.js";
 import { parseDevosResult } from "./result.js";
@@ -320,8 +320,15 @@ export class Orchestrator {
         if (recoveredReportStatus) {
           output = { text: "", sessionId: state.sessions[worker.id]! };
         } else {
+        const workerPrompt = buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot,
+          workerReportToken ? { turn: state.completedRuns, token: workerReportToken } : undefined) +
+          (skillAssignment ? buildStrictWorkerSkillInstructions(worker.executor,skillAssignment) : "") +
+          (browserTurnToken
+            ? "\n\nDevOS browser attempt ID: " + state.activeReport!.tokenHash + ". This is a non-secret correlation identifier; do not repeat it in your final answer or GitHub comments."
+            : "");
         const browserCommand = worker.executor === "chatgpt_browser" && browserTurnToken && skillAssignment
           ? (() => {
+              const payloadSha256=createHash("sha256").update(workerPrompt).digest("hex");
               const authorization: BrowserCommandAuthorization = {
                 repo: activeWorkflow.task.repo, issue: activeWorkflow.task.issue,
                 pr: activeWorkflow.task.pr ?? null, workerId: worker.id,
@@ -331,13 +338,14 @@ export class Orchestrator {
                 graphSha256: skillAssignment.graphSha256,
                 workerManifestSha256: skillAssignment.manifestSha256,
                 expiresAt: state.activeReport!.expiresAt!,
+                payloadSha256,
                 conversationId:sessionId?browserConversationId(sessionId):undefined,
               };
               return {
                 task: activeWorkflow.task, workerId: worker.id, turn: authorization.turn,
                 commandId: authorization.commandId, reportTokenHash: authorization.reportTokenHash,
                 graphSha256: authorization.graphSha256, workerManifestSha256: authorization.workerManifestSha256,
-                expiresAt: authorization.expiresAt,
+                expiresAt: authorization.expiresAt,payloadSha256:authorization.payloadSha256,
                 ...(authorization.conversationId?{conversationId:authorization.conversationId}:{}),
                 authorizationMac: this.options.signBrowserCommand?.(authorization) ?? "",
               };
@@ -345,12 +353,7 @@ export class Orchestrator {
           : undefined;
         const executing = executor.run({
           projectRoot: this.options.projectRoot,
-          prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot,
-            workerReportToken ? { turn: state.completedRuns, token: workerReportToken } : undefined) +
-            (skillAssignment ? buildStrictWorkerSkillInstructions(worker.executor,skillAssignment) : "") +
-            (browserTurnToken
-              ? "\n\nDevOS browser attempt ID: " + state.activeReport!.tokenHash + ". This is a non-secret correlation identifier; do not repeat it in your final answer or GitHub comments."
-              : ""),
+          prompt: workerPrompt,
           workerId: worker.id,
           ...(worker.executor === "codex" ? {
             codexSkills: { task: activeWorkflow.task, workerId: worker.id,

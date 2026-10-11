@@ -29,13 +29,14 @@ test("shared runtime IPC cannot claim or poison a command without native authori
     repo: task.repo, issue: task.issue, pr: null, workerId: "developer", turn: 1,
     commandId: "cmd-73-1", reportTokenHash: "b".repeat(64), graphSha256: "c".repeat(64),
     workerManifestSha256: "d".repeat(64),expiresAt:Date.now()+60_000,conversationId:"conversation-a",
+    payloadSha256:"a".repeat(64),
   };
   const unsignedCommand = {
     ...auth, authorizationMac: signBrowserCommandAuthorization(auth, ownerSecret),
     executionMac:"0".repeat(64),
     runtimeIncarnation: "runtime-a", profileOwner: "profile-a",
     windowLease: "window-73", tabLease: "tab-73", documentId: "doc-a",
-    navigationEpoch: 2, conversationId: "conversation-a", payloadSha256: "a".repeat(64),
+    navigationEpoch: 2, conversationId: "conversation-a", payloadSha256: auth.payloadSha256,
   };
   const command:BrowserCommand={...unsignedCommand,executionMac:signBrowserCommandExecution(unsignedCommand,ownerSecret)};
   const executor = { async run() { return { text: "unused" }; }, async close() {} } as unknown as ChatGptBrowserExecutor;

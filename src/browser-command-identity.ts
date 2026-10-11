@@ -73,7 +73,7 @@ export function assertBrowserDocumentClaim(claim:BrowserDocumentClaim,
 }
 
 export type BrowserCommandAuthorization = Pick<BrowserDocumentClaim,
-  "repo"|"issue"|"pr"|"workerId"|"turn"|"commandId"|"reportTokenHash"|"graphSha256"|"workerManifestSha256"|"expiresAt"> & {
+  "repo"|"issue"|"pr"|"workerId"|"turn"|"commandId"|"reportTokenHash"|"graphSha256"|"workerManifestSha256"|"expiresAt"|"payloadSha256"> & {
     purpose?:BrowserDocumentClaim["purpose"];
     ownerFingerprint?:string;ownerBindingSha256?:string;conversationId:string|undefined;
   };
@@ -85,6 +85,7 @@ function authorizationPayload(value: BrowserCommandAuthorization): string {
     graphSha256:value.graphSha256, workerManifestSha256:value.workerManifestSha256,
     expiresAt:value.expiresAt,
     conversationId:value.conversationId??null,
+    payloadSha256:value.payloadSha256,
     purpose:value.purpose??"worker_turn",
     ownerFingerprint:value.ownerFingerprint??null,
     ownerBindingSha256:value.ownerBindingSha256??null,
@@ -143,6 +144,7 @@ export function verifyBrowserCommandGrant(value:BrowserCommandAuthorization&{aut
       !Number.isSafeInteger(value.turn)||value.turn<0||!Number.isSafeInteger(value.expiresAt)||
       value.expiresAt<=Date.now()||!HEX.test(value.reportTokenHash)||!HEX.test(value.graphSha256)||
       !HEX.test(value.workerManifestSha256)||!HEX.test(value.authorizationMac)||
+      !HEX.test(value.payloadSha256)||
       (value.pr!==null&&(!Number.isSafeInteger(value.pr)||value.pr!<1)))return false;
   try{
     const expected=signBrowserCommandAuthorization(value,ownerSecret);

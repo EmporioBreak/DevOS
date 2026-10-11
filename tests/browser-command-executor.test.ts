@@ -214,13 +214,14 @@ test("browser executor claims the signed Issue window before Send and ACKs the e
   const graphSha256 = "b".repeat(64), workerManifestSha256 = "c".repeat(64);
   const authorization = { repo: task.repo, issue: task.issue, pr: task.pr, workerId: "developer", turn: 0,
     commandId, reportTokenHash: tokenHash, graphSha256, workerManifestSha256,expiresAt,conversationId:undefined,
+    payloadSha256:createHash("sha256").update("Run the approved worker task").digest("hex"),
   };
   const broker = new BrowserCommandBroker(root, ownerSecret);
   const listeners = new Map<string, Array<(value: any) => void>>();
   const projectUrl = "https://chatgpt.com/g/project/project";
   const conversationUrl = "https://chatgpt.com/g/project/c/conversation-1";
   const prompt = "Run the approved worker task";
-  let url = projectUrl, sends = 0, statusAtSend: string | undefined;
+  let url = projectUrl, sends = 0, gotoCount = 0, statusAtSend: string | undefined;
   const outgoing = { url: () => "https://chatgpt.com/backend-api/conversation", method: () => "POST",
     postDataJSON: () => ({ conversation_id: "conversation-1", messages: [{ id: "user-message-1", author: { role: "user" }, content: { parts: [prompt] } }] }) };
   const response = { request: () => outgoing, status: () => 200, url: () => outgoing.url() };
@@ -232,7 +233,7 @@ test("browser executor claims the signed Issue window before Send and ACKs the e
   const frame = {};
   const page = { on(event: string, listener: (value: any) => void) { listeners.set(event, [...(listeners.get(event) ?? []), listener]); },
     off(event: string, listener: (value: any) => void) { listeners.set(event, (listeners.get(event) ?? []).filter(x => x !== listener)); },
-    mainFrame: () => frame, url: () => url, async goto() { url = projectUrl; return { status: () => 200 }; }, locator: () => locator,
+    mainFrame: () => frame, url: () => url, async goto() { gotoCount++; url = projectUrl; return { status: () => 200 }; }, locator: () => locator,
     async evaluate(fn: Function) { const source=fn.toString(); if(source.includes("window.name")) return marker; return source.includes("__DEVOS_ARM_STREAM__") ? 1 : { text: "done", failed: false }; },
     async waitForFunction() {}, async close() {}, isClosed: () => false } as unknown as Page;
   const executor = new ChatGptBrowserExecutor({ projectUrl, profileDir: join(root, "profile"), headless: true }, 1000,
@@ -250,9 +251,16 @@ test("browser executor claims the signed Issue window before Send and ACKs the e
   await writeFile(reportPath, JSON.stringify({ task: { repo: task.repo, issue: task.issue }, worker_id: "developer", turn: 0,
     token_hash: tokenHash, status: "done", summary: "fixture report" }));
   try {
+    await assert.rejects(executor.run({ projectRoot: root, task, prompt: prompt + " (tampered)", workerId: "developer",
+      browserTurnId: commandId, reportTurn: { task, active },
+      browserCommand: { task, workerId: "developer", turn: 0, commandId, reportTokenHash: tokenHash,
+        expiresAt, graphSha256, workerManifestSha256, payloadSha256: authorization.payloadSha256,
+        authorizationMac: signBrowserCommandAuthorization(authorization, ownerSecret) } } as any));
+    assert.equal(gotoCount, 0, "tampered signed prompt must be rejected before browser navigation");
+    assert.equal(sends, 0, "tampered signed prompt must be rejected before native Send");
     const result = await executor.run({ projectRoot: root, task, prompt, workerId: "developer", browserTurnId: commandId,
       reportTurn: { task, active }, browserCommand: { task, workerId: "developer", turn: 0, commandId, reportTokenHash: tokenHash,
-        expiresAt,
+        expiresAt, payloadSha256: authorization.payloadSha256,
         graphSha256, workerManifestSha256, authorizationMac: signBrowserCommandAuthorization(authorization, ownerSecret) } } as any);
     assert.equal(result.sessionId, conversationUrl);
     assert.equal(sends, 1);
