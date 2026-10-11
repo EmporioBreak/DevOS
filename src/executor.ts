@@ -4,10 +4,18 @@ import type { CodexSkillAssignment } from "./codex-skills.js";
 
 export interface WorkerRequest {
   projectRoot: string;
+  /** Trusted task identity from the selected workflow; never parsed from model text. */
+  task?: TaskRef;
   prompt: string;
   workerId?: string;
   knownBrowserSessions?: Record<string, string>;
   browserTurnId?: string;
+  /** Trusted identity assigned by Orchestrator for the one native browser Send. */
+  browserCommand?: {
+    task: TaskRef; workerId: string; turn: number; commandId: string;
+    reportTokenHash: string; graphSha256: string; workerManifestSha256: string; authorizationMac: string;
+    expiresAt:number;conversationId?:string;payloadSha256:string;
+  };
   allowToolReportedStatus?: boolean;
   // Serialized across shared-browser IPC; identifies the single authorized
   // MCP report which can terminate browser response waiting for this turn.

@@ -13,6 +13,10 @@ import {
 } from "./completed-tasks.js";
 import { CodexExecutor } from "./codex-executor.js";
 import { runChatAccessAdmin, type ChatAccessCommand } from "./chat-access-admin.js";
+import { ChatAccessRegistry } from "./chat-access.js";
+import { OwnerTaskApprovalStore } from "./owner-task-approval.js";
+import { OwnerWakeupLedger } from "./owner-wakeup-ledger.js";
+import { buildOwnerHandoffMessage, enqueueOwnerHandoff } from "./owner-wakeup-handoff.js";
 import { parseSkillsCliArgs, runSkillsCliCommand, type SkillsCliCommand } from "./skills-cli.js";
 import { LocalCommandRunner } from "./command-runner.js";
 import { debugLog } from "./debug-log.js";
@@ -36,6 +40,7 @@ import { acquireTaskLock } from "./task-lock.js";
 import type { Workflow } from "./workflow.js";
 import { loadWorkflow } from "./workflow-loader.js";
 import { verifyRunnerSkillGraph } from "./runner-skill-graph.js";
+import { signBrowserCommandAuthorization } from "./browser-command-identity.js";
 import {verifyHostBackendUnavailable} from "./host-fallback-evidence.js";
 import { appendTaskAuditEvent } from "./pipeline-diagnostics.js";
 import { parseEnvFile } from "./connector-env.js";
@@ -44,6 +49,7 @@ import {
   closeSharedBrowserRuntime,
   ensureSharedBrowserRuntime,
   runBrowserRuntime,
+  sendOwnerWakeupToExistingRuntime,
 } from "./shared-browser-runtime.js";
 
 /** Lazy only for a Main-Agent-planned local first stage. The signed
@@ -232,8 +238,8 @@ export async function runWorkflow(
       const exact=await verifyRunnerSkillGraph(cwd,workflow,strictSecret);
       const assigned=exact.workers.find(w=>w.workerId===workerId);
       if(!assigned)throw new Error("Undeclared DevOS Runner worker");
-      return {stage:assigned.stage,manifestSha256:assigned.manifestSha256};
-    }}:{}),
+      return {stage:assigned.stage,manifestSha256:assigned.manifestSha256,graphSha256:exact.graphSha256};
+    },signBrowserCommand:(value)=>signBrowserCommandAuthorization(value,strictSecret)}:{}),
     enableWorkerReports: hasBrowserWorker && workerReportsEnabled(process.env.DEVOS_WORKER_MCP_REPORTS),
     ...(mainAgentDecision ? { mainAgentDecision } : {}),
     finalizeTask: async state => {
@@ -250,6 +256,57 @@ export async function runWorkflow(
       catch {debugLog("orchestrator.audit_error", {category:"local_audit_unavailable"});}
     },
   }).run();
+  // The final-review state has already been durably saved by Orchestrator.
+  // Prepare the owner notification *after* this point, never from the early
+  // main_agent_handoff event. This does not launch a browser or send a chat
+  // message: native delivery requires independently verified editable /c/
+  // ownership, readiness and a real provider request ID. Notification failure
+  // must not corrupt or restart a completed worker handoff.
+  if(strictSecret && workflow.owner?.mode==="main_agent" && state.mainAgentReviewPending){
+    try{
+      const chats=new ChatAccessRegistry(cwd,strictSecret);
+      const approvals=new OwnerTaskApprovalStore(cwd,strictSecret,chats);
+      const ledger=new OwnerWakeupLedger(cwd,strictSecret);
+      const notice=await enqueueOwnerHandoff({
+        workflow,state,store:approvals,ledger,
+      });
+      let dispatch:"not_sent"|"confirmed"|"blocked"="not_sent";
+      let reason:string|undefined;
+      if(notice==="confirmed")dispatch="confirmed";
+      else if(notice==="blocked"){dispatch="blocked";reason="ledger_blocked";}
+      else if(notice==="armed"||notice==="ambiguous"){
+        dispatch="blocked";reason="prior_delivery_attempt_not_replayed";
+      }
+      if(notice==="waiting"){
+        const owner=approvals.resolveOwnerChatForTask({repo:workflow.task.repo,
+          issue:workflow.task.issue,pr:workflow.task.pr!});
+        if(!owner)reason="signed_owner_binding_unavailable";
+        else if(owner.kind!=="private")reason="verified_private_owner_binding_required";
+        else {
+          try{
+            const status=await sendOwnerWakeupToExistingRuntime(cwd,{
+              projectRoot:cwd,
+              task:{repo:workflow.task.repo,issue:workflow.task.issue,pr:workflow.task.pr!},
+              reviewRound:state.reviewLoops!,ownerFingerprint:owner.fingerprint,
+              approvedReference:owner.approvedReference,ownerKind:owner.kind,
+              message:buildOwnerHandoffMessage(workflow.task,state.reviewLoops!),
+            });
+            if(status==="confirmed")dispatch="confirmed";
+            else {dispatch="blocked";reason=`delivery_${status}`;}
+          }catch(error){
+            dispatch="blocked";
+            reason=error instanceof Error&&error.message.includes("No verified active shared browser runtime")
+              ?"existing_shared_runtime_unavailable":"owner_wakeup_delivery_rejected";
+          }
+        }
+      }
+      debugLog("owner.wakeup.intent",{issue:workflow.task.issue,status:notice,
+        dispatch,...(reason?{reason}:{})});
+    }catch{
+      debugLog("owner.wakeup.blocked",{issue:workflow.task.issue,
+        reason:"signed_owner_binding_or_local_queue_unavailable",dispatch:"not_sent"});
+    }
+  }
   // final_review_required is not task completion. Keep the shared Camoufox
   // process and every worker tab alive for main-agent review / rework.
   // finalizeTask closes them only after terminal approval.

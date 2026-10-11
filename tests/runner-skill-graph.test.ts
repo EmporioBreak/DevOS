@@ -4,7 +4,7 @@ import {readFile,writeFile,mkdtemp,mkdir,cp,rm} from "node:fs/promises";
 import {tmpdir,homedir} from "node:os";
 import {join} from "node:path";
 import {resolveWorkerSkills,saveWorkerSkillManifest} from "../src/skill-policy.js";
-import {sealRunnerSkillGraph,verifyRunnerSkillGraph} from "../src/runner-skill-graph.js";
+import {sealRunnerSkillGraph,verifyRunnerSkillGraph,verifyRunnerWorkerAssignment} from "../src/runner-skill-graph.js";
 import {Orchestrator,type RunState,type StateStore} from "../src/orchestrator.js";
 import type {Executor,WorkerRequest} from "../src/executor.js";
 import type {WorkerOutput,Workflow} from "../src/workflow.js";
@@ -90,7 +90,7 @@ test("strict graph verifies all signed skills once and again per declared worker
         const verified=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
         const w=verified.workers.find(x=>x.workerId===id);
         assert.ok(w,"unknown worker cannot spawn");
-        return {stage:w.stage,manifestSha256:w.manifestSha256};
+        return {stage:w.stage,manifestSha256:w.manifestSha256,graphSha256:verified.graphSha256};
       },
     }).run();
     assert.equal(state.completedRuns,2);
@@ -101,6 +101,22 @@ test("strict graph verifies all signed skills once and again per declared worker
     assert.match(fake.requests[0]!.prompt,/Original Spec Kit stage: implement/);
     assert.match(fake.requests[1]!.prompt,/Original Spec Kit stage: none/);
     assert.equal(fake.requests[0]!.codexSkills,undefined);
+  }finally{await rm(f.root,{recursive:true,force:true})}
+});
+test("native browser send can independently recheck the frozen graph and current worker manifest",async()=>{
+  const f=await fixture();
+  try{
+    const graphSha256=await sealRunnerSkillGraph(f.root,f.w,secret,async()=>true,upstreamRoot);
+    const graph=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
+    const assignment=graph.workers.find(x=>x.workerId==="developer")!;
+    await verifyRunnerWorkerAssignment(f.root,f.w.task,"developer","chatgpt_browser",
+      graphSha256,assignment.manifestSha256,secret);
+    await assert.rejects(verifyRunnerWorkerAssignment(f.root,f.w.task,"reviewer","chatgpt_browser",
+      graphSha256,assignment.manifestSha256,secret),/assignment|manifest/i);
+    await assert.rejects(verifyRunnerWorkerAssignment(f.root,{...f.w.task,pr:918},"developer","chatgpt_browser",
+      graphSha256,assignment.manifestSha256,secret),/task|graph/i);
+    await assert.rejects(verifyRunnerWorkerAssignment(f.root,f.w.task,"developer","chatgpt_browser",
+      graphSha256,"f".repeat(64),secret),/assignment|manifest/i);
   }finally{await rm(f.root,{recursive:true,force:true})}
 });
 test("missing signed worker allocation and missing user approval fail before sealing",async()=>{
@@ -186,7 +202,7 @@ test("strict browser fallback does not accept unsigned host-only claims even wit
       verifyAssignedWorkerSkills:async (workerId:string)=>{
         const stage=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
         const ref=stage.workers.find(x=>x.workerId===workerId)!;
-        return {stage:ref.stage,manifestSha256:ref.manifestSha256};
+        return {stage:ref.stage,manifestSha256:ref.manifestSha256,graphSha256:stage.graphSha256};
       }}).run(),/host-only capability evidence not independently verified/);
     // Strict Runner cannot turn a textual DEVOS_RESULT into permission to use
     // local Codex, even when an injected verifier approves the claimed blocker.
@@ -238,7 +254,7 @@ test("strict review loop reuses exact browser chats and task PR across requested
       stateStore:store,verifyAssignedWorkerSkills:async (workerId:string)=>{
         const result=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
         const p=result.workers.find(w=>w.workerId===workerId)!;
-        return {stage:p.stage,manifestSha256:p.manifestSha256};
+        return {stage:p.stage,manifestSha256:p.manifestSha256,graphSha256:result.graphSha256};
       }}).run();
     assert.deepEqual(calls.map(x=>x.workerId),
       ["developer","reviewer","developer","reviewer"]);
@@ -270,7 +286,7 @@ test("strict ambiguous browser result cannot replay an already submitted turn",a
       verifyAssignedWorkerSkills:async (workerId:string)=>{
         const graph=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
         const found=graph.workers.find(x=>x.workerId===workerId)!;
-        return {stage:found.stage,manifestSha256:found.manifestSha256};
+        return {stage:found.stage,manifestSha256:found.manifestSha256,graphSha256:graph.graphSha256};
       }};
     await assert.rejects(new Orchestrator(config).run(),/DEVOS_RESULT/);
     assert.equal(sends,1);
@@ -300,7 +316,7 @@ test("strict Main Agent handoff survives restarts and accepts corrections in the
       const graph=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
       const assigned=graph.workers.find(w=>w.workerId===workerId);
       assert.ok(assigned);
-      return {stage:assigned.stage,manifestSha256:assigned.manifestSha256};
+      return {stage:assigned.stage,manifestSha256:assigned.manifestSha256,graphSha256:graph.graphSha256};
     };
     const make=(decision?:"approved"|"changes_requested")=>new Orchestrator({
       projectRoot:f.root,workflow:f.w,
@@ -365,7 +381,7 @@ test("strict native Codex receives local signed skills in its actual Runner prom
       verifyAssignedWorkerSkills:async id=>{
         const seal=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
         const match=seal.workers.find(item=>item.workerId===id)!;
-        return {stage:match.stage,manifestSha256:match.manifestSha256};
+        return {stage:match.stage,manifestSha256:match.manifestSha256,graphSha256:seal.graphSha256};
       },
     }).run();
     assert.equal(state.mainAgentReviewPending,true);
@@ -408,7 +424,7 @@ test("strict signed MCP blocker plus trusted host proof routes only predeclared 
       verifyAssignedWorkerSkills:async id=>{
         const graph=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
         const assigned=graph.workers.find(x=>x.workerId===id)!;
-        return {stage:assigned.stage,manifestSha256:assigned.manifestSha256};
+        return {stage:assigned.stage,manifestSha256:assigned.manifestSha256,graphSha256:graph.graphSha256};
       },
     }).run();
     assert.deepEqual(seen,["developer","host","reviewer"]);
@@ -442,7 +458,7 @@ test("Main Agent planned Codex action after browser done needs no fake host fall
       verifyAssignedWorkerSkills:async id=>{
         const graph=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
         const assigned=graph.workers.find(w=>w.workerId===id)!;
-        return {stage:assigned.stage,manifestSha256:assigned.manifestSha256};
+        return {stage:assigned.stage,manifestSha256:assigned.manifestSha256,graphSha256:graph.graphSha256};
       },
     }).run();
     assert.deepEqual(requests,["developer","host","reviewer"]);

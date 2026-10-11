@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "task": {
+    "repo": "EmporioBreak/DevOS",
+    "issue": 239,
+    "pr": 240
+  },
+  "owner": {
+    "mode": "main_agent"
+  },
+  "skillsMode": "strict",
+  "start": "cos_broker_developer_local",
+  "workers": [
+    {
+      "id": "cos_broker_developer_local",
+      "executor": "codex",
+      "prompt": "After owner-signature of exact #239 REDUCED original Spec Kit and this graph/skills, implement ONLY CoS-derived project-local browser command broker/outbox/receipt/document epoch/one-profile Issue-window adapter, using TDD RED/GREEN, actual process/IPC tests and same Draft PR #240. One browser root/profile per installed DevOS client, one window per Issue per existing #226; no dynamic worker spawning or cross-Issue chat reuse. Preserve ambiguous #226 turn 6, all existing #214/#224/#226 sessions and #232. Do NOT implement worker-chat deletion (#241), Runner parallel worktrees (#242), Main Agent chat handoff (#243), heartbeat (#244), or a second owner wake-up sender (#224). Do not self-approve or copy CoS binaries/credentials. UNIFIED PRODUCT ACCEPTANCE: BEFORE coding, review actual source and reports from #224/PR #225 owner binding/ledger (queue exists, native sender does not) and #226/PR #227 shared windows/process (empty-profile tests, live legacy migration blocked). REUSE the existing proven implementations and wire both into exactly ONE durable broker/outbox, with real native owner-message provider receipt, same private authorized Main Agent conversation, correct /share/→/c/ and busy/idle semantics. Never build a second notification sender or window manager, falsely assume Draft PRs are merged, or silently mutate another task's signed graph/branch. Product-level #239 remains open unless full combined browser loop works.",
+      "on": {
+        "done": "cos_security_auditor_local",
+        "failed": null
+      }
+    },
+    {
+      "id": "cos_security_auditor_local",
+      "executor": "codex",
+      "prompt": "Independently inspect only #239 browser broker code, exact signed DevOS worker/turn/grant identity, one exclusive outbox claim, provider receipt/ACK and restart ambiguity, stale A→B→A document epochs, cross-Issue tabs/window/MCP isolation, authenticated account and existing profile/process ownership. Cross-check original Spec Kit and pinned CoS/license, require concrete failing tests or return evidence-based approved. Any changes_requested go to SAME #239 developer and PR #240. No provider/account workarounds or unrelated Issue implementation. Integrated release review MUST check exact #225 signed owner destination and notification receipt, #227 task window/profile/legacy ownership and #240 one Send authority. Original existing #224/#226 signed sessions untouched; no competing notification engines, false approval, or cross-owner Send. Require full real E2E before product-ready approval.",
+      "on": {
+        "approved": "cos_host_process_qa_local",
+        "changes_requested": "cos_broker_developer_local",
+        "failed": null
+      }
+    },
+    {
+      "id": "cos_host_process_qa_local",
+      "executor": "codex",
+      "prompt": "Run independently observed native host/IPC and crash-failure tests against the #239 broker: one profile/process with two Issue windows/worker tabs, no double Send under claimed/receipt/ACK loss, process/PID restart safety, exact worker identity and safe task-only browser window cleanup. Preserve old #214/#226 live contexts, #226 ambiguous send and paused #232. No worktree lifecycle, multi-Issue Runner scheduler, chat deletion or heartbeat tests here; report failures to SAME #239 developer. Independently test compatibility of actual PR #225 + #227 + #240 merged effective code, real #214/#226 legacy profile adoption/fail-closed, one process/two Issue windows/tabs, task-local teardown, owner-chat /share/→/c/ notification idle/send claim/receipt. Empty-profile smoke alone is insufficient; do not report unified product done until real signed-in full chain and no duplicated sender. Run original #224/PR #225 authenticated owner handoff intent/ledger, owner busy/idle and exactly-one native provider user-role message ID at the #239 sole outbox boundary; review integration with #226/PR #227 on combined effective code rather than isolated suites.",
+      "on": {
+        "done": "cos_host_visual_e2e_local",
+        "changes_requested": "cos_broker_developer_local",
+        "failed": null
+      }
+    },
+    {
+      "id": "cos_host_visual_e2e_local",
+      "executor": "codex",
+      "prompt": "INDEPENDENT REAL HOST VISUAL E2E / actual Computer Use, not a ChatGPT browser-agent approximation. GitHub EmporioBreak/DevOS Issue #239 Draft PR #240, original pinned Spec Kit and the existing #224/PR #225 and #226/PR #227 diffs + signed reports are authoritative. In your OWN separately predeclared local Codex session, first verify macOS GUI/Accessibility and screenshot capabilities and available authorized persistent Camoufox profile/session. Use an actual headed browser GUI and real pointer/keyboard/desktop visual inspection (via available macOS GUI tooling and approved interactive browser controls); observe screenshots or video showing real pages, task windows, worker tabs, composer readiness, navigation and expected UI. Scripted Playwright and shell may support setup/assertions but are NOT a substitute for visually inspecting live UI as a real user. For separately approved safe disposable Issues A and B, verify one shared existing profile/process, per-Issue windows, correct saved worker tabs; genuine worker A user-message outgoing provider ID, original independent signed MCP completion/reviewer FINAL_REVIEW_REQUIRED, #224 authenticated original Main Agent /share/→editable /c/ if relevant, idle-only REAL user-role wake-up/provider receipt, Main Agent changes_requested, return to SAME worker chat/PR/window and second distinct review-round wake-up, genuine approval with task-A-only window teardown while B survives. Cross-check signed reports vs actual UI/receipt, account identity, session ownership, failure/restart no duplicate sends. Never launch duplicate Production profile, reset old sessions, replay ambiguous #226 turn 6, kill #214, operate paused #232, export cookies or invoke an undeclared worker. Preserve privacy of owner chat content in artifacts; log only safe redacted screenshots/receipt identifiers and verifiable test outcomes in original PR. If actual macOS GUI permissions, verified session, authorized disposable graph or signed provider receipt are not available, issue concrete signed needs_local_worker/blocked evidence with precise missing capability; NEVER call headless/shell-only PASS. On defects report changes_requested to exact original Codex developer in SAME Issue #239 / PR #240. Your role is independent QA, not product Main Agent; do not self-approve.",
+      "on": {
+        "done": "cos_independent_reviewer",
+        "changes_requested": "cos_broker_developer_local",
+        "needs_local_worker": null,
+        "failed": null
+      }
+    },
+    {
+      "id": "cos_independent_reviewer",
+      "executor": "codex",
+      "prompt": "Independent SEPARATE local Codex session and final source/security/evidence REVIEW of original Issue #239 and unchanged Draft PR #240. Review exact original Spec Kit, current GitHub diff and actual merged/effective PR #225 owner wake-up + PR #227 shared Camoufox/windows + PR #240 sole one-shot command/outbox. Verify developer RED/GREEN, signed worker reports, native crash tests, real macOS headed visual E2E as an actual user performed by the separate approved visual QA Codex worker, screenshots/observed UI and exact provider-origin outgoing user-message IDs, busy/idle and /share/→private /c/ owner wake-up, rework in SAME worker/PR/window and Issue-A-only cleanup with B alive. Do NOT treat browser agent text, headless Playwright, click success, screenshots without interaction, owner self-signature or full-suite PASS alone as genuine headed interactive E2E. Independently re-run suitable tests/read-only UI checks when available; if visual E2E lacks GUI access or authorized signed session, return changes_requested with concrete blocker, never fake approved. Preserve #214/#224/#226 original authorized sessions, potentially submitted #226 turn 6 and paused #232; no second Camoufox profile/connector, forced state reset or unsupervised branch merge. Route changes_requested to SAME original developer (no invented workers/roles/graph); reviewer approval is NOT Main Agent product acceptance and does not authorize merging.",
+      "on": {
+        "approved": null,
+        "changes_requested": "cos_broker_developer_local",
+        "failed": null
+      }
+    }
+  ]
+}

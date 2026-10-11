@@ -1,5 +1,5 @@
 import { runInNewContext } from 'node:vm';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -51,6 +51,7 @@ function fixture(options: {
   pageWorldIdentity?: boolean;
 } = {}) {
   let sends = 0, newPages = 0, closed = 0, reads = 0, url = 'about:blank';
+  let windowName = 'devos-task-window:' + createHash('sha256').update('__legacy__#0').digest('hex');
   const listeners = new Map<string, Function[]>();
   const page = {
     on(event: string, fn: Function) {
@@ -96,7 +97,9 @@ function fixture(options: {
         }
       };
     },
-    async evaluate(fn: Function) {
+    async evaluate(fn: Function, value?: unknown) {
+      if (fn.toString().includes('window.name = value')) { windowName = value as string; return; }
+      if (fn.toString().includes('window.name')) return windowName;
       if (options.pageWorldIdentity && fn.toString().includes('state?.request'))
         return { messageId: 'u', conversationId: 'saved' };
       if (fn.toString().includes('document.body'))
@@ -143,7 +146,7 @@ function fixture(options: {
 }
 test('headed Camoufox is the reliability default', () => assert.equal(loadChatGptBrowserConfig({}).headless, false));
 for (const mode of ['success', 'pre-submit', 'recovery'] as const)
-  test(`initial persistent page reused and task context stays alive on ${mode}`, async () => {
+  test(`marked task page reused and task context stays alive on ${mode}`, async () => {
     const f = fixture({
       failStream: mode === 'recovery', failPreparation: mode === 'pre-submit'
     });

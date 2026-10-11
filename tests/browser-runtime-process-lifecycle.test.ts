@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { browserRuntimePaths, closeSharedBrowserRuntime } from "../src/shared-browser-runtime.js";
 import { processExists } from "../src/process-identity.js";
+import { JsonStateStore } from "../src/json-state-store.js";
 
 test("close after final handoff kills the exact idle detached runtime, not unrelated processes", { timeout: 30_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "devos-runtime-exit-"));
@@ -34,6 +35,9 @@ test("close after final handoff kills the exact idle detached runtime, not unrel
     assert.equal(info.pid, child.pid);
     assert.ok(await processExists(child.pid!));
     assert.ok(await processExists(unrelated.pid!));
+    await writeFile(join(root,".env"),"DEVOS_CONNECTOR_OWNER_SECRET=test-owner-secret-that-is-at-least-thirty-two-bytes\n",{mode:0o600});
+    await new JsonStateStore(root,task).save({task,currentWorkerId:"reviewer",completedRuns:1,reviewLoops:0,
+      sessions:{},mainAgentReviewPending:false,completionApproved:true});
     await closeSharedBrowserRuntime(root, task);
     await new Promise<void>((resolve, reject) => {
       if (child.exitCode !== null || child.signalCode !== null) return resolve();

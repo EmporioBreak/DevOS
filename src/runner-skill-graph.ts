@@ -133,3 +133,38 @@ export async function verifyRunnerSkillGraph(
     throw new Error("Assigned Runner worker skills/stages changed after approval");
   return parsed.graph;
 }
+
+/** Independently recheck one native browser Send against the persisted frozen
+ * graph and current signed skill assignment. This deliberately does not trust
+ * the graph/manifest hashes copied into a command by its caller. */
+export async function verifyRunnerWorkerAssignment(
+  projectRoot:string,task:{repo:string;issue:number;pr?:number|null},workerId:string,
+  executor:"codex"|"chatgpt_browser",graphSha256:string,manifestSha256:string,
+  secret:string,
+):Promise<void>{
+  if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(task.repo)||
+      !Number.isSafeInteger(task.issue)||task.issue<1||
+      !/^[A-Za-z0-9_-]{1,100}$/.test(workerId)||!H.test(graphSha256)||!H.test(manifestSha256))
+    throw new Error("Invalid browser command graph assignment identity");
+  const root=await realpath(projectRoot);
+  const file=join(root,".devos","skills","graphs",encodeURIComponent(task.repo),task.issue+".json");
+  if(await realpath(dirname(file))!==dirname(file)||await realpath(file)!==file)
+    throw new Error("Signed Runner graph path is not canonical");
+  const parsed=JSON.parse(await readFile(file,"utf8")) as SignedRunnerGraph;
+  if(parsed?.version!==2||!parsed.graph||!H.test(parsed.mac))
+    throw new Error("Signed Runner graph is missing or malformed");
+  const expected=sign(parsed.graph,secret);
+  if(!timingSafeEqual(Buffer.from(expected,"hex"),Buffer.from(parsed.mac,"hex")))
+    throw new Error("Runner graph HMAC mismatch at browser Send boundary");
+  if(parsed.graph.task.repo!==task.repo||parsed.graph.task.issue!==task.issue||
+      parsed.graph.task.pr!==(task.pr??null)||parsed.graph.graphSha256!==graphSha256)
+    throw new Error("Browser command task does not match the exact frozen Runner graph");
+  const matching=parsed.graph.workers.filter(worker=>worker.workerId===workerId);
+  if(matching.length!==1||matching[0]!.executor!==executor||
+      matching[0]!.manifestSha256!==manifestSha256)
+    throw new Error("Browser command does not match the frozen worker executor and skill assignment");
+  const manifest=await readWorkerSkillManifest(root,{repo:task.repo,issue:task.issue},workerId,secret);
+  if(manifest.phase!=="execution"||manifest.role==="main_agent"||
+      manifest.sha256!==manifestSha256)
+    throw new Error("Browser worker assignment is no longer current or authorized");
+}

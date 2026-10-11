@@ -25,7 +25,8 @@ async function active(root: string, workerId = "developer", turn = 1, sessions =
   await writeFile(lockPath,JSON.stringify({repo:task.repo,issue:task.issue,pid:process.pid,
     identity,runId:"test-active-task",startedAt:new Date().toISOString()}),{mode:0o600});
   await writeFile(path, JSON.stringify({
-    currentWorkerId: workerId, completedRuns: turn, activeReport: {workerId,turn},
+    currentWorkerId: workerId, completedRuns: turn,
+    activeReport: {workerId,turn,expiresAt:Number.MAX_SAFE_INTEGER},
     sessions, mainAgentReviewPending: false, completionApproved: false,
   }));
 }
