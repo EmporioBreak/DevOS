@@ -286,6 +286,7 @@ export class DynamicAgentBroker {
     return this.perform((state, actor) => {
       const msg = state.messages.find(m => m.id === messageId && m.to === actor.id);
       invariant(msg && msg.state === "queued", "Message not claimable; may already have been submitted");
+      invariant(state.messages.find(m => m.to === msg.to && m.state !== "acked") === msg, "Recipient queue order violation");
       msg.state = "dispatch_uncertain";
       return msg;
     });
@@ -306,8 +307,9 @@ export class DynamicAgentBroker {
     });
   }
   async claimForTransport(lease: DynamicTransportLease): Promise<DynamicMessage> {
-    return this.hostDelivery(lease, msg => {
+    return this.hostDelivery(lease, (msg, state) => {
       invariant(msg.state === "queued", "Message not claimable; may already have been submitted");
+      invariant(state.messages.find(m => m.to === msg.to && m.state !== "acked") === msg, "Recipient queue order violation");
       msg.state = "dispatch_uncertain";
       return msg;
     });
