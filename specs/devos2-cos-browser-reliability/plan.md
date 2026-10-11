@@ -41,7 +41,7 @@ This is a **material change** from the earlier six-role browser-first draft; the
 
 **Agreed, not canceled:** [#241](https://github.com/EmporioBreak/DevOS/issues/241) (worker retirement and provider chat deletion); [#242](https://github.com/EmporioBreak/DevOS/issues/242) (parallel project-local Runner scheduler, temporary managed worktrees and one independently installed client per project); [#243](https://github.com/EmporioBreak/DevOS/issues/243) (Main Agent active chat handoff; GitHub is project knowledge source); [#244](https://github.com/EmporioBreak/DevOS/issues/244) (bounded local heartbeat and admission of only preapproved queued Issues). Existing [#224](https://github.com/EmporioBreak/DevOS/issues/224) owns final-review notifications; [#226](https://github.com/EmporioBreak/DevOS/issues/226) owns existing shared-window groundwork. Their PRs, signed sessions and implementation remain unchanged by this separation.
 
-These follow-up Issues need **their own** original Spec Kit, owner-signed exact full graph/skills and evidence. Do not treat #239's draft six-worker graph as automatic authorization for any of them. No full ChatGPT worker deletion, concurrent code worktree creation, heartbeat, scheduler, owner chat handoff or new installer is in #239's executable scope.
+These follow-up Issues need **their own** original Spec Kit, owner-signed exact full graph/skills and evidence. Do not treat #239's draft five-worker Codex graph as automatic authorization for any of them. No full ChatGPT worker deletion, concurrent code worktree creation, heartbeat, scheduler, owner chat handoff or new installer is in #239's executable scope.
 
 ## Architecture decision
 
