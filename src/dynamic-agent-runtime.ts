@@ -162,6 +162,11 @@ export interface DynamicDeliveryReceipt {
   messageId: string;
   providerMessageId: string;
 }
+export interface DynamicTransportLease {
+  task: TaskRef;
+  messageId: string;
+  recipientId: string;
+}
 export interface DynamicNoSubmitProof {
   task: TaskRef;
   messageId: string;
@@ -172,6 +177,7 @@ export interface DynamicTrustBoundary {
   resolveCaller(): Promise<VerifiedDynamicCaller>;
   verifyPolicy(policy: DynamicAgentPolicy): Promise<boolean>;
   verifyNewAgentBinding(binding: { task: TaskRef; id: string; role: string; sessionFingerprint: string }): Promise<boolean>;
+  verifyTransportLease(lease: DynamicTransportLease): Promise<boolean>;
   verifyProviderReceipt(receipt: DynamicDeliveryReceipt): Promise<boolean>;
   verifyNoSubmit(proof: DynamicNoSubmitProof): Promise<boolean>;
 }
@@ -282,6 +288,46 @@ export class DynamicAgentBroker {
       invariant(msg && msg.state === "queued", "Message not claimable; may already have been submitted");
       msg.state = "dispatch_uncertain";
       return msg;
+    });
+  }
+  /** Transport can wake the recipient without impersonating its model conversation. */
+  private async hostDelivery<T>(lease: DynamicTransportLease, fn: (msg: DynamicMessage, state: DynamicSnapshot) => T): Promise<T> {
+    invariant(sameTask(lease.task, this.policy.task), "Cross-task transport denied");
+    invariant(await this.trust.verifyPolicy(this.policy), "Unapproved dynamic task policy");
+    invariant(await this.trust.verifyTransportLease(lease), "Unverified transport authority");
+    return this.store.transact(existing => {
+      invariant(existing && sameTask(existing.task, this.policy.task) && existing.policyHash === policyHash(this.policy), "Task/policy binding changed");
+      invariant(existing.ownerDecision !== "approved", "Task already accepted");
+      const msg = existing.messages.find(m => m.id === lease.messageId && m.to === lease.recipientId);
+      invariant(msg, "Transport recipient/message mismatch");
+      const result = fn(msg, existing);
+      existing.generation++;
+      return { state: existing, result };
+    });
+  }
+  async claimForTransport(lease: DynamicTransportLease): Promise<DynamicMessage> {
+    return this.hostDelivery(lease, msg => {
+      invariant(msg.state === "queued", "Message not claimable; may already have been submitted");
+      msg.state = "dispatch_uncertain";
+      return msg;
+    });
+  }
+  async confirmTransportDelivery(lease: DynamicTransportLease, receipt: DynamicDeliveryReceipt): Promise<DynamicMessage> {
+    invariant(receipt.messageId === lease.messageId && sameTask(receipt.task, lease.task) && !!receipt.providerMessageId?.trim(), "Transport receipt identity mismatch");
+    invariant(await this.trust.verifyProviderReceipt(receipt), "Unverified provider receipt");
+    return this.hostDelivery(lease, (msg, state) => {
+      invariant(msg.state === "dispatch_uncertain" || (msg.state === "sent" && msg.providerMessageId === receipt.providerMessageId), "Delivery not claimable");
+      invariant(!state.messages.some(m => m.id !== msg.id && m.to === msg.to && m.providerMessageId === receipt.providerMessageId), "Provider receipt already attributed");
+      msg.state = "sent"; msg.providerMessageId = receipt.providerMessageId;
+      return msg;
+    });
+  }
+  async releaseTransportNoSubmit(lease: DynamicTransportLease, proof: DynamicNoSubmitProof): Promise<void> {
+    invariant(proof.messageId === lease.messageId && sameTask(proof.task, lease.task) && !!proof.evidenceId?.trim(), "Pre-submit proof mismatch");
+    invariant(await this.trust.verifyNoSubmit(proof), "Missing independent no-submit evidence");
+    await this.hostDelivery(lease, msg => {
+      invariant(msg.state === "dispatch_uncertain", "No uncertain dispatch to release");
+      msg.state = "queued";
     });
   }
   async confirmDelivery(receipt: DynamicDeliveryReceipt): Promise<DynamicMessage> {
