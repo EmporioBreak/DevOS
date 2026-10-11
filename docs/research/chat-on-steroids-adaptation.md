@@ -5,7 +5,7 @@
 **Research environment:** clone into ephemeral `/tmp` only, no app install, no browser extension, no CoS credential access.
 **Confidence:** source-level. Not a live claim about CoS's reliability, account permissions or current released binaries.
 
-## Executive technical conclusion
+> **Scope note (Issue #239 split, 2026-10-11):** This file preserves the historical broad CoS research and all owner-approved design discussions for traceability; it is **not** the executable scope of Draft PR #240. The **only #239 deliverable** is the durable browser command/outbox/profile/window/document adapter described in its *current* original `spec.md`, `plan.md`, `tasks.md`. Post-completion deletion belongs to [#241](https://github.com/EmporioBreak/DevOS/issues/241); parallel Runner/worktrees and per-project installer isolation to [#242](https://github.com/EmporioBreak/DevOS/issues/242); active Main Agent chat handoff to [#243](https://github.com/EmporioBreak/DevOS/issues/243); heartbeat/approved queued admission to [#244](https://github.com/EmporioBreak/DevOS/issues/244). Actual owner wake-up remains [#224](https://github.com/EmporioBreak/DevOS/issues/224), existing shared-window work [#226](https://github.com/EmporioBreak/DevOS/issues/226). No cross-feature work or worker graph reuse is authorized by this comparison.\n\n## Executive technical conclusion
 
 **Adapt CoS's ownership/durability protocol; do not fork its whole Electron or Chrome extension into the existing Camoufox.** Existing DevOS is a task-signed Runner with local macOS/Desktop Commander MCP and Firefox/Camoufox, not an always-on Electron workspace with Chromium MV3. Two independent browser automation authorities would aggravate duplicate Send and profile corruption.
 
