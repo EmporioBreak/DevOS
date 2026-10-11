@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -117,6 +118,112 @@ test("separate Node processes can claim one command only once", async () => {
     });
     const results = await Promise.all([run(), run()]);
     assert.deepEqual(results.sort(), ["already-claimed", "claimed"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SIGKILL during every durable broker transition leaves a safely recoverable command", { timeout: 60_000 }, async () => {
+  const api = await loadBroker();
+  assert.ok(api, "BrowserCommandBroker implementation is missing");
+  const receipt = {
+    repo: command.repo, issue: command.issue, workerId: command.workerId,
+    turn: command.turn, commandId: command.commandId, payloadSha256: command.payloadSha256,
+    conversationId: command.conversationId!, messageId: "provider-message-crash-test",
+  };
+
+  for (const transition of ["prepare", "claim", "ambiguous", "receipt", "ack"] as const) {
+    const root = await mkdtemp(join(tmpdir(), `devos-command-sigkill-${transition}-`));
+    const broker: any = new api.BrowserCommandBroker(root, ownerSecret);
+    try {
+      if (transition !== "prepare") await broker.prepare(command);
+      if (["ambiguous", "receipt", "ack"].includes(transition))
+        assert.equal(await broker.claim(command.commandId, command), true);
+      if (transition === "ack")
+        await broker.recordProviderReceipt(command.commandId, receipt);
+
+      const childScript = [
+        'import { BrowserCommandBroker } from "./src/browser-command-broker.ts";',
+        'const broker = new BrowserCommandBroker(process.argv[1]);',
+        'const command = JSON.parse(process.argv[2]);',
+        'const receipt = JSON.parse(process.argv[3]);',
+        'const transition = process.argv[4];',
+        'const write = broker.write.bind(broker);',
+        'broker.write = async (...args) => { await write(...args); process.stdout.write("DURABLE_WRITE_LOCK_HELD\\n"); await new Promise(() => {}); };',
+        'if (transition === "prepare") await broker.prepare(command);',
+        'else if (transition === "claim") await broker.claim(command.commandId, command);',
+        'else if (transition === "ambiguous") await broker.markAmbiguous(command.commandId);',
+        'else if (transition === "receipt") await broker.recordProviderReceipt(command.commandId, receipt);',
+        'else await broker.acknowledge(command.commandId, receipt);',
+      ].join("\n");
+      const child = spawn(process.execPath,
+        ["--import", "tsx", "--input-type=module", "-e", childScript,
+          root, JSON.stringify(command), JSON.stringify(receipt), transition],
+        { cwd: process.cwd(), env: { ...process.env, DEVOS_CONNECTOR_OWNER_SECRET: ownerSecret },
+          stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`SIGKILL fixture ${transition} did not reach lock`)), 10_000);
+        child.stdout!.on("data", () => {
+          if (!stdout.includes("DURABLE_WRITE_LOCK_HELD")) return;
+          clearTimeout(timeout);
+          resolve();
+        });
+        child.once("exit", code => {
+          clearTimeout(timeout);
+          reject(new Error(`SIGKILL fixture ${transition} exited before lock: ${code}; ${stderr}`));
+        });
+      });
+      child.kill("SIGKILL");
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`SIGKILL fixture ${transition} did not exit`)), 5_000);
+        child.once("exit", () => { clearTimeout(timeout); resolve(); });
+      });
+
+      const restarted: any = new api.BrowserCommandBroker(root, ownerSecret);
+      if (transition === "prepare") {
+        const secondRestarted: any = new api.BrowserCommandBroker(root, ownerSecret);
+        await Promise.all([restarted.prepare(command), secondRestarted.prepare(command)]);
+        const claims = await Promise.all([
+          restarted.claim(command.commandId, command),
+          secondRestarted.claim(command.commandId, command),
+        ]);
+        assert.deepEqual(claims.sort(), [false, true], "stale-lock recovery still permits one claim only");
+      } else if (transition === "claim") {
+        assert.equal(await restarted.claim(command.commandId, command), false);
+        assert.equal((await restarted.get(command.commandId))?.status, "claimed");
+      } else if (transition === "ambiguous") {
+        assert.equal((await restarted.get(command.commandId))?.status, "ambiguous");
+        assert.equal(await restarted.claim(command.commandId, command), false);
+      } else if (transition === "receipt") {
+        assert.equal((await restarted.get(command.commandId))?.status, "received");
+        await restarted.acknowledge(command.commandId, receipt);
+      } else {
+        assert.equal((await restarted.get(command.commandId))?.status, "acknowledged");
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("broker refuses to reclaim legacy lock files with no verifiable owner", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-command-unknown-lock-"));
+  try {
+    const api = await loadBroker();
+    assert.ok(api, "BrowserCommandBroker implementation is missing");
+    const directory = join(root, ".devos", "browser-runtime", "command-outbox");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const commandDigest = createHash("sha256").update(command.commandId).digest("hex");
+    const lockPath = join(directory, `${commandDigest}.json.lock`);
+    await writeFile(lockPath, "", { mode: 0o600 });
+
+    const broker = new api.BrowserCommandBroker(root, ownerSecret);
+    await assert.rejects(broker.prepare(command), /no verifiable owner/i);
+    assert.equal(await readFile(lockPath, "utf8"), "", "unowned legacy lock stays untouched");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

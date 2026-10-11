@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { link, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { captureProcessIdentity, type ProcessIdentity } from "./process-identity.js";
 import {
   assertBrowserDocumentClaim,
   matchBrowserReceiptIdentity,
@@ -26,6 +27,14 @@ interface CommandRecord {
   acknowledgedAt?: string;
 }
 interface SignedRecord { record: CommandRecord; mac: string }
+interface BrokerLockRecord {
+  version: 1;
+  pid: number;
+  process: { pid: number; startTime: string; executable: string; commandLineSha256: string };
+  token: string;
+  createdAt: string;
+}
+interface SignedBrokerLock { lock: BrokerLockRecord; mac: string }
 
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const ID = /^[A-Za-z0-9_.:-]{1,192}$/;
@@ -154,19 +163,134 @@ export class BrowserCommandBroker {
     if (!ID.test(commandId)) throw new Error("Invalid browser command ID");
     await this.ensureDirectory();
     const lockPath = `${this.path(commandId)}.lock`;
-    let handle;
+    const key = await this.signingKey();
+    const identity = await captureProcessIdentity(process.pid);
+    if (!identity) throw new Error("Cannot prove current process identity for browser command lock");
+    const lock: BrokerLockRecord = {
+      version: 1, pid: process.pid,
+      process: { pid: identity.pid, startTime: identity.startTime, executable: identity.executable,
+        commandLineSha256: digest(identity.commandLine ?? "") },
+      token: randomUUID(), createdAt: new Date().toISOString(),
+    };
+    const signed: SignedBrokerLock = {
+      lock, mac: createHmac("sha256", key).update(canonical(lock)).digest("hex"),
+    };
     const deadline = Date.now() + 5_000;
-    while (!handle) {
-      try { handle = await open(lockPath, "wx", 0o600); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        if (Date.now() >= deadline)
-          throw new Error("Browser command is concurrently locked or has an interrupted operation; refusing replay");
-        await new Promise(resolve => setTimeout(resolve, 20));
+    while (true) {
+      const tempPath = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
+      let published = false;
+      try {
+        const temp = await open(tempPath, "wx", 0o600);
+        try { await temp.writeFile(`${canonical(signed)}\n`); await temp.sync(); }
+        finally { await temp.close(); }
+        try { await link(tempPath, lockPath); published = true; }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        }
+      } finally { await rm(tempPath, { force: true }); }
+
+      if (published) {
+        try {
+          const directory = await open(dirname(lockPath), "r");
+          try { await directory.sync(); }
+          finally { await directory.close(); }
+          return await operation();
+        }
+        finally { await this.releaseLock(lockPath, lock.token); }
+      }
+
+      if (await this.reclaimDeadLock(lockPath, key)) continue;
+      if (Date.now() >= deadline)
+        throw new Error("Browser command is concurrently locked or has an interrupted operation; refusing replay");
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+
+  /** Only reclaim a published lock whose signed PID/start identity is proven dead. */
+  private async reclaimDeadLock(lockPath: string, key: Buffer): Promise<boolean> {
+    let raw: string;
+    try { raw = await readFile(lockPath, "utf8"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+      throw error;
+    }
+    if (raw.length > 4_096) throw new Error("Browser command lock record exceeds capacity");
+    let stat;
+    try { stat = await lstat(lockPath); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+      throw error;
+    }
+    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0)
+      throw new Error("Unsafe browser command lock; refusing to reclaim it");
+    let signed: SignedBrokerLock;
+    try { signed = JSON.parse(raw) as SignedBrokerLock; }
+    catch { throw new Error("Browser command lock has no verifiable owner; refusing to reclaim it"); }
+    const owner = signed?.lock;
+    if (!owner || owner.version !== 1 || !Number.isSafeInteger(owner.pid) || owner.pid < 1 ||
+        owner.process?.pid !== owner.pid || typeof owner.process.startTime !== "string" ||
+        typeof owner.process.executable !== "string" || !HEX.test(owner.process.commandLineSha256 ?? "") ||
+        typeof owner.token !== "string" ||
+        !/^[0-9a-f-]{36}$/.test(owner.token) || !Number.isFinite(Date.parse(owner.createdAt)) ||
+        !/^[a-f0-9]{64}$/.test(signed.mac ?? ""))
+      throw new Error("Browser command lock has invalid owner identity; refusing to reclaim it");
+    const expectedMac = createHmac("sha256", key).update(canonical(owner)).digest("hex");
+    if (!timingSafeEqual(Buffer.from(expectedMac, "hex"), Buffer.from(signed.mac, "hex")))
+      throw new Error("Browser command lock owner signature is invalid; refusing to reclaim it");
+
+    const actual = await captureProcessIdentity(owner.pid);
+    if (actual && sameBrokerProcessIdentity(owner.process, actual)) return false;
+    if (actual) {
+      // PID reuse proves the recorded process incarnation is gone.
+    } else {
+      try {
+        process.kill(owner.pid, 0);
+        throw new Error("Browser command lock owner is alive but its identity cannot be verified");
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("identity cannot be verified")) throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH")
+          throw new Error("Cannot prove browser command lock owner is dead; refusing to reclaim it");
       }
     }
-    try { return await operation(); }
-    finally { await handle.close(); await rm(lockPath, { force: true }); }
+
+    // Rename to a unique quarantine name so only one waiter can take the stale
+    // entry. Verify the moved bytes before deleting anything; restore unexpected
+    // contents to the canonical path when it is still vacant.
+    const quarantine = `${lockPath}.stale-${owner.token}-${randomUUID()}`;
+    let latest;
+    try { latest = await lstat(lockPath); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+      throw error;
+    }
+    if (latest.dev !== stat.dev || latest.ino !== stat.ino) return false;
+    try { await rename(lockPath, quarantine); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+      throw error;
+    }
+    const moved = await readFile(quarantine, "utf8");
+    if (moved !== raw) {
+      try { await link(quarantine, lockPath); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      await rm(quarantine, { force: true });
+      return false;
+    }
+    await rm(quarantine, { force: true });
+    return true;
+  }
+
+  private async releaseLock(lockPath: string, token: string): Promise<void> {
+    const key = await this.signingKey();
+    const raw = await readFile(lockPath, "utf8");
+    const signed = JSON.parse(raw) as SignedBrokerLock;
+    if (signed?.lock?.token !== token) throw new Error("Browser command lock ownership changed before release");
+    const expectedMac = createHmac("sha256", key).update(canonical(signed.lock)).digest("hex");
+    if (!timingSafeEqual(Buffer.from(expectedMac, "hex"), Buffer.from(signed.mac, "hex")))
+      throw new Error("Browser command lock signature changed before release");
+    await rm(lockPath);
   }
 
   private async ensureDirectory(): Promise<void> {
@@ -267,4 +391,12 @@ function validateCommand(command: BrowserCommand): void {
       !Number.isSafeInteger(command.navigationEpoch) || command.navigationEpoch < 0 ||
       (command.conversationId !== undefined && !ID.test(command.conversationId)) || !HEX.test(command.payloadSha256))
     throw new Error("Invalid browser command identity");
+}
+
+function sameBrokerProcessIdentity(
+  expected: BrokerLockRecord["process"], actual: ProcessIdentity,
+): boolean {
+  return expected.pid === actual.pid && expected.startTime === actual.startTime &&
+    expected.executable === actual.executable &&
+    expected.commandLineSha256 === digest(actual.commandLine ?? "");
 }
