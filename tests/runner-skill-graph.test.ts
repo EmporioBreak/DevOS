@@ -4,7 +4,7 @@ import {readFile,writeFile,mkdtemp,mkdir,cp,rm} from "node:fs/promises";
 import {tmpdir,homedir} from "node:os";
 import {join} from "node:path";
 import {resolveWorkerSkills,saveWorkerSkillManifest} from "../src/skill-policy.js";
-import {sealRunnerSkillGraph,verifyRunnerSkillGraph} from "../src/runner-skill-graph.js";
+import {sealRunnerSkillGraph,verifyRunnerSkillGraph,verifyRunnerWorkerAssignment} from "../src/runner-skill-graph.js";
 import {Orchestrator,type RunState,type StateStore} from "../src/orchestrator.js";
 import type {Executor,WorkerRequest} from "../src/executor.js";
 import type {WorkerOutput,Workflow} from "../src/workflow.js";
@@ -101,6 +101,22 @@ test("strict graph verifies all signed skills once and again per declared worker
     assert.match(fake.requests[0]!.prompt,/Original Spec Kit stage: implement/);
     assert.match(fake.requests[1]!.prompt,/Original Spec Kit stage: none/);
     assert.equal(fake.requests[0]!.codexSkills,undefined);
+  }finally{await rm(f.root,{recursive:true,force:true})}
+});
+test("native browser send can independently recheck the frozen graph and current worker manifest",async()=>{
+  const f=await fixture();
+  try{
+    const graphSha256=await sealRunnerSkillGraph(f.root,f.w,secret,async()=>true,upstreamRoot);
+    const graph=await verifyRunnerSkillGraph(f.root,f.w,secret,upstreamRoot);
+    const assignment=graph.workers.find(x=>x.workerId==="developer")!;
+    await verifyRunnerWorkerAssignment(f.root,f.w.task,"developer","chatgpt_browser",
+      graphSha256,assignment.manifestSha256,secret);
+    await assert.rejects(verifyRunnerWorkerAssignment(f.root,f.w.task,"reviewer","chatgpt_browser",
+      graphSha256,assignment.manifestSha256,secret),/assignment|manifest/i);
+    await assert.rejects(verifyRunnerWorkerAssignment(f.root,{...f.w.task,pr:918},"developer","chatgpt_browser",
+      graphSha256,assignment.manifestSha256,secret),/task|graph/i);
+    await assert.rejects(verifyRunnerWorkerAssignment(f.root,f.w.task,"developer","chatgpt_browser",
+      graphSha256,"f".repeat(64),secret),/assignment|manifest/i);
   }finally{await rm(f.root,{recursive:true,force:true})}
 });
 test("missing signed worker allocation and missing user approval fail before sealing",async()=>{

@@ -6,13 +6,21 @@ import { join } from "node:path";
 import { createConnection, createServer } from "node:net";
 import { spawn } from "node:child_process";
 import { dirname } from "node:path";
+import { JsonStateStore } from "../src/json-state-store.js";
 import { captureProcessIdentity } from "../src/process-identity.js";
 import { assertSavedConversationTaskOwner, browserRuntimePaths, legacyBrowserRuntimePaths, findOwnedLegacyBrowserRuntime, browserTaskKey, canonicalConversationIdentity, ensureSharedBrowserRuntime, closeSharedBrowserRuntime, sendOwnerWakeupToExistingRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
 import { BrowserPreSubmitFailureError, type ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
 import { BrowserCommandBroker, type BrowserCommand } from "../src/browser-command-broker.js";
-import { signBrowserCommandAuthorization } from "../src/browser-command-identity.js";
+import { signBrowserCommandAuthorization,signBrowserCommandExecution } from "../src/browser-command-identity.js";
 
-test("shared runtime IPC commits one durable browser command claim and provider receipt", async () => {
+async function closeApprovedTestRuntime(root:string,task:{repo:string;issue:number;pr?:number}):Promise<void>{
+  await writeFile(join(root,".env"),"DEVOS_CONNECTOR_OWNER_SECRET=test-owner-secret-that-is-at-least-thirty-two-bytes\n",{mode:0o600});
+  await new JsonStateStore(root,task).save({task,currentWorkerId:"reviewer",completedRuns:1,reviewLoops:0,
+    sessions:{},mainAgentReviewPending:false,completionApproved:true});
+  await closeSharedBrowserRuntime(root,task);
+}
+
+test("shared runtime IPC cannot forge a provider receipt for a claimed command", async () => {
   const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-broker-ipc-"));
   const task = { repo: "owner/repo", issue: 73 };
   const ownerSecret = "test-owner-secret-that-is-at-least-thirty-two-bytes";
@@ -20,14 +28,16 @@ test("shared runtime IPC commits one durable browser command claim and provider 
   const auth = {
     repo: task.repo, issue: task.issue, pr: null, workerId: "developer", turn: 1,
     commandId: "cmd-73-1", reportTokenHash: "b".repeat(64), graphSha256: "c".repeat(64),
-    workerManifestSha256: "d".repeat(64),
+    workerManifestSha256: "d".repeat(64),expiresAt:Date.now()+60_000,conversationId:"conversation-a",
   };
-  const command: BrowserCommand = {
+  const unsignedCommand = {
     ...auth, authorizationMac: signBrowserCommandAuthorization(auth, ownerSecret),
+    executionMac:"0".repeat(64),
     runtimeIncarnation: "runtime-a", profileOwner: "profile-a",
     windowLease: "window-73", tabLease: "tab-73", documentId: "doc-a",
     navigationEpoch: 2, conversationId: "conversation-a", payloadSha256: "a".repeat(64),
   };
+  const command:BrowserCommand={...unsignedCommand,executionMac:signBrowserCommandExecution(unsignedCommand,ownerSecret)};
   const executor = { async run() { return { text: "unused" }; }, async close() {} } as unknown as ChatGptBrowserExecutor;
   try {
     const broker = new BrowserCommandBroker(root, ownerSecret);
@@ -41,13 +51,20 @@ test("shared runtime IPC commits one durable browser command claim and provider 
       commandId: command.commandId, payloadSha256: command.payloadSha256,
       conversationId: "conversation-a", messageId: "provider-message-73",
     };
-    await client.recordBrowserProviderReceipt(command.commandId, receipt);
-    const restarted = new SharedBrowserExecutor(paths.socket) as any;
-    await restarted.acknowledgeBrowserCommand(command.commandId, receipt);
-    assert.equal((await broker.get(command.commandId))?.status, "acknowledged");
+    const sendForgedMessage=async(message:unknown)=>{
+      const attacker=await createConnection(paths.socket);
+      attacker.write(`${JSON.stringify(message)}\n`);
+      let response="";
+      for await(const chunk of attacker){response+=chunk.toString();if(response.includes("\n"))break;}
+      attacker.destroy();
+      assert.match(response,/error/);
+    };
+    await sendForgedMessage({type:"broker_receipt",commandId:command.commandId,receipt});
+    await sendForgedMessage({type:"broker_ack",commandId:command.commandId,receipt});
+    assert.equal((await broker.get(command.commandId))?.status, "claimed");
     assert.equal(await client.claimBrowserCommand(command.commandId, command), false);
   } finally {
-    await closeSharedBrowserRuntime(root, task);
+    await closeApprovedTestRuntime(root, task);
     await rm(paths.socket, { force: true });
     await rm(paths.metadata, { force: true });
     await rm(root, { recursive: true, force: true });
@@ -71,7 +88,7 @@ test("owner wake-up IPC uses only the already-owned project runtime", async () =
     assert.deepEqual(received,request);
     await assert.rejects(sendOwnerWakeupToExistingRuntime(root,{...request,projectRoot:root+"-other"}),/project root/);
   }finally{
-    await closeSharedBrowserRuntime(root,task).catch(()=>undefined);
+    await closeApprovedTestRuntime(root,task).catch(()=>undefined);
     await rm(paths.socket,{force:true});await rm(paths.metadata,{force:true});await rm(root,{recursive:true,force:true});
   }
 });
@@ -132,14 +149,35 @@ test("one project runtime namespaces two Issues and closing one leaves the other
     assert.equal((await clientA.run({ projectRoot: root, prompt: "same", workerId: "developer", browserTurnId: "0:developer" })).text, "74");
     assert.equal((await clientB.run({ projectRoot: root, prompt: "same", workerId: "developer", browserTurnId: "0:developer" })).text, "75");
     assert.equal(calls.length, 2, "same worker/turn names in different Issues must never deduplicate");
-    await closeSharedBrowserRuntime(root, taskA);
+    await closeApprovedTestRuntime(root, taskA);
     assert.deepEqual(closed, [browserTaskKey(taskA)]);
     assert.equal((await clientB.run({ projectRoot: root, prompt: "next", workerId: "developer", browserTurnId: "1:developer" })).text, "75");
   } finally {
-    await closeSharedBrowserRuntime(root, taskB).catch(() => undefined);
+    await closeApprovedTestRuntime(root, taskB).catch(() => undefined);
     await rm(pathsA.socket, { force: true });
     await rm(pathsA.metadata, { force: true });
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("raw IPC cannot close a task window without a terminal approval capability",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"devos-forged-close-"));
+  const task={repo:"owner/repo",issue:741};
+  const paths=browserRuntimePaths(root,task.repo,task.issue);
+  let closes=0;
+  const executor={async run(){return {text:"unused"};},async closeTask(){closes++;return false;},async close(){}} as unknown as ChatGptBrowserExecutor;
+  try{
+    await startSharedBrowserServer(paths.socket,paths.metadata,executor);
+    const attacker=await createConnection(paths.socket);
+    attacker.write(`${JSON.stringify({type:"close_task",task})}\n`);
+    let response="";
+    for await(const chunk of attacker){response+=chunk.toString();if(response.includes("\n"))break;}
+    attacker.destroy();
+    assert.match(response,/error/);
+    assert.equal(closes,0,"a same-user IPC client cannot close an Issue window");
+    await closeApprovedTestRuntime(root,task);
+  }finally{
+    await rm(paths.socket,{force:true});await rm(paths.metadata,{force:true});await rm(root,{recursive:true,force:true});
   }
 });
 
@@ -159,13 +197,13 @@ test("failed task-local close never terminates another retained Issue runtime", 
   } as unknown as ChatGptBrowserExecutor;
   try {
     await startSharedBrowserServer(paths.socket, paths.metadata, executor);
-    await assert.rejects(closeSharedBrowserRuntime(root, taskA), /simulated task window close failure|cleanup unconfirmed/);
+    await assert.rejects(closeApprovedTestRuntime(root, taskA), /simulated task window close failure|cleanup unconfirmed/);
     assert.equal(alive, true, "failed scoped close must not close shared browser");
     const other = new SharedBrowserExecutor(paths.socket, taskB);
     assert.equal((await other.run({ projectRoot: root, prompt: "retained", workerId: "developer" })).text, "75");
     assert.match(await readFile(paths.metadata, "utf8"), /"pid"/);
   } finally {
-    await closeSharedBrowserRuntime(root, taskB).catch(() => undefined);
+    await closeApprovedTestRuntime(root, taskB).catch(() => undefined);
     await rm(paths.socket, { force: true });
     await rm(paths.metadata, { force: true });
     await rm(root, { recursive: true, force: true });
@@ -197,7 +235,7 @@ test("shared runtime carries session updates and keeps its executor across clien
     assert.deepEqual(sessions, ["https://chatgpt.com/g/project/c/session-1"]);
     assert.equal(calls, 2);
     assert.equal(closes, 0);
-    await closeSharedBrowserRuntime(root, task);
+    await closeApprovedTestRuntime(root, task);
     assert.equal(closes, 1);
   } finally {
     await rm(paths.socket, { force: true });
@@ -239,7 +277,7 @@ test("a client reconnect during a worker turn attaches to the same in-flight sub
     assert.equal(calls, 1, "reconnection must not send the worker prompt twice");
   } finally {
     release();
-    await closeSharedBrowserRuntime(root, { repo: "owner/repo", issue: 75 });
+    await closeApprovedTestRuntime(root, { repo: "owner/repo", issue: 75 });
     await rm(paths.socket, { force: true });
     await rm(paths.metadata, { force: true });
     await rm(root, { recursive: true, force: true });
@@ -277,7 +315,7 @@ test("distinct browser turn ids never reuse a completed result from an earlier r
     assert.equal(second.text, "turn-2");
     assert.equal(calls, 2);
   } finally {
-    await closeSharedBrowserRuntime(root, task);
+    await closeApprovedTestRuntime(root, task);
     await rm(paths.socket, { force: true });
     await rm(paths.metadata, { force: true });
     await rm(root, { recursive: true, force: true });
@@ -310,7 +348,7 @@ test("pre-submit error type survives IPC and same turn can retry without being c
     assert.equal((await client.run(request)).text, "retried");
     assert.equal(calls, 2);
   } finally {
-    await closeSharedBrowserRuntime(root, task);
+    await closeApprovedTestRuntime(root, task);
     await rm(paths.socket, { force: true });
     await rm(paths.metadata, { force: true });
     await rm(root, { recursive: true, force: true });
@@ -342,7 +380,7 @@ test("post-submit ambiguity is cached for the same turn and never replays the pr
     await assert.rejects(client.run(request), /phase=post-submit/);
     assert.equal(calls, 1);
   } finally {
-    await closeSharedBrowserRuntime(root, task);
+    await closeApprovedTestRuntime(root, task);
     await rm(paths.socket, { force: true });
     await rm(paths.metadata, { force: true });
     await rm(root, { recursive: true, force: true });
@@ -364,30 +402,11 @@ test("failed graceful runtime close preserves ownership metadata so cleanup can 
   } as unknown as ChatGptBrowserExecutor;
   try {
     await startSharedBrowserServer(paths.socket, paths.metadata, executor);
-    const socket = await new Promise<ReturnType<typeof createConnection>>((resolve, reject) => {
-      const client = createConnection(paths.socket);
-      client.once("connect", () => resolve(client));
-      client.once("error", reject);
-    });
-    const response = new Promise<string>((resolve, reject) => {
-      let buffer = "";
-      socket.on("data", chunk => {
-        buffer += chunk.toString("utf8");
-        const end = buffer.indexOf("\n");
-        if (end >= 0) resolve(buffer.slice(0, end));
-      });
-      socket.once("error", reject);
-    });
-    socket.write('{"type":"close"}\n');
-    const message = JSON.parse(await response) as { type: string; message?: string };
-    socket.destroy();
-
-    assert.equal(message.type, "error");
-    assert.match(message.message ?? "", /simulated executor close failure/);
+    await assert.rejects(closeApprovedTestRuntime(root,task),/simulated executor close failure/);
     assert.match(await readFile(paths.metadata, "utf8"), /"pid"/);
 
     failClose = false;
-    await closeSharedBrowserRuntime(root, task);
+    await closeApprovedTestRuntime(root, task);
     assert.equal(closes, 2);
   } finally {
     await rm(paths.socket, { force: true });
@@ -403,7 +422,7 @@ test("unowned socket cannot be closed as if it were a DevOS browser runtime", as
   const server = createServer(socket => socket.end("unrelated\n"));
   try {
     await new Promise<void>(resolve => server.listen(paths.socket, resolve));
-    await assert.rejects(closeSharedBrowserRuntime(root, task),
+    await assert.rejects(closeApprovedTestRuntime(root, task),
       /unowned runtime socket/);
     assert.equal(server.listening, true);
   } finally {

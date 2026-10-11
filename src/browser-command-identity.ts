@@ -13,9 +13,10 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
  */
 export interface BrowserDocumentClaim {
   repo:string;issue:number;pr:number|null;workerId:string;turn:number;commandId:string;
-  reportTokenHash:string;graphSha256:string;workerManifestSha256:string;authorizationMac:string;
+  reportTokenHash:string;graphSha256:string;workerManifestSha256:string;authorizationMac:string;executionMac:string;
   purpose?:"worker_turn"|"owner_wakeup";
   ownerFingerprint?:string;ownerBindingSha256?:string;
+  expiresAt:number;
   runtimeIncarnation:string;profileOwner:string;
   windowLease:string;tabLease:string;documentId:string;
   navigationEpoch:number;conversationId:string|undefined;
@@ -52,8 +53,9 @@ function validClaim(claim:BrowserDocumentClaim):boolean{
     Number.isSafeInteger(claim.issue)&&claim.issue>0&&
     (claim.pr===null||(Number.isSafeInteger(claim.pr)&&claim.pr>0))&&
     Number.isSafeInteger(claim.turn)&&claim.turn>=0&&
+    Number.isSafeInteger(claim.expiresAt)&&claim.expiresAt>0&&
     HEX.test(claim.reportTokenHash)&&HEX.test(claim.graphSha256)&&
-    HEX.test(claim.workerManifestSha256)&&HEX.test(claim.authorizationMac)&&
+    HEX.test(claim.workerManifestSha256)&&HEX.test(claim.authorizationMac)&&HEX.test(claim.executionMac)&&
     Number.isSafeInteger(claim.navigationEpoch)&&claim.navigationEpoch>=0&&
     ["workerId","commandId","runtimeIncarnation","profileOwner","windowLease",
       "tabLease","documentId"].every(key=>ID.test(claim[key as keyof BrowserDocumentClaim] as string))&&
@@ -71,14 +73,18 @@ export function assertBrowserDocumentClaim(claim:BrowserDocumentClaim,
 }
 
 export type BrowserCommandAuthorization = Pick<BrowserDocumentClaim,
-  "repo"|"issue"|"pr"|"workerId"|"turn"|"commandId"|"reportTokenHash"|"graphSha256"|"workerManifestSha256"> &
-  Pick<BrowserDocumentClaim,"purpose"|"ownerFingerprint"|"ownerBindingSha256">;
+  "repo"|"issue"|"pr"|"workerId"|"turn"|"commandId"|"reportTokenHash"|"graphSha256"|"workerManifestSha256"|"expiresAt"> & {
+    purpose?:BrowserDocumentClaim["purpose"];
+    ownerFingerprint?:string;ownerBindingSha256?:string;conversationId:string|undefined;
+  };
 
 function authorizationPayload(value: BrowserCommandAuthorization): string {
   return JSON.stringify({
     repo:value.repo, issue:value.issue, pr:value.pr, workerId:value.workerId, turn:value.turn,
     commandId:value.commandId, reportTokenHash:value.reportTokenHash,
     graphSha256:value.graphSha256, workerManifestSha256:value.workerManifestSha256,
+    expiresAt:value.expiresAt,
+    conversationId:value.conversationId??null,
     purpose:value.purpose??"worker_turn",
     ownerFingerprint:value.ownerFingerprint??null,
     ownerBindingSha256:value.ownerBindingSha256??null,
@@ -99,6 +105,49 @@ export function verifyBrowserCommandAuthorization(claim: BrowserDocumentClaim, o
     const expected=signBrowserCommandAuthorization(claim,ownerSecret);
     return timingSafeEqual(Buffer.from(expected,"hex"),Buffer.from(claim.authorizationMac,"hex"));
   } catch { return false; }
+}
+
+function executionPayload(value:BrowserDocumentClaim):string{
+  return JSON.stringify({repo:value.repo,issue:value.issue,pr:value.pr,workerId:value.workerId,
+    turn:value.turn,commandId:value.commandId,reportTokenHash:value.reportTokenHash,
+    graphSha256:value.graphSha256,workerManifestSha256:value.workerManifestSha256,
+    authorizationMac:value.authorizationMac,purpose:value.purpose??"worker_turn",
+    ownerFingerprint:value.ownerFingerprint??null,ownerBindingSha256:value.ownerBindingSha256??null,
+    expiresAt:value.expiresAt,runtimeIncarnation:value.runtimeIncarnation,profileOwner:value.profileOwner,
+    windowLease:value.windowLease,tabLease:value.tabLease,documentId:value.documentId,
+    navigationEpoch:value.navigationEpoch,conversationId:value.conversationId??null,
+    payloadSha256:value.payloadSha256});
+}
+
+/** Native adapter attestation binds the signed task grant to the exact selected
+ * runtime, Issue window, tab/document epoch, conversation and outgoing payload. */
+export function signBrowserCommandExecution(value:BrowserDocumentClaim,ownerSecret:string):string{
+  if(Buffer.byteLength(ownerSecret)<32)throw new Error("Strong local owner secret required for browser execution attestation");
+  return createHmac("sha256",createHash("sha256").update("DevOS browser command execution v1\0").update(ownerSecret).digest())
+    .update(executionPayload(value)).digest("hex");
+}
+
+export function verifyBrowserCommandExecution(value:BrowserDocumentClaim,ownerSecret:string):boolean{
+  if(!value||!HEX.test(value.executionMac))return false;
+  try{
+    const expected=signBrowserCommandExecution(value,ownerSecret);
+    return timingSafeEqual(Buffer.from(expected,"hex"),Buffer.from(value.executionMac,"hex"));
+  }catch{return false;}
+}
+
+/** Verify the orchestrator's grant before the browser adapter enriches it with
+ * native page/window identity. */
+export function verifyBrowserCommandGrant(value:BrowserCommandAuthorization&{authorizationMac:string},
+  ownerSecret:string):boolean{
+  if(!value||!REPO.test(value.repo)||!Number.isSafeInteger(value.issue)||value.issue<1||
+      !Number.isSafeInteger(value.turn)||value.turn<0||!Number.isSafeInteger(value.expiresAt)||
+      value.expiresAt<=Date.now()||!HEX.test(value.reportTokenHash)||!HEX.test(value.graphSha256)||
+      !HEX.test(value.workerManifestSha256)||!HEX.test(value.authorizationMac)||
+      (value.pr!==null&&(!Number.isSafeInteger(value.pr)||value.pr!<1)))return false;
+  try{
+    const expected=signBrowserCommandAuthorization(value,ownerSecret);
+    return timingSafeEqual(Buffer.from(expected,"hex"),Buffer.from(value.authorizationMac,"hex"));
+  }catch{return false;}
 }
 
 /** A matching ID is insufficient to claim a provider message was sent: the

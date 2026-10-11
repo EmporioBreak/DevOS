@@ -10,20 +10,21 @@ const loadBroker = async () => {
 };
 
 const ownerSecret = "test-owner-secret-that-is-at-least-thirty-two-bytes";
-const { signBrowserCommandAuthorization } = await import("../src/browser-command-identity.js");
+const { signBrowserCommandAuthorization,signBrowserCommandExecution,verifyBrowserCommandAuthorization } = await import("../src/browser-command-identity.js");
 
 const commandAuth = {
   repo: "EmporioBreak/DevOS", issue: 239, pr: 240, workerId: "developer", turn: 1,
   commandId: "cmd-239-1", reportTokenHash: "b".repeat(64), graphSha256: "c".repeat(64),
-  workerManifestSha256: "d".repeat(64),
+  workerManifestSha256: "d".repeat(64), expiresAt: Date.now() + 60_000,conversationId:"conversation-a",
 };
-const command = {
+const unsignedCommand = {
   ...commandAuth, authorizationMac: signBrowserCommandAuthorization(commandAuth, ownerSecret),
   runtimeIncarnation: "runtime-a", profileOwner: "profile-a",
   windowLease: "window-239", tabLease: "tab-239", documentId: "doc-a",
   navigationEpoch: 4, conversationId: "conversation-a",
   payloadSha256: "a".repeat(64),
 };
+const command={...unsignedCommand,executionMac:signBrowserCommandExecution(unsignedCommand as any,ownerSecret)};
 
 test("browser command claim is durable, exact and non-replayable after an ambiguous send", async () => {
   const root = await mkdtemp(join(tmpdir(), "devos-command-broker-"));
@@ -120,7 +121,7 @@ test("separate Node processes can claim one command only once", async () => {
   }
 });
 
-test("broker signs owner wake-up commands only when they bind an exact owner and approval digest",async()=>{
+test("broker cannot mint native execution attestations for caller-selected owner destinations",async()=>{
   const root=await mkdtemp(join(tmpdir(),"devos-owner-command-"));
   try{
     const api=await loadBroker();
@@ -130,7 +131,9 @@ test("broker signs owner wake-up commands only when they bind an exact owner and
       ownerFingerprint:"chat_"+"e".repeat(64),ownerBindingSha256:"f".repeat(64),
       turn:2,commandId:"owner-wakeup-239-round-2",reportTokenHash:"1".repeat(64),
       conversationId:"owner-conversation"};
-    const signed=await broker.signOwnerWakeup(unsigned);
+    assert.equal(typeof (broker as any).signOwnerWakeup,"undefined");
+    const withGrant={...unsigned,authorizationMac:signBrowserCommandAuthorization(unsigned as any,ownerSecret)};
+    const signed={...withGrant,executionMac:signBrowserCommandExecution(withGrant as any,ownerSecret)};
     await broker.prepare(signed);
     assert.equal(await broker.claim(signed.commandId,signed),true);
     const receipt={repo:signed.repo,issue:signed.issue,workerId:signed.workerId,
@@ -141,7 +144,7 @@ test("broker signs owner wake-up commands only when they bind an exact owner and
     await broker.recordProviderReceipt(signed.commandId,receipt);
     await broker.acknowledge(signed.commandId,receipt);
     assert.equal((await broker.get(signed.commandId))?.status,"acknowledged");
-    assert.notEqual(await broker.signOwnerWakeup({...unsigned,ownerFingerprint:"chat_"+"a".repeat(64)}),signed,
-      "destination changes must produce a different signed command");
+    assert.equal(verifyBrowserCommandAuthorization({...signed,ownerFingerprint:"chat_"+"a".repeat(64)},ownerSecret),false,
+      "destination changes must invalidate the adapter grant signature");
   }finally{await rm(root,{recursive:true,force:true})}
 });

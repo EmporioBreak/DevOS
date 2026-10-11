@@ -33,7 +33,9 @@ import { OwnerWakeupLedger } from "./owner-wakeup-ledger.js";
 import { ChatAccessRegistry } from "./chat-access.js";
 import { OwnerTaskApprovalStore } from "./owner-task-approval.js";
 import { parseEnvFile } from "./connector-env.js";
-import { signBrowserCommandAuthorization } from "./browser-command-identity.js";
+import { signBrowserCommandAuthorization, signBrowserCommandExecution, verifyBrowserCommandGrant } from "./browser-command-identity.js";
+import { assertBrowserCommandMatchesReport, assertCurrentBrowserTurn } from "./browser-command-authority.js";
+import { verifyRunnerWorkerAssignment } from "./runner-skill-graph.js";
 
 export class BrowserResumeUnavailableError extends Error {
   constructor(readonly sessionId: string, message: string) {
@@ -126,6 +128,7 @@ export class ChatGptBrowserExecutor implements Executor {
     private readonly onTaskSession?: (task: TaskRef, sessionId: string) => Promise<void>,
     private readonly commandBroker?: BrowserCommandBroker,
     private readonly projectRoot?: string,
+    private readonly verifyCurrentGrantForTest?: (request:WorkerRequest)=>Promise<void>,
   ) {}
 
   async sendOwnerWakeup(input:OwnerWakeupDeliveryRequest):Promise<WakeupStatus>{
@@ -190,13 +193,16 @@ export class ChatGptBrowserExecutor implements Executor {
       ownerBindingSha256:binding.bindingSha256,
       reportTokenHash:createHash("sha256").update(`${input.ownerFingerprint}\0${input.reviewRound}\0${payloadSha256}`).digest("hex"),
       graphSha256:binding.bindingSha256,
-      workerManifestSha256:createHash("sha256").update(`owner-wakeup\0${input.ownerFingerprint}`).digest("hex")};
-    const claim:BrowserDocumentClaim={...authorization,
+      workerManifestSha256:createHash("sha256").update(`owner-wakeup\0${input.ownerFingerprint}`).digest("hex"),
+      expiresAt:Date.now()+15*60_000,conversationId};
+    const unsigned:BrowserDocumentClaim={...authorization,
       authorizationMac:signBrowserCommandAuthorization(authorization,ownerSecret),
+      executionMac:"0".repeat(64),
       runtimeIncarnation:this.runtimeIncarnation,
       profileOwner:createHash("sha256").update(resolve(this.config.profileDir)).digest("hex"),
       windowLease:marker,tabLease,documentId:document.documentId,
       navigationEpoch:document.navigationEpoch,conversationId,payloadSha256};
+    const claim={...unsigned,executionMac:signBrowserCommandExecution(unsigned,ownerSecret)};
     await this.commandBroker.prepare(claim);
     if(!(await ledger.arm(input.task,input.reviewRound)))
       return await ledger.status(input.task,input.reviewRound)??"blocked";
@@ -302,6 +308,26 @@ export class ChatGptBrowserExecutor implements Executor {
         request.reportTurn.task.pr !== context.task.pr || request.reportTurn.active.workerId !== context.workerId ||
         request.reportTurn.active.turn !== context.turn || !/^[a-f0-9]{64}$/.test(request.reportTurn.active.tokenHash))
       throw new Error("Trusted browser command identity is missing or inconsistent");
+    assertBrowserCommandMatchesReport(context,request.reportTurn);
+    const ownerSecret=await readOwnerSigningSecret(request.projectRoot);
+    if(!verifyBrowserCommandGrant({repo:context.task.repo,issue:context.task.issue,
+      pr:context.task.pr??null,workerId:context.workerId,turn:context.turn,
+      commandId:context.commandId,reportTokenHash:context.reportTokenHash,
+      graphSha256:context.graphSha256,workerManifestSha256:context.workerManifestSha256,
+      expiresAt:context.expiresAt,authorizationMac:context.authorizationMac,purpose:"worker_turn",
+      conversationId:context.conversationId},ownerSecret))
+      throw new Error("Browser command grant signature is invalid or expired");
+    const verifyCurrentGrant=async()=>{
+      if(this.verifyCurrentGrantForTest){await this.verifyCurrentGrantForTest(request);return;}
+      await assertCurrentBrowserTurn(request.projectRoot,{
+        task:context.task,workerId:context.workerId,turn:context.turn,
+        tokenHash:context.reportTokenHash,graphSha256:context.graphSha256,
+        workerManifestSha256:context.workerManifestSha256,expiresAt:context.expiresAt,
+      });
+      await verifyRunnerWorkerAssignment(request.projectRoot,context.task,context.workerId,
+        "chatgpt_browser",context.graphSha256,context.workerManifestSha256,ownerSecret);
+    };
+    await verifyCurrentGrant();
     const taskKey = taskIdentity(task);
     if (this.workerPages.get(`${taskKey}\0${context.workerId}`) !== page ||
         await readTaskWindowMarker(page) !== taskWindowMarker(task))
@@ -310,21 +336,29 @@ export class ChatGptBrowserExecutor implements Executor {
     let tabLease = this.tabLeaseIds.get(page);
     if (!tabLease) { tabLease = randomUUID(); this.tabLeaseIds.set(page, tabLease); }
     const url = new URL(page.url());
+    if(getChatGptProjectScope(this.config.projectUrl))
+      assertChatGptProjectScope(this.config.projectUrl,page.url(),context.conversationId!==undefined);
     const conversation = /\/c\/([^/?#]+)/.exec(url.pathname)?.[1];
-    const claim: BrowserDocumentClaim = {
+    const conversationId=conversation?decodeURIComponent(conversation):undefined;
+    if(context.conversationId!==conversationId)
+      throw new Error("Browser command is not bound to the exact original worker conversation");
+    const unsigned: BrowserDocumentClaim = {
       repo: task.repo, issue: task.issue, workerId: context.workerId, turn: context.turn,
       pr: context.task.pr ?? null, reportTokenHash: context.reportTokenHash,
       graphSha256: context.graphSha256, workerManifestSha256: context.workerManifestSha256,
+      expiresAt:context.expiresAt,
       authorizationMac: context.authorizationMac,
+      executionMac:"0".repeat(64),
       commandId: context.commandId, runtimeIncarnation: this.runtimeIncarnation,
       profileOwner: createHash("sha256").update(resolve(this.config.profileDir)).digest("hex"),
       windowLease: taskWindowMarker(task), tabLease,
       documentId: document.documentId, navigationEpoch: document.navigationEpoch,
-      conversationId: conversation ? decodeURIComponent(conversation) : undefined,
+      conversationId,
       payloadSha256: createHash("sha256").update(request.prompt).digest("hex"),
     };
+    const claim={...unsigned,executionMac:signBrowserCommandExecution(unsigned,ownerSecret)};
     await this.commandBroker.prepare(claim);
-    if (!(await this.commandBroker.claim(claim.commandId, claim))) throw new BrowserCommandReplayError();
+    if (!(await this.commandBroker.claim(claim.commandId, claim,verifyCurrentGrant))) throw new BrowserCommandReplayError();
     return claim;
   }
 
@@ -1361,7 +1395,6 @@ export function extractSubmittedTurn(payload: unknown, prompt: string): Submitte
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const body = payload as Record<string, unknown>;
   if (!Array.isArray(body.messages)) return null;
-  const nonce = /DevOS browser attempt ID: ([a-f0-9]{64})\b/.exec(prompt)?.[1];
   const candidates = body.messages.filter((entry: unknown) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
     const user = entry as Record<string, any>;
@@ -1380,8 +1413,7 @@ export function extractSubmittedTurn(payload: unknown, prompt: string): Submitte
       return false;
     }
     const submitted = text.join("");
-    return normalizedSubmittedText(submitted) === normalizedSubmittedText(prompt) ||
-      !!(nonce && submitted.includes(nonce));
+    return normalizedSubmittedText(submitted) === normalizedSubmittedText(prompt);
   });
   if (candidates.length !== 1) return null;
   const user = candidates[0] as Record<string, any>;

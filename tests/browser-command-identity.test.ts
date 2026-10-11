@@ -4,6 +4,8 @@ import {
   assertBrowserDocumentClaim,
   matchBrowserReceiptIdentity,
   signBrowserCommandAuthorization,
+  signBrowserCommandExecution,
+  verifyBrowserCommandExecution,
   verifyBrowserCommandAuthorization,
   type BrowserDocumentClaim,
   type BrowserDocumentObservation,
@@ -13,13 +15,15 @@ import {
 const claim:BrowserDocumentClaim={
   repo:"EmporioBreak/DevOS",issue:239,pr:240,workerId:"cos_browser_qa",turn:4,
   reportTokenHash:"b".repeat(64),graphSha256:"c".repeat(64),workerManifestSha256:"d".repeat(64),
-  authorizationMac:"", 
+  authorizationMac:"",executionMac:"0".repeat(64),
+  expiresAt:Date.now()+60_000,
   commandId:"command-4",runtimeIncarnation:"runtime-original",
   profileOwner:"profile-original",windowLease:"window-239",
   tabLease:"tab-worker-239",documentId:"document-A",navigationEpoch:7,
   conversationId:"chat-a",payloadSha256:"a".repeat(64),
 };
 claim.authorizationMac=signBrowserCommandAuthorization(claim,"test-owner-secret-that-is-at-least-thirty-two-bytes");
+claim.executionMac=signBrowserCommandExecution(claim,"test-owner-secret-that-is-at-least-thirty-two-bytes");
 const observation:BrowserDocumentObservation={
   repo:claim.repo,issue:claim.issue,workerId:claim.workerId,
   runtimeIncarnation:claim.runtimeIncarnation,
@@ -41,6 +45,15 @@ test("browser command side effects require matching every project/task/worker/wi
     assert.throws(()=>assertBrowserDocumentClaim(claim,{...observation,...patch}),
       /browser command ownership/i,JSON.stringify(patch));
   }
+});
+
+test("native execution attestation binds the signed grant to the selected page, epoch and payload",()=>{
+  const secret="test-owner-secret-that-is-at-least-thirty-two-bytes";
+  const executionMac=signBrowserCommandExecution(claim,secret);
+  assert.equal(verifyBrowserCommandExecution({...claim,executionMac},secret),true);
+  assert.equal(verifyBrowserCommandExecution({...claim,payloadSha256:"e".repeat(64),executionMac},secret),false);
+  assert.equal(verifyBrowserCommandExecution({...claim,navigationEpoch:claim.navigationEpoch+1,executionMac},secret),false);
+  assert.equal(verifyBrowserCommandExecution({...claim,conversationId:"foreign-chat",executionMac},secret),false);
 });
 
 test("A→B→A restores original conversation URL but never restores stale document/action authority",()=>{

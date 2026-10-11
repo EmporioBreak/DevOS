@@ -84,6 +84,8 @@ function activeWorker(root: string, grant: WorkerGrant): boolean {
       state.completedRuns === grant.turn &&
       state.activeReport?.workerId === grant.workerId &&
       state.activeReport?.turn === grant.turn &&
+      Number.isSafeInteger(state.activeReport?.expiresAt) &&
+      state.activeReport.expiresAt > Date.now() &&
       state.mainAgentReviewPending !== true &&
       state.completionApproved !== true &&
       state.sessions?.[grant.workerId] === grant.url;

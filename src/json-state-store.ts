@@ -98,12 +98,15 @@ function validateState(value: unknown): RunState {
 
   if (activeReport !== undefined && (
     !activeReport || typeof activeReport !== "object" || Array.isArray(activeReport) ||
-    Object.keys(activeReport).some(key => !["workerId", "turn", "tokenHash"].includes(key)) ||
+    Object.keys(activeReport).some(key => !["workerId", "turn", "tokenHash", "expiresAt"].includes(key)) ||
     typeof (activeReport as Record<string, unknown>).workerId !== "string" ||
     !(activeReport as { workerId: string }).workerId.trim() ||
     !Number.isSafeInteger((activeReport as { turn?: unknown }).turn) ||
     (activeReport as { turn: number }).turn < 0 ||
-    !/^[a-f0-9]{64}$/.test(String((activeReport as { tokenHash?: unknown }).tokenHash))
+    !/^[a-f0-9]{64}$/.test(String((activeReport as { tokenHash?: unknown }).tokenHash)) ||
+    ((activeReport as { expiresAt?: unknown }).expiresAt !== undefined &&
+      (!Number.isSafeInteger((activeReport as { expiresAt?: unknown }).expiresAt) ||
+       (activeReport as { expiresAt: number }).expiresAt <= 0))
   )) throw new Error("Invalid DevOS active report");
 
   if (
@@ -148,7 +151,7 @@ function validateState(value: unknown): RunState {
     ...(browserPreSubmitRetry === undefined
       ? {}
       : { browserPreSubmitRetry: [...browserPreSubmitRetry] }),
-    ...(activeReport === undefined ? {} : { activeReport: { ...(activeReport as { workerId: string; turn: number; tokenHash: string }) } }),
+    ...(activeReport === undefined ? {} : { activeReport: { ...(activeReport as { workerId: string; turn: number; tokenHash: string; expiresAt?: number }) } }),
     ...(completionApproved === undefined ? {} : { completionApproved }),
     ...(task === undefined ? {} : { task }),
     ...(mainAgentReviewPending === undefined ? {} : { mainAgentReviewPending }),

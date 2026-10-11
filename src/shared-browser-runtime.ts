@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { spawn } from "node:child_process";
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
@@ -18,14 +18,14 @@ import type { TaskRef, WorkerOutput } from "./workflow.js";
 import { captureProcessIdentity, processExists, sameProcessIdentity, type ProcessIdentity } from "./process-identity.js";
 import { JsonStateStore } from "./json-state-store.js";
 import { BrowserCommandBroker, type BrowserCommand } from "./browser-command-broker.js";
-import type { BrowserDocumentObservation, BrowserProviderReceiptIdentity } from "./browser-command-identity.js";
+import type { BrowserDocumentObservation } from "./browser-command-identity.js";
+import { parseEnvFile } from "./connector-env.js";
 import type { OwnerWakeupDeliveryRequest } from "./owner-wakeup-handoff.js";
 import type { WakeupStatus } from "./owner-wakeup-ledger.js";
 
 type WireMessage =
   | { type: "run"; request: Omit<WorkerRequest, "onSession"> }
-  | { type: "close" }
-  | { type: "close_task"; task: TaskRef }
+  | { type: "close_task"; task: TaskRef; reviewRound:number; authorizationMac:string }
   | { type: "session"; sessionId: string }
   | { type: "result"; result: WorkerOutput }
   | { type: "error"; message: string; kind?: "browser_pre_submit" | "browser_resume_unavailable" | "browser_post_submit" | "generic" }
@@ -33,8 +33,6 @@ type WireMessage =
   | { type: "task_closed" }
   | { type: "broker_prepare"; command: BrowserCommand }
   | { type: "broker_claim"; commandId: string; observed: BrowserDocumentObservation }
-  | { type: "broker_receipt"; commandId: string; receipt: BrowserProviderReceiptIdentity }
-  | { type: "broker_ack"; commandId: string; receipt: BrowserProviderReceiptIdentity }
   | { type: "broker_ambiguous"; commandId: string }
   | { type: "owner_wakeup"; request: OwnerWakeupDeliveryRequest }
   | { type: "owner_wakeup_result"; status: WakeupStatus }
@@ -143,12 +141,6 @@ export class SharedBrowserExecutor implements Executor {
   }
   async claimBrowserCommand(commandId: string, observed: BrowserDocumentObservation): Promise<boolean> {
     return await this.brokerRequest<boolean>({ type: "broker_claim", commandId, observed });
-  }
-  async recordBrowserProviderReceipt(commandId: string, receipt: BrowserProviderReceiptIdentity): Promise<void> {
-    await this.brokerRequest({ type: "broker_receipt", commandId, receipt });
-  }
-  async acknowledgeBrowserCommand(commandId: string, receipt: BrowserProviderReceiptIdentity): Promise<void> {
-    await this.brokerRequest({ type: "broker_ack", commandId, receipt });
   }
   async markBrowserCommandAmbiguous(commandId: string): Promise<void> {
     await this.brokerRequest({ type: "broker_ambiguous", commandId });
@@ -325,6 +317,7 @@ export async function closeSharedBrowserRuntime(root: string, task: { repo: stri
     if (identity && !sameProcessIdentity(owner.identity, identity))
       throw new Error("Shared browser cleanup unconfirmed: runtime ownership changed");
   }
+  const closeAuthorization=await createApprovedTaskCloseAuthorization(root,task);
   let graceful = false;
   let connected = false;
   let gracefulError: unknown;
@@ -332,7 +325,7 @@ export async function closeSharedBrowserRuntime(root: string, task: { repo: stri
     const socket = await connect(paths.socket, 1_000);
     connected = true;
     try {
-      socket.write(`${JSON.stringify({ type: "close_task", task })}\n`);
+      socket.write(`${JSON.stringify({ type: "close_task", task, ...closeAuthorization })}\n`);
       const result = await waitForRuntimeClose(socket, 7_000);
       if (result === "task_closed") return;
       graceful = result === "closed";
@@ -375,6 +368,44 @@ export async function closeSharedBrowserRuntime(root: string, task: { repo: stri
   }
   await rm(paths.socket, { force: true });
   await rm(paths.metadata, { force: true });
+}
+
+async function runtimeOwnerSecret(root:string):Promise<string>{
+  const fromEnv=process.env.DEVOS_CONNECTOR_OWNER_SECRET?.trim();
+  if(fromEnv&&Buffer.byteLength(fromEnv)>=32)return fromEnv;
+  const env=parseEnvFile(await readFile(join(root,".env"),"utf8"));
+  const secret=env.DEVOS_CONNECTOR_OWNER_SECRET?.trim();
+  if(!secret||Buffer.byteLength(secret)<32)throw new Error("Task close requires the existing local owner signing secret");
+  return secret;
+}
+
+function taskClosePayload(state:NonNullable<Awaited<ReturnType<JsonStateStore["load"]>>>,reviewRound:number):string{
+  return JSON.stringify({purpose:"DevOS approved task window close v1",repo:state.task!.repo,
+    issue:state.task!.issue,pr:state.task!.pr??null,reviewRound,completionApproved:true});
+}
+
+async function createApprovedTaskCloseAuthorization(root:string,task:{repo:string;issue:number}):Promise<{reviewRound:number;authorizationMac:string}>{
+  const state=await new JsonStateStore(root,task).load();
+  if(!state?.task||state.task.repo!==task.repo||state.task.issue!==task.issue||
+      state.completionApproved!==true||state.mainAgentReviewPending===true)
+    throw new Error("Task window close requires the exact persisted Main Agent completion approval");
+  const reviewRound=state.reviewLoops??0;
+  const authorizationMac=createHmac("sha256",await runtimeOwnerSecret(root))
+    .update(taskClosePayload(state,reviewRound)).digest("hex");
+  return {reviewRound,authorizationMac};
+}
+
+async function verifyApprovedTaskCloseAuthorization(root:string,task:TaskRef,reviewRound:number,authorizationMac:string):Promise<boolean>{
+  if(!Number.isSafeInteger(reviewRound)||reviewRound<0||!/^[a-f0-9]{64}$/.test(authorizationMac))return false;
+  try{
+    const state=await new JsonStateStore(root,task).load();
+    if(!state?.task||state.task.repo!==task.repo||state.task.issue!==task.issue||
+        state.completionApproved!==true||state.mainAgentReviewPending===true||
+        (state.reviewLoops??0)!==reviewRound)return false;
+    const expected=createHmac("sha256",await runtimeOwnerSecret(root))
+      .update(taskClosePayload(state,reviewRound)).digest();
+    return timingSafeEqual(expected,Buffer.from(authorizationMac,"hex"));
+  }catch{return false;}
 }
 
 export async function runBrowserRuntime(args: string[]): Promise<void> {
@@ -495,12 +526,17 @@ export async function startSharedBrowserServer(
       server.close();
       await rm(socketPath, { force: true });
       await rm(metadataPath, { force: true });
+      process.removeListener("SIGTERM",stop);
+      process.removeListener("SIGINT",stop);
     } catch (error) {
       closing = false;
       throw error;
     }
   };
-  const closeTask = async (task: TaskRef): Promise<boolean> => {
+  const projectRoot=resolve(dirname(dirname(dirname(metadataPath))));
+  const closeTask = async (task: TaskRef, reviewRound:number, authorizationMac:string): Promise<boolean> => {
+    if(!await verifyApprovedTaskCloseAuthorization(projectRoot,task,reviewRound,authorizationMac))
+      throw new Error("Task window close requires the exact persisted Main Agent completion approval");
     const taskExecutor = executor as ChatGptBrowserExecutor & { closeTask?: (task: TaskRef) => Promise<boolean> };
     if (!taskExecutor.closeTask) {
       await stopRuntime();
@@ -512,12 +548,12 @@ export async function startSharedBrowserServer(
     if (!hasOtherTasks) await stopRuntime();
     return hasOtherTasks;
   };
-  server.on("connection", socket => { void handleSocket(socket, executor, turns, closeTask, stopRuntime, broker); });
-  const stop = () => { if (!closing) { closing = true; void executor.close().finally(async () => { server.close(); await rm(socketPath, { force: true }); await rm(metadataPath, { force: true }); }); } };
+  server.on("connection", socket => { void handleSocket(socket, executor, turns, closeTask, broker); });
+  const stop = () => { if (!closing) { closing = true; void executor.close().finally(async () => { server.close(); await rm(socketPath, { force: true }); await rm(metadataPath, { force: true }); process.removeListener("SIGTERM",stop); process.removeListener("SIGINT",stop); }); } };
   process.once("SIGTERM", stop); process.once("SIGINT", stop);
 }
 
-async function handleSocket(socket: Socket, executor: ChatGptBrowserExecutor, turns: Map<string, PendingTurn>, closeTask: (task: TaskRef) => Promise<boolean>, closeRuntime: () => Promise<void>, broker?: BrowserCommandBroker): Promise<void> {
+async function handleSocket(socket: Socket, executor: ChatGptBrowserExecutor, turns: Map<string, PendingTurn>, closeTask: (task: TaskRef,reviewRound:number,authorizationMac:string) => Promise<boolean>, broker?: BrowserCommandBroker): Promise<void> {
   const lines = readLines(socket);
   for await (const message of lines) {
     if (message.type.startsWith("broker_")) {
@@ -528,9 +564,7 @@ async function handleSocket(socket: Socket, executor: ChatGptBrowserExecutor, tu
           const value = await broker.claim(message.commandId, message.observed);
           socket.write(`${JSON.stringify({ type: "broker_result", value })}\n`);
           continue;
-        } else if (message.type === "broker_receipt") await broker.recordProviderReceipt(message.commandId, message.receipt);
-        else if (message.type === "broker_ack") await broker.acknowledge(message.commandId, message.receipt);
-        else if (message.type === "broker_ambiguous") await broker.markAmbiguous(message.commandId);
+        } else if (message.type === "broker_ambiguous") await broker.markAmbiguous(message.commandId);
         else throw new Error("Invalid browser broker IPC operation");
         socket.write('{"type":"broker_result"}\n');
       } catch (error) {
@@ -538,18 +572,9 @@ async function handleSocket(socket: Socket, executor: ChatGptBrowserExecutor, tu
       }
       continue;
     }
-    if (message.type === "close") {
-      try {
-        await closeRuntime();
-        socket.end('{"type":"closed"}\n');
-      } catch (error) {
-        socket.write(`${JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) })}\n`);
-      }
-      return;
-    }
     if (message.type === "close_task") {
       try {
-        const hasOtherTasks = await closeTask(message.task);
+        const hasOtherTasks = await closeTask(message.task,message.reviewRound,message.authorizationMac);
         socket.end(hasOtherTasks ? '{"type":"task_closed"}\n' : '{"type":"closed"}\n');
       } catch (error) {
         socket.write(`${JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) })}\n`);

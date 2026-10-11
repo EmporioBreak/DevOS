@@ -14,6 +14,7 @@ export interface WorkerReportTurn {
   workerId: string;
   turn: number;
   tokenHash: string;
+  expiresAt?: number;
 }
 
 export interface RunState {
@@ -280,6 +281,8 @@ export class Orchestrator {
       const browserTurnToken = worker.executor === "chatgpt_browser" &&
         !recoveredReportStatus ? randomBytes(32).toString("hex") : undefined;
       const workerReportToken = this.options.enableWorkerReports ? browserTurnToken : undefined;
+      const browserGrantExpiresAt = browserTurnToken
+        ? (this.options.now ?? Date.now)() + 60 * 60_000 : undefined;
       if (browserTurnToken) {
         state = {
           ...state,
@@ -287,6 +290,7 @@ export class Orchestrator {
             workerId: worker.id,
             turn: state.completedRuns,
             tokenHash: reportTokenHash(browserTurnToken),
+            expiresAt: browserGrantExpiresAt!,
           },
         };
         await stateStore.save(state);
@@ -326,11 +330,15 @@ export class Orchestrator {
                 reportTokenHash: state.activeReport!.tokenHash,
                 graphSha256: skillAssignment.graphSha256,
                 workerManifestSha256: skillAssignment.manifestSha256,
+                expiresAt: state.activeReport!.expiresAt!,
+                conversationId:sessionId?browserConversationId(sessionId):undefined,
               };
               return {
                 task: activeWorkflow.task, workerId: worker.id, turn: authorization.turn,
                 commandId: authorization.commandId, reportTokenHash: authorization.reportTokenHash,
                 graphSha256: authorization.graphSha256, workerManifestSha256: authorization.workerManifestSha256,
+                expiresAt: authorization.expiresAt,
+                ...(authorization.conversationId?{conversationId:authorization.conversationId}:{}),
                 authorizationMac: this.options.signBrowserCommand?.(authorization) ?? "",
               };
             })()
@@ -641,6 +649,14 @@ export class Orchestrator {
     });
   }
 
+}
+
+function browserConversationId(sessionId:string):string{
+  let pathname:string;
+  try{pathname=new URL(sessionId).pathname;}catch{throw new Error("Saved browser session URL is invalid");}
+  const match=/\/c\/([^/?#]+)\/?$/.exec(pathname);
+  if(!match)throw new Error("Saved browser session has no exact conversation identity");
+  return decodeURIComponent(match[1]!);
 }
 
 /** MCP must be able to finish a worker turn even when browser IPC or SSE

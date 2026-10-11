@@ -28,7 +28,7 @@ async function temp() {
   await writeFile(resourcePath, resource + "\n", { mode: 0o600 });
   await writeFile(statePath, JSON.stringify({
     currentWorkerId: "developer", completedRuns: 1,
-    activeReport: { workerId: "developer", turn: 1 },
+    activeReport: { workerId: "developer", turn: 1, expiresAt: Date.now()+10*60_000 },
     sessions: { developer: url },
   }));
   const lockPath=join(root,".devos","locks","EmporioBreak%2FDevOS-issue-99.lock");

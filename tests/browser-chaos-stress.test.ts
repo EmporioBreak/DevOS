@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -22,6 +22,12 @@ function parseTurn(request: WorkerRequest): number {
   const turn = /turn=(\d+), turn_token=/.exec(request.prompt)?.[1];
   assert.ok(turn);
   return Number(turn);
+}
+async function closeApprovedRuntime(root:string,task:{repo:string;issue:number}):Promise<void>{
+  await writeFile(join(root,".env"),"DEVOS_CONNECTOR_OWNER_SECRET=test-owner-secret-that-is-at-least-thirty-two-bytes\n",{mode:0o600});
+  await new JsonStateStore(root,task).save({task,currentWorkerId:"reviewer",completedRuns:1,reviewLoops:0,
+    sessions:{},mainAgentReviewPending:false,completionApproved:true});
+  await closeSharedBrowserRuntime(root,task);
 }
 const wf = (issue: number): Workflow => ({
   version: 1, task: { repo: "Stress/DevOS", issue }, owner: { mode: "main_agent" }, start: "developer",
@@ -144,7 +150,7 @@ test("CHAOS: one browser runtime deduplicates reconnects, keeps 10 worker-turn i
     assert.equal(calls.length, 80, "two clients for one turn never submit twice");
     assert.equal(new Set(calls).size, 80);
   } finally {
-    await closeSharedBrowserRuntime(root, task);
+    await closeApprovedRuntime(root, task);
     await rm(root, { recursive: true, force: true });
   }
 });

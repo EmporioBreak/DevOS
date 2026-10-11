@@ -4,8 +4,8 @@ import { dirname, join } from "node:path";
 import {
   assertBrowserDocumentClaim,
   matchBrowserReceiptIdentity,
-  signBrowserCommandAuthorization,
   verifyBrowserCommandAuthorization,
+  verifyBrowserCommandExecution,
   type BrowserDocumentClaim,
   type BrowserDocumentObservation,
   type BrowserProviderReceiptIdentity,
@@ -55,6 +55,8 @@ export class BrowserCommandBroker {
     validateCommand(command);
     if (!verifyBrowserCommandAuthorization(command, await this.ownerSecret()))
       throw new Error("Browser command lacks a valid owner-signed active graph and worker assignment");
+    if(!verifyBrowserCommandExecution(command,await this.ownerSecret()))
+      throw new Error("Browser command lacks a valid native execution attestation for its exact page and payload");
     await this.withLock(command.commandId, async () => {
       const prior = await this.read(command.commandId);
       if (prior) {
@@ -69,21 +71,14 @@ export class BrowserCommandBroker {
     });
   }
 
-  /** Sign a locally verified #225 owner destination for the same durable
-   * command outbox used by worker sends. This does not send or arm a notice. */
-  async signOwnerWakeup(command: Omit<BrowserCommand,"authorizationMac">): Promise<BrowserCommand> {
-    if(command.purpose!=="owner_wakeup"||command.workerId!=="main_agent_owner")
-      throw new Error("Owner wake-up signing requires an explicit owner command identity");
-    const candidate={...command,authorizationMac:"0".repeat(64)} as BrowserCommand;
-    validateCommand(candidate);
-    const authorizationMac=signBrowserCommandAuthorization(candidate,await this.ownerSecret());
-    return {...candidate,authorizationMac};
-  }
-
   /** Returns true only to the one process that atomically claims this Send. */
-  async claim(commandId: string, observed: BrowserDocumentObservation): Promise<boolean> {
+  async claim(commandId: string, observed: BrowserDocumentObservation,
+    verifyCurrentAuthority?:()=>Promise<void>): Promise<boolean> {
     return this.withLock(commandId, async () => {
       const record = await this.require(commandId);
+      if(record.command.expiresAt<=Date.now())
+        throw new Error("Browser command authorization expired before native Send");
+      await verifyCurrentAuthority?.();
       assertBrowserDocumentClaim(record.command, observed);
       if (record.status !== "prepared") return false;
       await this.write(commandId, { ...record, status: "claimed", claimedAt: new Date().toISOString() });
@@ -268,6 +263,7 @@ function validateCommand(command: BrowserCommand): void {
       !(command.pr===null || (Number.isSafeInteger(command.pr) && command.pr > 0)) ||
       !HEX.test(command.reportTokenHash) || !HEX.test(command.graphSha256) ||
       !HEX.test(command.workerManifestSha256) || !HEX.test(command.authorizationMac) ||
+      !Number.isSafeInteger(command.expiresAt) || command.expiresAt <= 0 ||
       !Number.isSafeInteger(command.navigationEpoch) || command.navigationEpoch < 0 ||
       (command.conversationId !== undefined && !ID.test(command.conversationId)) || !HEX.test(command.payloadSha256))
     throw new Error("Invalid browser command identity");

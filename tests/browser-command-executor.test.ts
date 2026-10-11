@@ -13,6 +13,8 @@ import { OwnerWakeupLedger } from "../src/owner-wakeup-ledger.js";
 import { ChatAccessRegistry } from "../src/chat-access.js";
 import { OwnerTaskApprovalStore } from "../src/owner-task-approval.js";
 import { buildOwnerHandoffMessage } from "../src/owner-wakeup-handoff.js";
+import {assertCurrentBrowserTurn} from "../src/browser-command-authority.js";
+import {JsonStateStore} from "../src/json-state-store.js";
 
 test("owner wake-up sends one real user-role message through the shared broker and confirms its provider receipt",async()=>{
   const root=await mkdtemp(join(tmpdir(),"devos-owner-send-"));
@@ -207,10 +209,12 @@ test("browser executor claims the signed Issue window before Send and ACKs the e
   const ownerSecret = "test-owner-secret-that-is-at-least-thirty-two-bytes";
   const task = { repo: "EmporioBreak/DevOS", issue: 239, pr: 240 };
   const token = "a".repeat(64), tokenHash = reportTokenHash(token);
+  const expiresAt=Date.now()+60_000;
   const commandId = `239:0:developer:${tokenHash}`;
   const graphSha256 = "b".repeat(64), workerManifestSha256 = "c".repeat(64);
   const authorization = { repo: task.repo, issue: task.issue, pr: task.pr, workerId: "developer", turn: 0,
-    commandId, reportTokenHash: tokenHash, graphSha256, workerManifestSha256 };
+    commandId, reportTokenHash: tokenHash, graphSha256, workerManifestSha256,expiresAt,conversationId:undefined,
+  };
   const broker = new BrowserCommandBroker(root, ownerSecret);
   const listeners = new Map<string, Array<(value: any) => void>>();
   const projectUrl = "https://chatgpt.com/g/project/project";
@@ -232,17 +236,23 @@ test("browser executor claims the signed Issue window before Send and ACKs the e
     async evaluate(fn: Function) { const source=fn.toString(); if(source.includes("window.name")) return marker; return source.includes("__DEVOS_ARM_STREAM__") ? 1 : { text: "done", failed: false }; },
     async waitForFunction() {}, async close() {}, isClosed: () => false } as unknown as Page;
   const executor = new ChatGptBrowserExecutor({ projectUrl, profileDir: join(root, "profile"), headless: true }, 1000,
-    undefined, undefined, undefined, broker);
+    undefined, undefined, undefined, broker,root,async()=>assertCurrentBrowserTurn(root,{
+      task,workerId:"developer",turn:0,tokenHash,graphSha256,workerManifestSha256,expiresAt,
+    }));
   Object.assign(executor, { context: { async newPage() { return page; }, pages() { return [page]; }, async addInitScript() {}, async close() {}, on() {} },
     workerPages: new Map([[`${task.repo}#${task.issue}\0developer`, page]]), taskWindowPages: new Map([[`${task.repo}#${task.issue}`, page]]) });
-  const active = { workerId: "developer", turn: 0, tokenHash };
+  const active = { workerId: "developer", turn: 0, tokenHash,expiresAt };
   const reportPath = join(root, ".devos", "worker-reports", `${encodeURIComponent(task.repo)}-issue-${task.issue}`, `turn-0-${tokenHash}.json`);
   await mkdir(join(root, ".devos", "worker-reports", `${encodeURIComponent(task.repo)}-issue-${task.issue}`), { recursive: true });
+  await writeFile(join(root,".env"),`DEVOS_CONNECTOR_OWNER_SECRET=${ownerSecret}\n`,{mode:0o600});
+  await new JsonStateStore(root,task).save({task,currentWorkerId:"developer",completedRuns:0,
+    sessions:{developer:conversationUrl},activeReport:{workerId:"developer",turn:0,tokenHash,expiresAt}});
   await writeFile(reportPath, JSON.stringify({ task: { repo: task.repo, issue: task.issue }, worker_id: "developer", turn: 0,
     token_hash: tokenHash, status: "done", summary: "fixture report" }));
   try {
     const result = await executor.run({ projectRoot: root, task, prompt, workerId: "developer", browserTurnId: commandId,
       reportTurn: { task, active }, browserCommand: { task, workerId: "developer", turn: 0, commandId, reportTokenHash: tokenHash,
+        expiresAt,
         graphSha256, workerManifestSha256, authorizationMac: signBrowserCommandAuthorization(authorization, ownerSecret) } } as any);
     assert.equal(result.sessionId, conversationUrl);
     assert.equal(sends, 1);
