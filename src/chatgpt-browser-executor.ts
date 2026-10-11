@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { profileProcesses, terminateOwnedBrowser, type OwnedBrowserProcess } from "./owned-browser-process.js";
 import { readCompletedTurn, type SubmittedTurn } from "./chatgpt-turn-recovery.js";
 import { mkdir } from "node:fs/promises";
@@ -23,12 +24,18 @@ import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { observeWorkerAuthorization } from "./chat-worker-observer.js";
 import { localWorkerAuthorization } from "./chat-worker-grants.js";
 import { classifyBrowserFailure, browserRecoveryDelayMs } from "./browser-recovery-policy.js";
+import { BrowserCommandBroker } from "./browser-command-broker.js";
+import type { BrowserDocumentClaim } from "./browser-command-identity.js";
 
 export class BrowserResumeUnavailableError extends Error {
   constructor(readonly sessionId: string, message: string) {
     super(message);
     this.name = "BrowserResumeUnavailableError";
   }
+}
+
+class BrowserCommandReplayError extends Error {
+  constructor() { super("Browser command was already claimed; refusing a second Send"); }
 }
 
 export function isBrowserResumeUnavailableError(
@@ -96,6 +103,9 @@ export class ChatGptBrowserExecutor implements Executor {
   private launching: Promise<BrowserContext> | undefined;
   private readonly workerPages = new Map<string, Page>();
   private readonly taskWindowPages = new Map<string, Page>();
+  private readonly documentEpochs = new WeakMap<Page, { documentId: string; navigationEpoch: number }>();
+  private readonly tabLeaseIds = new WeakMap<Page, string>();
+  private readonly runtimeIncarnation = randomUUID();
   private readonly activeTaskRuns = new Map<string, number>();
   private readonly taskPageLocks = new Map<string, Promise<void>>();
 
@@ -105,6 +115,7 @@ export class ChatGptBrowserExecutor implements Executor {
     private readonly onOwnedBrowserProcess?: (owned: OwnedBrowserProcess) => Promise<void>,
     private readonly onTaskWindow?: (task: TaskRef, marker: string | null) => Promise<void>,
     private readonly onTaskSession?: (task: TaskRef, sessionId: string) => Promise<void>,
+    private readonly commandBroker?: BrowserCommandBroker,
   ) {}
 
   async run(request: WorkerRequest): Promise<WorkerOutput> {
@@ -116,6 +127,66 @@ export class ChatGptBrowserExecutor implements Executor {
       if (active > 0) this.activeTaskRuns.set(key, active);
       else this.activeTaskRuns.delete(key);
     }
+  }
+
+  private trackDocument(page: Page): { documentId: string; navigationEpoch: number } {
+    let state = this.documentEpochs.get(page);
+    if (state) return state;
+    state = { documentId: randomUUID(), navigationEpoch: 0 };
+    this.documentEpochs.set(page, state);
+    page.on("framenavigated", frame => {
+      if (frame === page.mainFrame()) {
+        state!.documentId = randomUUID();
+        state!.navigationEpoch++;
+      }
+    });
+    return state;
+  }
+
+  private async claimBrowserCommand(request: WorkerRequest, page: Page): Promise<BrowserDocumentClaim | undefined> {
+    if (!this.commandBroker) return undefined;
+    const context = request.browserCommand;
+    const task = request.task ?? request.reportTurn?.task ?? context?.task;
+    if (!context || !task || !request.workerId || context.workerId !== request.workerId ||
+        task.repo !== context.task.repo || task.issue !== context.task.issue || task.pr !== context.task.pr ||
+        !Number.isSafeInteger(context.turn) || context.turn < 0 || !request.reportTurn ||
+        request.reportTurn.task.repo !== context.task.repo || request.reportTurn.task.issue !== context.task.issue ||
+        request.reportTurn.task.pr !== context.task.pr || request.reportTurn.active.workerId !== context.workerId ||
+        request.reportTurn.active.turn !== context.turn || !/^[a-f0-9]{64}$/.test(request.reportTurn.active.tokenHash))
+      throw new Error("Trusted browser command identity is missing or inconsistent");
+    const taskKey = taskIdentity(task);
+    if (this.workerPages.get(`${taskKey}\0${context.workerId}`) !== page ||
+        await readTaskWindowMarker(page) !== taskWindowMarker(task))
+      throw new Error("Browser command is not bound to its exact Issue window and worker tab");
+    const document = this.trackDocument(page);
+    let tabLease = this.tabLeaseIds.get(page);
+    if (!tabLease) { tabLease = randomUUID(); this.tabLeaseIds.set(page, tabLease); }
+    const url = new URL(page.url());
+    const conversation = /\/c\/([^/?#]+)/.exec(url.pathname)?.[1];
+    const claim: BrowserDocumentClaim = {
+      repo: task.repo, issue: task.issue, workerId: context.workerId, turn: context.turn,
+      pr: context.task.pr ?? null, reportTokenHash: context.reportTokenHash,
+      graphSha256: context.graphSha256, workerManifestSha256: context.workerManifestSha256,
+      authorizationMac: context.authorizationMac,
+      commandId: context.commandId, runtimeIncarnation: this.runtimeIncarnation,
+      profileOwner: createHash("sha256").update(resolve(this.config.profileDir)).digest("hex"),
+      windowLease: taskWindowMarker(task), tabLease,
+      documentId: document.documentId, navigationEpoch: document.navigationEpoch,
+      conversationId: conversation ? decodeURIComponent(conversation) : undefined,
+      payloadSha256: createHash("sha256").update(request.prompt).digest("hex"),
+    };
+    await this.commandBroker.prepare(claim);
+    if (!(await this.commandBroker.claim(claim.commandId, claim))) throw new BrowserCommandReplayError();
+    return claim;
+  }
+
+  private async requireCommandReceipt(claim: BrowserDocumentClaim | undefined, receiptWrite: Promise<void> | undefined): Promise<void> {
+    if (!claim || !this.commandBroker) return;
+    await receiptWrite;
+    const record = await this.commandBroker.get(claim.commandId);
+    if (record?.status === "claimed") await this.commandBroker.markAmbiguous(claim.commandId);
+    if (record?.status !== "acknowledged")
+      throw new Error("Browser command has no exact acknowledged provider receipt; replay is prohibited");
   }
 
   private async runTurn(request: WorkerRequest): Promise<WorkerOutput> {
@@ -138,6 +209,9 @@ export class ChatGptBrowserExecutor implements Executor {
     let mayHaveSubmitted = false;
     let submitted: SubmittedTurn | undefined;
     let submissionAmbiguous = false;
+    let submittedRequest: PlaywrightRequest | undefined;
+    let claimedCommand: BrowserDocumentClaim | undefined;
+    let providerReceiptWrite: Promise<void> | undefined;
     let durableSession = request.sessionId;
     // The terminal MCP tool is the control plane: receipt of its authenticated,
     // turn-scoped report can finish this run even if the SSE observer hangs.
@@ -181,6 +255,7 @@ export class ChatGptBrowserExecutor implements Executor {
           return;
         }
         submitted = candidate;
+        submittedRequest = outgoing;
         // Log only whether identifiers are present; never persist prompt, IDs,
         // OAuth headers or a raw request payload in diagnostics.
         debugLog("browser.submission", { phase: "post-submit", captured: true, hasConversationId: !!submitted.conversationId, hasMessageId: true });
@@ -190,16 +265,35 @@ export class ChatGptBrowserExecutor implements Executor {
         debugLog("browser.submission", { phase: "post-submit", captured: false, reason: "request payload unavailable" });
       }
     };
+    const onOutgoingResponse = (response: PlaywrightResponse) => {
+      if (!this.commandBroker || !claimedCommand || !submittedRequest || response.request() !== submittedRequest) return;
+      if (response.status() < 200 || response.status() >= 300 || !submitted?.conversationId) {
+        debugLog("browser.command.receipt", { decision: "ambiguous-provider-response", status: response.status() });
+        return;
+      }
+      const receipt = {
+        repo: claimedCommand.repo, issue: claimedCommand.issue, workerId: claimedCommand.workerId,
+        turn: claimedCommand.turn, commandId: claimedCommand.commandId,
+        payloadSha256: claimedCommand.payloadSha256, conversationId: submitted.conversationId,
+        messageId: submitted.messageId,
+      };
+      providerReceiptWrite = (async () => {
+        await this.commandBroker!.recordProviderReceipt(claimedCommand!.commandId, receipt);
+        await this.commandBroker!.acknowledge(claimedCommand!.commandId, receipt);
+      })();
+    };
     page.on("request", onOutgoingRequest);
+    page.on("response", onOutgoingResponse);
     try {
       let submissionStarted!: () => void;
       const submission = new Promise<void>(resolve => { submissionStarted = resolve; });
-      const assertSubmissionScope = () => {
+      const assertSubmissionScope = async () => {
         try {
           const backendFailure = getBackendFailure();
           if (backendFailure) throw backendFailure;
           if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), request.sessionId !== undefined);
           if (request.sessionId && !isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation before submission");
+          claimedCommand = await this.claimBrowserCommand(request, page);
           mayHaveSubmitted = true;
           submissionStarted();
         } catch (error) {
@@ -240,6 +334,7 @@ export class ChatGptBrowserExecutor implements Executor {
       if (request.sessionId) {
         const outcome = await response;
         if ("error" in outcome) throw outcome.error;
+        await this.requireCommandReceipt(claimedCommand, providerReceiptWrite);
         if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
         if (!isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation after submission");
         debugLog("browser.session.ready", { sessionId: request.sessionId, actualUrl: page.url() });
@@ -263,6 +358,7 @@ export class ChatGptBrowserExecutor implements Executor {
 
       const outcome = await response;
       if ("error" in outcome) throw outcome.error;
+      await this.requireCommandReceipt(claimedCommand, providerReceiptWrite);
       if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
       if (!isSameChatGptConversation(sessionId, page.url())) throw new Error("ChatGPT changed fresh conversation after submission");
       debugLog("browser.response", { sessionId, textLength: outcome.text.length });
@@ -270,6 +366,9 @@ export class ChatGptBrowserExecutor implements Executor {
     } catch (error) {
       const cause = error instanceof Error ? error.message.split("\n")[0]! : "Browser operation failed";
       if (mayHaveSubmitted) {
+        await providerReceiptWrite?.catch(() => undefined);
+        const commandRecord = claimedCommand ? await this.commandBroker?.get(claimedCommand.commandId).catch(() => null) : null;
+        if (commandRecord?.status === "claimed") await this.commandBroker?.markAmbiguous(claimedCommand!.commandId).catch(() => undefined);
         // Optional read-only DOM evidence: one exact submitted user turn and
         // one stable assistant final bearing a machine-valid DEVOS_RESULT.
         // This does not depend on outgoing network user IDs or extra MCP calls.
@@ -277,6 +376,7 @@ export class ChatGptBrowserExecutor implements Executor {
         if (durableSession && isSameChatGptConversation(durableSession, page.url())) {
           const domFinal = await readExactDomFinal(page, request.prompt, Math.min(this.timeoutMs, 3_000));
           if (domFinal) {
+            await this.requireCommandReceipt(claimedCommand, providerReceiptWrite);
             debugLog("browser.recovery", { phase: "post-submit", decision: "exact-dom-final" });
             return { text: domFinal, sessionId: durableSession };
           }
@@ -338,6 +438,7 @@ export class ChatGptBrowserExecutor implements Executor {
       // Keep only one request listener per active worker turn across repeated
       // use of the same tab, including MCP-finished turns.
       page.off?.("request", onOutgoingRequest);
+      page.off?.("response", onOutgoingResponse);
       // Stable worker pages stay alive for the whole task. Cleanup is task-scoped.
     }
   }
@@ -882,10 +983,10 @@ export function isTransientBrowserFailure(error: unknown): boolean {
 
 export async function submitOnly(
   page: Page, prompt: string, timeoutMs: number,
-  beforeSubmit?: () => void, prepared?: PreparedMessage,
+  beforeSubmit?: () => void | Promise<void>, prepared?: PreparedMessage,
 ): Promise<void> {
   const message = prepared ?? await prepareMessage(page, prompt, timeoutMs);
-  beforeSubmit?.();
+  await beforeSubmit?.();
   if (message.useButton) {
     await page.locator(SEND).first().click({ timeout: Math.min(timeoutMs, 15_000) });
   } else {
@@ -897,7 +998,7 @@ export async function sendAndRead(
   page: Page,
   prompt: string,
   timeoutMs: number,
-  beforeSubmit?: () => void,
+  beforeSubmit?: () => void | Promise<void>,
   prepared?: PreparedMessage,
 ): Promise<string> {
   const message = prepared ?? await prepareMessage(page, prompt, timeoutMs);
@@ -905,10 +1006,10 @@ export async function sendAndRead(
   const composer = page.locator(COMPOSER).first();
   const send = page.locator(SEND).first();
   if (message.useButton) {
-    beforeSubmit?.();
+    await beforeSubmit?.();
     await send.click({ timeout: Math.min(timeoutMs, 15_000) });
   } else {
-    beforeSubmit?.();
+    await beforeSubmit?.();
     await composer.press("Enter", { timeout: Math.min(timeoutMs, 15_000) });
   }
 

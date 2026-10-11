@@ -1,3 +1,5 @@
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+
 /** Transport-neutral identity checks for CoS-inspired command claims.
  *
  * No side effects, browser process, socket, outbox, authentication, persistence
@@ -5,11 +7,13 @@
  * observed document/receipt from independently trusted host/provider sources.
  * An object matching this shape is NOT itself proof or permission to Send.
  *
- * Future authoritative browser broker must recheck the original durable claim
- * at the native side-effect boundary, not merely when observing a page.
+ * The native broker verifies the owner-key MAC and exact active graph identity
+ * before durably claiming a command; page/document evidence is checked again
+ * at the same side-effect boundary.
  */
 export interface BrowserDocumentClaim {
-  repo:string;issue:number;workerId:string;turn:number;commandId:string;
+  repo:string;issue:number;pr:number|null;workerId:string;turn:number;commandId:string;
+  reportTokenHash:string;graphSha256:string;workerManifestSha256:string;authorizationMac:string;
   runtimeIncarnation:string;profileOwner:string;
   windowLease:string;tabLease:string;documentId:string;
   navigationEpoch:number;conversationId:string|undefined;
@@ -37,7 +41,10 @@ const RECEIPT_KEYS=["repo","issue","workerId","turn","commandId",
 function validClaim(claim:BrowserDocumentClaim):boolean{
   return !!claim && REPO.test(claim.repo) &&
     Number.isSafeInteger(claim.issue)&&claim.issue>0&&
-    Number.isSafeInteger(claim.turn)&&claim.turn>0&&
+    (claim.pr===null||(Number.isSafeInteger(claim.pr)&&claim.pr>0))&&
+    Number.isSafeInteger(claim.turn)&&claim.turn>=0&&
+    HEX.test(claim.reportTokenHash)&&HEX.test(claim.graphSha256)&&
+    HEX.test(claim.workerManifestSha256)&&HEX.test(claim.authorizationMac)&&
     Number.isSafeInteger(claim.navigationEpoch)&&claim.navigationEpoch>=0&&
     ["workerId","commandId","runtimeIncarnation","profileOwner","windowLease",
       "tabLease","documentId"].every(key=>ID.test(claim[key as keyof BrowserDocumentClaim] as string))&&
@@ -52,6 +59,33 @@ export function assertBrowserDocumentClaim(claim:BrowserDocumentClaim,
      DOCUMENT_KEYS.some(key=>observed[key]!==claim[key]))
     throw new Error("Browser command ownership evidence does not match exact durable document claim");
   return true;
+}
+
+export type BrowserCommandAuthorization = Pick<BrowserDocumentClaim,
+  "repo"|"issue"|"pr"|"workerId"|"turn"|"commandId"|"reportTokenHash"|"graphSha256"|"workerManifestSha256">;
+
+function authorizationPayload(value: BrowserCommandAuthorization): string {
+  return JSON.stringify({
+    repo:value.repo, issue:value.issue, pr:value.pr, workerId:value.workerId, turn:value.turn,
+    commandId:value.commandId, reportTokenHash:value.reportTokenHash,
+    graphSha256:value.graphSha256, workerManifestSha256:value.workerManifestSha256,
+  });
+}
+
+export function signBrowserCommandAuthorization(value: BrowserCommandAuthorization, ownerSecret: string): string {
+  if (Buffer.byteLength(ownerSecret) < 32) throw new Error("Strong local owner secret required for browser command authorization");
+  const key=createHmac("sha256", createHash("sha256").update("DevOS browser command authorization v1\0").update(ownerSecret).digest());
+  return key.update(authorizationPayload(value)).digest("hex");
+}
+
+export function verifyBrowserCommandAuthorization(claim: BrowserDocumentClaim, ownerSecret: string): boolean {
+  if (!claim || !HEX.test(claim.authorizationMac) || !HEX.test(claim.reportTokenHash) ||
+      !HEX.test(claim.graphSha256) || !HEX.test(claim.workerManifestSha256) ||
+      !(claim.pr===null||(Number.isSafeInteger(claim.pr)&&claim.pr>0))) return false;
+  try {
+    const expected=signBrowserCommandAuthorization(claim,ownerSecret);
+    return timingSafeEqual(Buffer.from(expected,"hex"),Buffer.from(claim.authorizationMac,"hex"));
+  } catch { return false; }
 }
 
 /** A matching ID is insufficient to claim a provider message was sent: the

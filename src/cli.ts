@@ -36,6 +36,7 @@ import { acquireTaskLock } from "./task-lock.js";
 import type { Workflow } from "./workflow.js";
 import { loadWorkflow } from "./workflow-loader.js";
 import { verifyRunnerSkillGraph } from "./runner-skill-graph.js";
+import { signBrowserCommandAuthorization } from "./browser-command-identity.js";
 import {verifyHostBackendUnavailable} from "./host-fallback-evidence.js";
 import { appendTaskAuditEvent } from "./pipeline-diagnostics.js";
 import { parseEnvFile } from "./connector-env.js";
@@ -232,8 +233,8 @@ export async function runWorkflow(
       const exact=await verifyRunnerSkillGraph(cwd,workflow,strictSecret);
       const assigned=exact.workers.find(w=>w.workerId===workerId);
       if(!assigned)throw new Error("Undeclared DevOS Runner worker");
-      return {stage:assigned.stage,manifestSha256:assigned.manifestSha256};
-    }}:{}),
+      return {stage:assigned.stage,manifestSha256:assigned.manifestSha256,graphSha256:exact.graphSha256};
+    },signBrowserCommand:(value)=>signBrowserCommandAuthorization(value,strictSecret)}:{}),
     enableWorkerReports: hasBrowserWorker && workerReportsEnabled(process.env.DEVOS_WORKER_MCP_REPORTS),
     ...(mainAgentDecision ? { mainAgentDecision } : {}),
     finalizeTask: async state => {

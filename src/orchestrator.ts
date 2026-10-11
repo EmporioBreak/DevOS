@@ -6,6 +6,7 @@ import { isCodexResumeUnavailableError } from "./codex-executor.js";
 import type { Executor } from "./executor.js";
 import { randomBytes } from "node:crypto";
 import { DevosToolRegistry, reportTokenHash } from "./mcp-tools/registry.js";
+import { type BrowserCommandAuthorization } from "./browser-command-identity.js";
 import { parseDevosResult } from "./result.js";
 import type { ExecutorKind, TaskRef, WorkerOutput, WorkerStatus, Workflow, WorkerSpec } from "./workflow.js";
 
@@ -85,8 +86,9 @@ export interface OrchestratorOptions {
   resolveTask?: (task: TaskRef) => Promise<TaskRef>;
   /** Mandatory for v2: reverify signed per-worker graph before every dispatch. */
   verifyAssignedWorkerSkills?: (workerId:string) => Promise<{
-    stage:string|null;manifestSha256:string;
+    stage:string|null;manifestSha256:string;graphSha256:string;
   }>;
+  signBrowserCommand?: (value: BrowserCommandAuthorization) => string;
   onEvent?: (event: OrchestrationEvent) => void | Promise<void>;
   enableWorkerReports?: boolean;
   maxWorkerRuns?: number;
@@ -181,12 +183,13 @@ export class Orchestrator {
       await this.assertBudgets(state);
       const worker = workers.get(state.currentWorkerId);
       if (!worker) throw new Error(`Unknown worker: ${state.currentWorkerId}`);
-      let skillAssignment: {stage:string|null;manifestSha256:string}|undefined;
+      let skillAssignment: {stage:string|null;manifestSha256:string;graphSha256:string}|undefined;
       if(workflow.skillsMode==="strict") {
         if(!this.options.verifyAssignedWorkerSkills)
           throw new Error("Strict Runner requires verified frozen worker assignments");
         skillAssignment=await this.options.verifyAssignedWorkerSkills(worker.id);
-        if(!skillAssignment || !/^[a-f0-9]{64}$/.test(skillAssignment.manifestSha256))
+        if(!skillAssignment || !/^[a-f0-9]{64}$/.test(skillAssignment.manifestSha256) ||
+            !/^[a-f0-9]{64}$/.test(skillAssignment.graphSha256))
           throw new Error("Missing verified Runner worker stage/skills");
       }
 
@@ -313,6 +316,25 @@ export class Orchestrator {
         if (recoveredReportStatus) {
           output = { text: "", sessionId: state.sessions[worker.id]! };
         } else {
+        const browserCommand = worker.executor === "chatgpt_browser" && browserTurnToken && skillAssignment
+          ? (() => {
+              const authorization: BrowserCommandAuthorization = {
+                repo: activeWorkflow.task.repo, issue: activeWorkflow.task.issue,
+                pr: activeWorkflow.task.pr ?? null, workerId: worker.id,
+                turn: state.activeReport!.turn,
+                commandId: `${activeWorkflow.task.issue}:${state.completedRuns}:${worker.id}:${state.activeReport!.tokenHash}`,
+                reportTokenHash: state.activeReport!.tokenHash,
+                graphSha256: skillAssignment.graphSha256,
+                workerManifestSha256: skillAssignment.manifestSha256,
+              };
+              return {
+                task: activeWorkflow.task, workerId: worker.id, turn: authorization.turn,
+                commandId: authorization.commandId, reportTokenHash: authorization.reportTokenHash,
+                graphSha256: authorization.graphSha256, workerManifestSha256: authorization.workerManifestSha256,
+                authorizationMac: this.options.signBrowserCommand?.(authorization) ?? "",
+              };
+            })()
+          : undefined;
         const executing = executor.run({
           projectRoot: this.options.projectRoot,
           prompt: buildWorkerPrompt(activeWorkflow, worker, this.options.projectRoot,
@@ -330,14 +352,7 @@ export class Orchestrator {
             ? {
                 knownBrowserSessions: knownBrowserSessions!,
                 browserTurnId: `${state.completedRuns}:${worker.id}${browserTurnToken ? ":" + state.activeReport!.tokenHash : ""}`,
-                ...(browserTurnToken ? {
-                  browserCommand: {
-                    task: activeWorkflow.task,
-                    workerId: worker.id,
-                    turn: state.activeReport!.turn,
-                    commandId: `${activeWorkflow.task.issue}:${state.completedRuns}:${worker.id}:${state.activeReport!.tokenHash}`,
-                  },
-                } : {}),
+                ...(browserCommand ? { browserCommand } : {}),
                 ...(workerReportToken ? {
                   allowToolReportedStatus: true,
                   reportTurn: { task: activeWorkflow.task, active: state.activeReport! },

@@ -4,10 +4,12 @@ import { dirname, join } from "node:path";
 import {
   assertBrowserDocumentClaim,
   matchBrowserReceiptIdentity,
+  verifyBrowserCommandAuthorization,
   type BrowserDocumentClaim,
   type BrowserDocumentObservation,
   type BrowserProviderReceiptIdentity,
 } from "./browser-command-identity.js";
+import { parseEnvFile } from "./connector-env.js";
 
 export type BrowserCommand = BrowserDocumentClaim;
 export type BrowserCommandStatus = "prepared" | "claimed" | "ambiguous" | "received" | "acknowledged";
@@ -41,14 +43,17 @@ export class BrowserCommandBroker {
   private readonly dir: string;
   private readonly keyPath: string;
   private keyPromise?: Promise<Buffer>;
+  private ownerSecretPromise?: Promise<string>;
 
-  constructor(private readonly projectRoot: string) {
+  constructor(private readonly projectRoot: string, private readonly providedOwnerSecret?: string) {
     this.dir = join(projectRoot, ".devos", "browser-runtime", "command-outbox");
     this.keyPath = join(this.dir, "signing.key");
   }
 
   async prepare(command: BrowserCommand): Promise<void> {
     validateCommand(command);
+    if (!verifyBrowserCommandAuthorization(command, await this.ownerSecret()))
+      throw new Error("Browser command lacks a valid owner-signed active graph and worker assignment");
     await this.withLock(command.commandId, async () => {
       const prior = await this.read(command.commandId);
       if (prior) {
@@ -123,6 +128,20 @@ export class BrowserCommandBroker {
   }
 
   private path(commandId: string): string { return join(this.dir, `${digest(commandId)}.json`); }
+
+  private ownerSecret(): Promise<string> {
+    return this.ownerSecretPromise ??= (async () => {
+      if (this.providedOwnerSecret) return this.providedOwnerSecret;
+      const fromEnv=process.env.DEVOS_CONNECTOR_OWNER_SECRET?.trim();
+      if (fromEnv && Buffer.byteLength(fromEnv)>=32) return fromEnv;
+      try {
+        const env=parseEnvFile(await readFile(join(this.projectRoot,".env"),"utf8"));
+        const secret=env.DEVOS_CONNECTOR_OWNER_SECRET?.trim();
+        if (secret && Buffer.byteLength(secret)>=32) return secret;
+      } catch {}
+      throw new Error("Browser command broker requires the existing local owner signing secret");
+    })();
+  }
 
   private async withLock<T>(commandId: string, operation: () => Promise<T>): Promise<T> {
     if (!ID.test(commandId)) throw new Error("Invalid browser command ID");
@@ -225,9 +244,12 @@ export class BrowserCommandBroker {
 
 function validateCommand(command: BrowserCommand): void {
   if (!command || !REPO.test(command.repo) || !Number.isSafeInteger(command.issue) || command.issue < 1 ||
-      !ID.test(command.workerId) || !Number.isSafeInteger(command.turn) || command.turn < 1 ||
+      !ID.test(command.workerId) || !Number.isSafeInteger(command.turn) || command.turn < 0 ||
       !ID.test(command.commandId) || !ID.test(command.runtimeIncarnation) || !ID.test(command.profileOwner) ||
       !ID.test(command.windowLease) || !ID.test(command.tabLease) || !ID.test(command.documentId) ||
+      !(command.pr===null || (Number.isSafeInteger(command.pr) && command.pr > 0)) ||
+      !HEX.test(command.reportTokenHash) || !HEX.test(command.graphSha256) ||
+      !HEX.test(command.workerManifestSha256) || !HEX.test(command.authorizationMac) ||
       !Number.isSafeInteger(command.navigationEpoch) || command.navigationEpoch < 0 ||
       (command.conversationId !== undefined && !ID.test(command.conversationId)) || !HEX.test(command.payloadSha256))
     throw new Error("Invalid browser command identity");

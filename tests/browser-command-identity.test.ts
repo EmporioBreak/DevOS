@@ -3,18 +3,22 @@ import test from "node:test";
 import {
   assertBrowserDocumentClaim,
   matchBrowserReceiptIdentity,
+  signBrowserCommandAuthorization,
   type BrowserDocumentClaim,
   type BrowserDocumentObservation,
   type BrowserProviderReceiptIdentity,
 } from "../src/browser-command-identity.js";
 
 const claim:BrowserDocumentClaim={
-  repo:"EmporioBreak/DevOS",issue:239,workerId:"cos_browser_qa",turn:4,
+  repo:"EmporioBreak/DevOS",issue:239,pr:240,workerId:"cos_browser_qa",turn:4,
+  reportTokenHash:"b".repeat(64),graphSha256:"c".repeat(64),workerManifestSha256:"d".repeat(64),
+  authorizationMac:"", 
   commandId:"command-4",runtimeIncarnation:"runtime-original",
   profileOwner:"profile-original",windowLease:"window-239",
   tabLease:"tab-worker-239",documentId:"document-A",navigationEpoch:7,
   conversationId:"chat-a",payloadSha256:"a".repeat(64),
 };
+claim.authorizationMac=signBrowserCommandAuthorization(claim,"test-owner-secret-that-is-at-least-thirty-two-bytes");
 const observation:BrowserDocumentObservation={
   repo:claim.repo,issue:claim.issue,workerId:claim.workerId,
   runtimeIncarnation:claim.runtimeIncarnation,

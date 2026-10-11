@@ -11,7 +11,10 @@ export interface WorkerRequest {
   knownBrowserSessions?: Record<string, string>;
   browserTurnId?: string;
   /** Trusted identity assigned by Orchestrator for the one native browser Send. */
-  browserCommand?: { task: TaskRef; workerId: string; turn: number; commandId: string };
+  browserCommand?: {
+    task: TaskRef; workerId: string; turn: number; commandId: string;
+    reportTokenHash: string; graphSha256: string; workerManifestSha256: string; authorizationMac: string;
+  };
   allowToolReportedStatus?: boolean;
   // Serialized across shared-browser IPC; identifies the single authorized
   // MCP report which can terminate browser response waiting for this turn.

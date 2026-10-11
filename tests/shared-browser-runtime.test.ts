@@ -10,20 +10,27 @@ import { captureProcessIdentity } from "../src/process-identity.js";
 import { assertSavedConversationTaskOwner, browserRuntimePaths, legacyBrowserRuntimePaths, findOwnedLegacyBrowserRuntime, browserTaskKey, canonicalConversationIdentity, ensureSharedBrowserRuntime, closeSharedBrowserRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
 import { BrowserPreSubmitFailureError, type ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
 import { BrowserCommandBroker, type BrowserCommand } from "../src/browser-command-broker.js";
+import { signBrowserCommandAuthorization } from "../src/browser-command-identity.js";
 
 test("shared runtime IPC commits one durable browser command claim and provider receipt", async () => {
   const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-broker-ipc-"));
   const task = { repo: "owner/repo", issue: 73 };
+  const ownerSecret = "test-owner-secret-that-is-at-least-thirty-two-bytes";
   const paths = browserRuntimePaths(root, task.repo, task.issue);
+  const auth = {
+    repo: task.repo, issue: task.issue, pr: null, workerId: "developer", turn: 1,
+    commandId: "cmd-73-1", reportTokenHash: "b".repeat(64), graphSha256: "c".repeat(64),
+    workerManifestSha256: "d".repeat(64),
+  };
   const command: BrowserCommand = {
-    repo: task.repo, issue: task.issue, workerId: "developer", turn: 1,
-    commandId: "cmd-73-1", runtimeIncarnation: "runtime-a", profileOwner: "profile-a",
+    ...auth, authorizationMac: signBrowserCommandAuthorization(auth, ownerSecret),
+    runtimeIncarnation: "runtime-a", profileOwner: "profile-a",
     windowLease: "window-73", tabLease: "tab-73", documentId: "doc-a",
     navigationEpoch: 2, conversationId: "conversation-a", payloadSha256: "a".repeat(64),
   };
   const executor = { async run() { return { text: "unused" }; }, async close() {} } as unknown as ChatGptBrowserExecutor;
   try {
-    const broker = new BrowserCommandBroker(root);
+    const broker = new BrowserCommandBroker(root, ownerSecret);
     await startSharedBrowserServer(paths.socket, paths.metadata, executor, undefined, broker);
     const client = new SharedBrowserExecutor(paths.socket) as any;
     assert.equal(typeof client.prepareBrowserCommand, "function", "browser broker IPC is missing");

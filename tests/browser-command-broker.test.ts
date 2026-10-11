@@ -9,9 +9,17 @@ const loadBroker = async () => {
   catch { return null; }
 };
 
+const ownerSecret = "test-owner-secret-that-is-at-least-thirty-two-bytes";
+const { signBrowserCommandAuthorization } = await import("../src/browser-command-identity.js");
+
+const commandAuth = {
+  repo: "EmporioBreak/DevOS", issue: 239, pr: 240, workerId: "developer", turn: 1,
+  commandId: "cmd-239-1", reportTokenHash: "b".repeat(64), graphSha256: "c".repeat(64),
+  workerManifestSha256: "d".repeat(64),
+};
 const command = {
-  repo: "EmporioBreak/DevOS", issue: 239, workerId: "developer", turn: 1,
-  commandId: "cmd-239-1", runtimeIncarnation: "runtime-a", profileOwner: "profile-a",
+  ...commandAuth, authorizationMac: signBrowserCommandAuthorization(commandAuth, ownerSecret),
+  runtimeIncarnation: "runtime-a", profileOwner: "profile-a",
   windowLease: "window-239", tabLease: "tab-239", documentId: "doc-a",
   navigationEpoch: 4, conversationId: "conversation-a",
   payloadSha256: "a".repeat(64),
@@ -22,7 +30,7 @@ test("browser command claim is durable, exact and non-replayable after an ambigu
   try {
     const api = await loadBroker();
     assert.ok(api, "BrowserCommandBroker implementation is missing");
-    const broker = new api.BrowserCommandBroker(root);
+    const broker = new api.BrowserCommandBroker(root, ownerSecret);
     await broker.prepare(command);
     assert.equal(await broker.claim(command.commandId, command), true);
     await broker.markAmbiguous(command.commandId);
@@ -40,7 +48,7 @@ test("a stale A→B→A document epoch cannot claim or acknowledge another brows
   try {
     const api = await loadBroker();
     assert.ok(api, "BrowserCommandBroker implementation is missing");
-    const broker = new api.BrowserCommandBroker(root);
+    const broker = new api.BrowserCommandBroker(root, ownerSecret);
     assert.equal(typeof broker.acknowledge, "function", "provider receipt ACK is missing");
     await broker.prepare(command);
     const stale = { ...command, navigationEpoch: 3 };
@@ -59,7 +67,7 @@ test("provider receipt is durable before ACK and binds the exact task, turn, con
   try {
     const api = await loadBroker();
     assert.ok(api, "BrowserCommandBroker implementation is missing");
-    const broker = new api.BrowserCommandBroker(root);
+    const broker = new api.BrowserCommandBroker(root, ownerSecret);
     assert.equal(typeof broker.recordProviderReceipt, "function", "provider receipt persistence is missing");
     assert.equal(typeof broker.acknowledge, "function", "provider receipt ACK is missing");
     await broker.prepare(command);
@@ -85,7 +93,7 @@ test("separate Node processes can claim one command only once", async () => {
   try {
     const api = await loadBroker();
     assert.ok(api, "BrowserCommandBroker implementation is missing");
-    const broker = new api.BrowserCommandBroker(root);
+    const broker = new api.BrowserCommandBroker(root, ownerSecret);
     await broker.prepare(command);
     const script = [
       'import { BrowserCommandBroker } from "./src/browser-command-broker.ts";',
