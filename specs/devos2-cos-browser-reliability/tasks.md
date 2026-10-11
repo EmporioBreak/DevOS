@@ -1,82 +1,37 @@
-# Task breakdown — CoS-derived DevOS browser reliability
+# Browser broker implementation tasks — Issue #239
 
-**Issue:** #239 | **Status:** draft / no signed owner graph; **do not start Runner or active browser sends**.
+**Status:** Draft only. **Do not start Runner, browser sends or Production migration before signed approval of the exact original Spec Kit, worker graph and skills.**
 
-## Pin and approve
-- [x] T001 Read DevOS and CoS AGENTS.md, original CoS source and license; pin immutable `9c9ccac195be282011a5e7c8f2ee35e64f8680b7`.
-- [x] T002 Document gap map, source boundaries and canonical Spec Kit spec/plan.
-- [ ] T003 Main Agent assembles action/risk-specific full immutable team and actual skills by capability; user password-approves exact scope, original Spec Kit, git SHA/PR and graph; do not pretend text message is signed approval.
+## Research and prior verified preparation
 
-## One authority — test first
-- [ ] T004 RED tests across payload/command/doc/owner/turn identity, A→B→A, same worker label from different Issues, stale runtime incarnation.
-- [ ] T005 Introduce one transactional command/outbox state machine, strong idempotency and durable claim before side effects. Remove duplicated send owners as it becomes authoritative.
-- [ ] T006 RED/GREEN crash injection at every claim/Send/receipt/ACK boundary; provider-origin receipt and read-only reconciliation; explicit ambiguous.
-- [ ] T007 One project broker and scoped task-window/worker-tab leases, no global kill and no duplicate process even with idle legacy Node owner.
-- [ ] T008 Integrate sealed worker grant, saved Project chat identity, exact IPC and bounded page/document observation; real owner-notification round uses same outbox, not separate mirror.
-- [ ] T009 Bounded liveness, busy/idle/revoked/manual-close observations, no speculative retries; diagnostic events with redacted exact owner/phase.
-- [ ] T010 Legacy live-context adoption or fail-closed blocker with saved #226 turn and no profile duplication; no #232 actions.
+- [x] T001 Read pinned upstream CoS sources, license and original DevOS AGENTS; pin `9c9ccac195be282011a5e7c8f2ee35e64f8680b7`.
+- [x] T002 Source gap map and original Spec Kit drafts, no upstream code copied.
+- [x] T015 Isolated pure identity matcher `src/browser-command-identity.ts`; TDD RED/GREEN across exact command/worker/browser document/epoch/receipt.
+- [x] T016 Prior scoped test run 122/122 PASS and build PASS (historical evidence, **not** current full verification or headed E2E).
+- [x] T017 Candidate 6-role graph + skills roster drafted; **not signed or dispatched**.
 
-## End-to-end, review, rollout
-- [ ] T011 Unit/model-based, simulated processes, IPC, crash/restart, multi-Issue adversarial and complete existing DevOS regression.
-- [ ] T012 Genuine approved headed browser E2E with independent signed worker reports, two Issues/windows, turn message IDs, owner wake-up, review correction same chats, A-only close. No simulated E2E success.
-- [ ] T013 Independent code/security/provider terms review; Main Agent final judgment, change requests same PR/Issue, no premature merge or Issue closure.
-- [ ] T014 Document migration/rollback procedures, avoid legacy orphans and preserve CoS MIT attribution for any substantial port.
+## Exact next browser work (after project approval gate)
 
-## Explicit Issue-scoped worker lifecycle (owner decision)
+- [ ] T003 Main Agent secures verified owner password-backed agreement to **this reduced scope**, source SHA, original Spec Kit and immutable complete graph/skills, not the previous 47-task superseded plan.
+- [ ] T004 RED tests for wrong Issue/worker/turn/graph/payload/document/profile and A→B→A navigation; unit identity check is not authorization.
+- [ ] T005 Transactional **single** durable browser command/outbox with claim-before-native-effect; retire existing competing volatile send caches when it becomes authoritative.
+- [ ] T006 RED/GREEN failure injection at prepare, claim, Send/click ambiguity, exact provider receipt and ACK; reconcile read-only and never auto-replay.
+- [ ] T007 Project-level Camoufox browser/process root ownership, existing #226 one Issue window + worker tab leases, no duplicate profile and no global kill.
+- [ ] T008 Integrate existing signed MCP worker grants, saved task chat identity, exact IPC/document evidence and provider DOM adapter. #224's already-owned owner notification MUST use the same eventual transport, not a new sender built here.
+- [ ] T009 Bounded liveness/busy/manual-close/unknown-tab diagnostics, structured redacted events and fail-closed restart.
+- [ ] T010 Read-only legacy ownership inventory and safe migration/adoption gate. Preserve #226 turn 6's ambiguity and do not modify #232/legacy trusted sessions.
+- [ ] T011 Full affected unit/IPC/process/recovery/DOM regression and adversarial two-Issue browser tests; prove no cross-task commands or double Send.
+- [ ] T012 **Real signed-in headed browser E2E** on authorized safe disposable work with independent signed reports, actual provider IDs, two Issue windows/worker tabs, same-Issue correction and A-only window teardown. Do not substitute shell/headless proofs.
+- [ ] T013 Independent security/code/provider-terms review, changes_requested to the SAME developer/Issue/PR and actual re-tests; Main Agent alone makes final acceptance.
+- [ ] T014 Document safe rollout/rollback and MIT attribution if substantial upstream source is imported.
+- [ ] T018 Within unfinished Issue, same signed worker resumes original chat on `changes_requested`; a new Issue uses a fresh worker conversation/grant. Post-completion deletion is **#241**, not #239.
 
-- [ ] T018 TDD: same Issue / same predeclared worker returns to same saved Project conversation after `changes_requested` and safe restart; a new Issue, including one reusing the same worker role/name, MUST get a new conversation, clean prompt context and separately signed grant.
-- [ ] T019 TDD: only genuinely approved `completed` retires that Issue's grants, worker executable session mappings, tabs and window; no completed worker from A can receive a new turn in B; B's window/profile/MCP grants continue unharmed. Late worker reports, stale document epochs and ambiguous active sends cannot regain execution authority or be silently deleted.
-- [ ] T020 Verify no CoS-style sleeping agent pool/reassignment, persistent cross-Issue worker memory, or auto-import of previous worker chats. Main Agent retains long-term project understanding; GitHub records remain as audit and task-handoff artifacts.
+## Explicit handoff to other Issues, NOT implementation here
 
-## Parallel work safety
-- #232 explicitly must not be touched.
-- #224/#226/#228 existing PR and exact chat/session states stay unchanged until separately reconciled; this Issue is not a back door for replay of #226 turn 6.
-- No second Production/Staging MCP, browser profile, custom system daemon or cross-task worker authority.
+- [#241](https://github.com/EmporioBreak/DevOS/issues/241) — worker account-chat deletion and retirement.
+- [#242](https://github.com/EmporioBreak/DevOS/issues/242) — multi-Issue Runner scheduler/worktrees/cleanup.
+- [#243](https://github.com/EmporioBreak/DevOS/issues/243) — replaceable Main Agent Chat.
+- [#244](https://github.com/EmporioBreak/DevOS/issues/244) — project heartbeat, queued issue admission.
+- [#224](https://github.com/EmporioBreak/DevOS/issues/224) and [#226](https://github.com/EmporioBreak/DevOS/issues/226) — existing owner wake-up and shared browser/window work; not duplicated.
 
-## Destructive worker-chat cleanup after genuine Issue completion (owner request)
-
-- [ ] T021 RED/GREEN: only accepted, merged-if-applicable, verified GitHub Issue `closed:completed` activates browser-worker chat deletion; active, changes_requested, waiting, cancelled, not_planned and disputed/ambiguous work MUST NOT delete anything.
-- [ ] T022 RED/GREEN: task/worker-bound immutable original provider conversation ID + account/workspace/Project ownership proof required; wrong Issue, missing proof, borrowed URL, owner chat, manually created chat, similar sidebar title, same worker role in another Issue, cross-account navigation all fail closed.
-- [ ] T023 RED/GREEN: one durable per-dialog deletion intent → exclusive destructive claim → actual authorized UI Delete + confirmation → authoritative account-deleted evidence. Simulate pre-click crash, click timeout, lost ACK, restart, duplicate cleanup request and provider account mismatch; never repeatedly click after a possibly successful Delete.
-- [ ] T024 RED/GREEN: broker revokes task-grants and freezes active sends before destructive cleanup; preserve exact GitHub audit artifacts, but no full worker transcripts in local cleanup receipts. Delete only task A chats/window/temporary metadata; task B and shared Camoufox continue uninterrupted. Block cleanup if a possible outstanding send/worker report cannot be reconciled.
-- [ ] T025 Authorized headed E2E: finish a disposable test Issue, verify original worker chats deleted (not archived) from the correct ChatGPT account, new Issue gets new chats, foreign/user/Main Agent chats remain; document provider retention limitations. Do **not** use #214/#224/#226/#232 conversations as disposable test targets.
-- [ ] T026 Independent security review and owner approval for irreversible deletion path before enabling by default. On genuine unavailability show cleanup_pending/blocked and a bounded safe reconciliation procedure, not a misleading success.
-
-## Parallel Issue execution and serialized Main Agent review (owner request)
-
-- [ ] T027 RED/GREEN: a project-level scheduler admits multiple **independently owner-signed** one-Issue graphs; per-Issue priority/dependencies, persisted admission status, bounded configurable concurrency, fair waiting queue, no task state lost across process restart; never spawn an undeclared worker or reuse old Issue chats.
-- [ ] T028 RED/GREEN: three-Issue interleaving (A running, B busy/generating, C blocked), same worker names in different Issues, task-local retry/failure, shared profile/one project broker/one window per Issue, no global deadlocks, no cross-Issue MCP/turn/tab ownership or starvation.
-- [ ] T029 RED/GREEN: allocate one owned, bounded, temporary Git worktree per concurrently active code-writing Issue on its preapproved branch; persist exact task/path/branch/lease. Two different Issues edit/build/test simultaneously in separate trees, workers of one Issue share its tree; Production checkout/connector/Camoufox remain single, with no duplicate/nested/orphan trees or retroactive #232 cleanup.
-- [ ] T030 RED/GREEN: simultaneous distinct `FINAL_REVIEW_REQUIRED` receipts enqueue one Main Agent user-role notification per Issue/reviewRound through the shared outbox; owner busy/generating defers delivery; delayed/out-of-order provider ACK, restart and coalesced status digests cannot lose or duplicate any Issue. Never fabricate a real `system` role or owner approval.
-- [ ] T031 RED/GREEN: A changes_requested resumes its original worker chats while B is final-approved/merged/completed and **only B's verified DevOS-created worker chats** are deleted; C and shared Camoufox remain intact. Full E2E requires genuine headed observations and independent signed status.
-- [ ] T032 Gradual live rollout proof: isolated one-Issue reliability, 2-Issue parallel, 3-Issue + Main Agent busy/owner wake queue, task-local deletion; independently verify throughput/backpressure, bounded memory and one shared browser profile. Without verified signoff do not activate Production parallel sends.
-
-## Independently installed project clients and task-only cleanup (owner correction)
-
-- [ ] T037 RED/GREEN: install/configure separate DevOS clients INSIDE two disposable Git projects. Each client is tied to exactly its own Git root/remote, integration branch, Main Agent, Runner/scheduler and local resource registry; neither client can discover or dispatch the other's Issues.
-- [ ] T038 RED/GREEN: two clients on one host with equal Issue numbers and worker names have DISTINCT MCP auth bindings/endpoints, chat contexts, Camoufox process/profile, sockets, state and workspace permissions. Starting/stopping/updating Client A leaves Client B functioning without cross-client data or process access; collision fails closed.
-- [ ] T039 RED/GREEN: inside ONE project's installed DevOS client, two approved coding Issues receive separate tracked temporary worktrees. After one completed/merged Issue, remove only its clean, task-owned tree/verified merged branch. Recovery after a crash reconciles only the current client's owned ledger; unmanaged/dirty/unmerged work is preserved with an explicit blocker.
-- [ ] T040 Genuine disposable two-installation integration harness: Project A and Project B each install their own DevOS client; A runs two parallel Issues, B runs one with the same Issue ID and worker role as A. Verify independent Main Agents and broker/profile/MCP/runner state; merge/close/cleanup only A Issue #42 and prove A Issue #43 and B Issue #42 remain untouched. Do not launch a second connector within the existing Production project, migrate old live sessions or delete #232 resources.
-
-## Project-local heartbeat, queued admission and Main Agent chat switch (owner decision)
-
-- [ ] T041 RED/GREEN: exact per-client logical Main Agent ownership with one active signed/authenticated ChatGPT chat, monotonic destination generation, verified owner-initiated transition Chat A -> Chat B and revocation of A's notifications/decisions without changing Issues/worker chats; reconstruct context using original GitHub AGENTS.md/Spec Kit/ADR/Issue/PR rather than a second AI memory store.
-- [ ] T042 RED/GREEN: bounded, configurable project-runtime heartbeat (event-triggered updates plus periodic read-only reconciliation) under one per-project leader lease, per-tick deadline and recorded checkpoint. Explicit start/stop; no global cron/LaunchAgent, unbounded watcher, or cross-installation polling.
-- [ ] T043 RED/GREEN: liveness/status truth table using signed MCP reports, original GitHub Issue/PR, approved graph stage, exact browser command/outbox receipt and task-local process ownership. Stale PID, DOM idle, unsigned "done", missing provider ACK and lost GitHub access are NOT completion; report waiting/blocked and never replay ambiguous sends.
-- [ ] T044 RED/GREEN: durable prioritized owner-approved Issue admission queue with configurable project parallelism, fair backpressure and deps; when one approved Issue releases capacity, atomically launch next PREAPPROVED issue's exact immutable Runner graph once despite concurrent events/ticks, restart or second scheduler contender. Unapproved/replanned/unsigned Issue never starts: create one actionable planning/approval notice.
-- [ ] T045 RED/GREEN: durable Main Agent notification outbox scoped by project+Issue+reviewRound+event/generation. Busy Chat A defers, owner authorizes and activates Chat B, pending/ambiguous old notification cannot be blindly replayed; all distinct review handoffs and escalation notices eventually reconcile without duplicates, impersonated system role, or notification spam.
-- [ ] T046 Controlled disposable integration E2E: three signed Issues A/B/C inside one project; A/B running, C queued. A completes, C automatically admits without manual ChatGPT message. A/B reach final_review_required, owner Main Agent Chat B (switched from Chat A) receives proper user-role wake-ups when idle and can independently review each Issue. A-only approved cleanups leave B/C intact. Verify actual provider message IDs and signed reports rather than mocks.
-- [ ] T047 Fault tests and independent audit: stop/restart project heartbeat, lost event, GitHub rate limit/outage, worker crash, stale lease, shutdown during admission, another separately installed DevOS client, unknown active browser send. No duplicate Runner or browser send, no cross-client grant, no premature task cleanup and no wake-up with unverified identity.
-
-## Preliminary safe preparation evidence (before owner-reviewed production wiring)
-
-- [x] T015 Add isolated transport-neutral identity matcher and TDD RED→GREEN tests (not yet a trusted host observation or authorization oracle): exact project/Issue/worker/runtime/profile/window/tab/document/navigation epoch, A→B→A, signed-turn/command/payload/provider receipt IDs. `src/browser-command-identity.ts` is a pure matcher, not a second outbox, browser executor, signer or proof source.
-- [x] T016 Build and run focused existing browser regression read-only with no active browser launches; 122/122 scoped tests pass, including the 3 new identity tests. This is NOT the real headed signed-in E2E.
-- [x] T017 Produce explicit draft 6-slot task-specific worker graph and aligned skill roster. **These drafts are not owner approved** and must be pinned in the actual task approval.
-
-## Managed temporary worktrees and mandatory cleanup
-
-- [ ] T033 RED/GREEN: concurrent Issues A/B in the SAME installed project's Git repository create one separately owned temporary worktree per Issue, enabling parallel edits/tests while preserving the single local base checkout, connector and browser profile; a second installed client is isolated.
-- [ ] T034 RED/GREEN: after Main Agent acceptance, exact PR merged and GitHub Issue verified closed completed, quiesce task writers then remove only its clean, task-owned worktree and verified merged feature branch, leaving other Issues and main intact.
-- [ ] T035 RED/GREEN: refuse destructive cleanup on dirty/untracked/ignored content, unmerged commits, active or ambiguous worker turn, wrong path/branch, foreign/symlinked workspace, incomplete GitHub closure; simulate crash/restart and idempotent cleanup without force pruning.
-- [ ] T036 Actual disposable Git fixture E2E for concurrent create/edit/commit/merge/delete plus orphan detection, stable registry and limited quota; independent review and signed owner acceptance. Never retroactively remove old #232 or trusted legacy worktrees.
+**No** deleting ChatGPT chats, task worktrees, installing additional project clients, spinning a generic scheduler/cron, switching Main Agent ownership, or retroactive cleanup of any #214/#224/#226/#232 state within #239.
