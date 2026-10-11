@@ -184,3 +184,18 @@ test("policy must be approved and newly admitted identity must be host-verified"
   identityApproved = true; await broker.admit({id:"dev",role:"developer",sessionFingerprint:"real-worker-proof"});
   assert.equal((await broker.status()).agents.length,2);
 });
+
+test("per-recipient delivery order is enforced despite independent senders", async t=>{
+  const f=await fixture();t.after(f.close);
+  await f.broker.initialize();await f.broker.admit({id:"qa",role:"qa",sessionFingerprint:"qa-proof"});
+  const one=await f.broker.send({to:"qa",kind:"work",body:"first",idempotencyKey:"order-first-0001"});
+  const two=await f.broker.send({to:"qa",kind:"work",body:"second",idempotencyKey:"order-next-0002"});
+  const later={task,recipientId:"qa",messageId:two.id};
+  await assert.rejects(f.broker.claimForTransport(later),/Recipient queue order violation/);
+  const first={task,recipientId:"qa",messageId:one.id};
+  await f.broker.claimForTransport(first); f.allowReceipt();
+  await f.broker.confirmTransportDelivery(first,{task,messageId:one.id,providerMessageId:"provider-first"});
+  f.as("qa"); await f.broker.acknowledge(one.id);
+  f.as("main_agent","owner-proof"); await f.broker.claimForTransport(later);
+  assert.equal((await f.store.load())!.messages[1]!.state,"dispatch_uncertain");
+});
