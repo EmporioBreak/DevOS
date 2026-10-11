@@ -58,9 +58,11 @@ export function assertBrowserDocumentClaim(claim:BrowserDocumentClaim,
  * trusted browser adapter must independently prove its actual origin. */
 export function matchBrowserReceiptIdentity(claim:BrowserDocumentClaim,
   receipt:BrowserProviderReceiptIdentity):true{
-  if(!validClaim(claim)||!claim.conversationId||!receipt||
+  if(!validClaim(claim)||!receipt||
      !ID.test(receipt.messageId)||
-     RECEIPT_KEYS.some(key=>receipt[key]!==claim[key]))
+     RECEIPT_KEYS.some(key=>key==="conversationId"
+       ? (claim.conversationId!==undefined&&receipt.conversationId!==claim.conversationId)
+       : receipt[key]!==claim[key]))
     throw new Error("Browser provider receipt identity is missing, conflicting or unverified");
   return true;
 }

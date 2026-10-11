@@ -60,3 +60,14 @@ test("provider message receipt requires exact command, turn, conversation and pa
   ])assert.throws(()=>matchBrowserReceiptIdentity(claim,{...receipt,...patch}),
     /browser provider receipt/i);
 });
+
+test("a fresh Project claim binds its newly assigned conversation through the exact provider receipt",()=>{
+  const freshClaim={...claim,conversationId:undefined};
+  const createdConversationReceipt:BrowserProviderReceiptIdentity={
+    repo:claim.repo,issue:claim.issue,workerId:claim.workerId,turn:claim.turn,
+    commandId:claim.commandId,conversationId:"provider-created-conversation",
+    messageId:"provider-user-msg-4",payloadSha256:claim.payloadSha256,
+  };
+  assert.equal(matchBrowserReceiptIdentity(freshClaim,createdConversationReceipt),true);
+  assert.throws(()=>matchBrowserReceiptIdentity(freshClaim,{...createdConversationReceipt,commandId:"other-command"}),/browser provider receipt/i);
+});

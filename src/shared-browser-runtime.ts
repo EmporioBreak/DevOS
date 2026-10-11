@@ -250,6 +250,7 @@ export async function runBrowserRuntime(args: string[]): Promise<void> {
   const issue = Number(issueText);
   if (!root || !repo || !Number.isSafeInteger(issue) || !socketPath || !projectUrl || !profileDir || !["0", "1"].includes(headless ?? "")) throw new Error("Invalid internal browser runtime arguments");
   const paths = browserRuntimePaths(root, repo, issue);
+  const broker = new BrowserCommandBroker(root);
   const executor = new ChatGptBrowserExecutor(
     { projectUrl, profileDir, headless: headless === "1" },
     undefined,
@@ -261,8 +262,9 @@ export async function runBrowserRuntime(args: string[]): Promise<void> {
         ...existing, browserRoot, profileDir,
       });
     },
+    broker,
   );
-  await startSharedBrowserServer(socketPath, paths.metadata, executor, undefined, new BrowserCommandBroker(root));
+  await startSharedBrowserServer(socketPath, paths.metadata, executor, undefined, broker);
 }
 
 export async function startSharedBrowserServer(
