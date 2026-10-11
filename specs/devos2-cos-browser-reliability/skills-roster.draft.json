@@ -1,0 +1,37 @@
+[
+  {
+    "workerId": "cos_broker_developer_local",
+    "role": "developer",
+    "phase": "execution",
+    "specKitStage": "implement",
+    "optionalCandidates": []
+  },
+  {
+    "workerId": "cos_security_auditor_local",
+    "role": "auditor",
+    "phase": "execution",
+    "specKitStage": null,
+    "optionalCandidates": []
+  },
+  {
+    "workerId": "cos_host_process_qa_local",
+    "role": "qa",
+    "phase": "execution",
+    "specKitStage": null,
+    "optionalCandidates": []
+  },
+  {
+    "workerId": "cos_host_visual_e2e_local",
+    "role": "qa",
+    "phase": "execution",
+    "specKitStage": null,
+    "optionalCandidates": []
+  },
+  {
+    "workerId": "cos_independent_reviewer",
+    "role": "reviewer",
+    "phase": "execution",
+    "specKitStage": null,
+    "optionalCandidates": []
+  }
+]

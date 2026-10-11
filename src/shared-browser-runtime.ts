@@ -16,12 +16,26 @@ import type { ChatGptBrowserConfig } from "./browser-config.js";
 import { profileProcesses, terminateOwnedBrowser, type OwnedBrowserProcess } from "./owned-browser-process.js";
 import type { WorkerOutput } from "./workflow.js";
 import { captureProcessIdentity, processExists, sameProcessIdentity, type ProcessIdentity } from "./process-identity.js";
+import {
+  BrowserCommandBroker,
+  type BrowserCommand,
+} from "./browser-command-broker.js";
+import type {
+  BrowserDocumentObservation,
+  BrowserProviderReceiptIdentity,
+} from "./browser-command-identity.js";
 
 type WireMessage =
   | { type: "run"; request: Omit<WorkerRequest, "onSession"> }
   | { type: "close" }
   | { type: "session"; sessionId: string }
   | { type: "result"; result: WorkerOutput }
+  | { type: "broker_prepare"; command: BrowserCommand }
+  | { type: "broker_claim"; commandId: string; observed: BrowserDocumentObservation }
+  | { type: "broker_receipt"; commandId: string; receipt: BrowserProviderReceiptIdentity }
+  | { type: "broker_ack"; commandId: string; receipt: BrowserProviderReceiptIdentity }
+  | { type: "broker_ambiguous"; commandId: string }
+  | { type: "broker_result"; value?: unknown }
   | { type: "error"; message: string; kind?: "browser_pre_submit" | "browser_resume_unavailable" | "browser_post_submit" | "generic" }
   | { type: "closed" };
 
@@ -60,6 +74,39 @@ export class SharedBrowserExecutor implements Executor {
         }
       }
       throw new Error("Shared browser runtime disconnected during worker turn");
+    } finally { socket.destroy(); }
+  }
+
+  async prepareBrowserCommand(command: BrowserCommand): Promise<void> {
+    await this.brokerRequest({ type: "broker_prepare", command });
+  }
+
+  async claimBrowserCommand(commandId: string, observed: BrowserDocumentObservation): Promise<boolean> {
+    return await this.brokerRequest<boolean>({ type: "broker_claim", commandId, observed });
+  }
+
+  async recordBrowserProviderReceipt(commandId: string, receipt: BrowserProviderReceiptIdentity): Promise<void> {
+    await this.brokerRequest({ type: "broker_receipt", commandId, receipt });
+  }
+
+  async acknowledgeBrowserCommand(commandId: string, receipt: BrowserProviderReceiptIdentity): Promise<void> {
+    await this.brokerRequest({ type: "broker_ack", commandId, receipt });
+  }
+
+  async markBrowserCommandAmbiguous(commandId: string): Promise<void> {
+    await this.brokerRequest({ type: "broker_ambiguous", commandId });
+  }
+
+  private async brokerRequest<T = void>(request: WireMessage): Promise<T> {
+    const socket = await connect(this.socketPath);
+    const lines = readLines(socket);
+    socket.write(`${JSON.stringify(request)}\n`);
+    try {
+      for await (const message of lines) {
+        if (message.type === "broker_result") return message.value as T;
+        if (message.type === "error") throw new Error(message.message);
+      }
+      throw new Error("Shared browser runtime disconnected during broker operation");
     } finally { socket.destroy(); }
   }
 }
@@ -203,6 +250,7 @@ export async function runBrowserRuntime(args: string[]): Promise<void> {
   const issue = Number(issueText);
   if (!root || !repo || !Number.isSafeInteger(issue) || !socketPath || !projectUrl || !profileDir || !["0", "1"].includes(headless ?? "")) throw new Error("Invalid internal browser runtime arguments");
   const paths = browserRuntimePaths(root, repo, issue);
+  const broker = new BrowserCommandBroker(root);
   const executor = new ChatGptBrowserExecutor(
     { projectUrl, profileDir, headless: headless === "1" },
     undefined,
@@ -214,11 +262,18 @@ export async function runBrowserRuntime(args: string[]): Promise<void> {
         ...existing, browserRoot, profileDir,
       });
     },
+    broker,
   );
-  await startSharedBrowserServer(socketPath, paths.metadata, executor);
+  await startSharedBrowserServer(socketPath, paths.metadata, executor, undefined, broker);
 }
 
-export async function startSharedBrowserServer(socketPath: string, metadataPath: string, executor: ChatGptBrowserExecutor): Promise<void> {
+export async function startSharedBrowserServer(
+  socketPath: string,
+  metadataPath: string,
+  executor: ChatGptBrowserExecutor,
+  config?: { projectUrl: string; profileDir: string; headless: boolean },
+  broker?: BrowserCommandBroker,
+): Promise<void> {
   const server: Server = createServer();
   let closing = false;
   const turns = new Map<string, PendingTurn>();
@@ -243,14 +298,38 @@ export async function startSharedBrowserServer(socketPath: string, metadataPath:
       closing = false;
       throw error;
     }
-  }); });
+  }, broker); });
   const stop = () => { if (!closing) { closing = true; void executor.close().finally(async () => { server.close(); await rm(socketPath, { force: true }); await rm(metadataPath, { force: true }); }); } };
   process.once("SIGTERM", stop); process.once("SIGINT", stop);
 }
 
-async function handleSocket(socket: Socket, executor: ChatGptBrowserExecutor, turns: Map<string, PendingTurn>, close: () => Promise<void>): Promise<void> {
+async function handleSocket(
+  socket: Socket,
+  executor: ChatGptBrowserExecutor,
+  turns: Map<string, PendingTurn>,
+  close: () => Promise<void>,
+  broker?: BrowserCommandBroker,
+): Promise<void> {
   const lines = readLines(socket);
   for await (const message of lines) {
+    if (message.type.startsWith("broker_")) {
+      try {
+        if (!broker) throw new Error("Browser command broker is unavailable");
+        if (message.type === "broker_prepare") await broker.prepare(message.command);
+        else if (message.type === "broker_claim") {
+          const value = await broker.claim(message.commandId, message.observed);
+          socket.write(`${JSON.stringify({ type: "broker_result", value })}\n`);
+          continue;
+        } else if (message.type === "broker_receipt") await broker.recordProviderReceipt(message.commandId, message.receipt);
+        else if (message.type === "broker_ack") await broker.acknowledge(message.commandId, message.receipt);
+        else if (message.type === "broker_ambiguous") await broker.markAmbiguous(message.commandId);
+        else throw new Error("Invalid browser broker IPC operation");
+        socket.write('{"type":"broker_result"}\n');
+      } catch (error) {
+        socket.write(`${JSON.stringify({ type: "error", message: error instanceof Error ? error.message : String(error) })}\n`);
+      }
+      continue;
+    }
     if (message.type === "close") {
       try {
         await close();

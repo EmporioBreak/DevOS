@@ -1,7 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright-core";
-import { isSameChatGptConversation, waitForConversationUrl, extractSubmittedTurn } from "../src/chatgpt-browser-executor.js";
+import { isSameChatGptConversation, waitForConversationUrl, extractSubmittedTurn, submitOnly } from "../src/chatgpt-browser-executor.js";
+
+test("native Send waits until the durable broker claim completes", async () => {
+  const events: string[] = [];
+  let release!: () => void;
+  const claimGate = new Promise<void>(resolve => { release = resolve; });
+  const locator = { first() { return this; }, async click() { events.push("send"); }, async press() { events.push("send"); } };
+  const page = { locator: () => locator } as unknown as Page;
+  const sending = submitOnly(page, "approved prompt", 1000, async () => {
+    events.push("claim-start");
+    await claimGate;
+    events.push("claim-committed");
+  }, { token: 1, useButton: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(events, ["claim-start"]);
+  release();
+  await sending;
+  assert.deepEqual(events, ["claim-start", "claim-committed", "send"]);
+});
 
 test("recognizes only the saved Project conversation after browser resume", () => {
   const saved = "https://chatgpt.com/g/g-p-project/c/conversation-1";
