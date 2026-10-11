@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright-core";
 import { BrowserCommandBroker } from "../src/browser-command-broker.js";
-import { BrowserPreSubmitFailureError, ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
+import { ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
 
-test("browser executor commits a signed task command claim before Send and ACKs the provider receipt", async () => {
+test("browser executor refuses a native Send without the active trusted report turn", async () => {
   const root = await mkdtemp(join(tmpdir(), "devos-command-executor-"));
   const projectUrl = "https://chatgpt.com/g/project/project";
   const conversationUrl = "https://chatgpt.com/g/project/c/conversation-1";
@@ -36,7 +36,6 @@ test("browser executor commits a signed task command claim before Send and ACKs 
     async fill() {},
     async isVisible() { return true; },
     async click() {
-      claimStatusAtSend = (await broker.get(commandId))?.status;
       sends++;
       url = conversationUrl;
       emit("request", outgoing);
@@ -75,28 +74,15 @@ test("browser executor commits a signed task command claim before Send and ACKs 
     on() {},
   } });
   try {
-    const result = await executor.run({
-      projectRoot: root, prompt, workerId: "developer", browserTurnId: commandId,
-      browserCommand: {
-        task: { repo: "EmporioBreak/DevOS", issue: 239 },
-        workerId: "developer", turn: 1, commandId,
-      },
-    } as any);
-    assert.equal(result.sessionId, conversationUrl);
-    assert.equal(sends, 1);
-    assert.equal(claimStatusAtSend, "claimed", "Send must follow the durable claim");
-    const record = await broker.get(commandId);
-    assert.equal(record?.status, "acknowledged");
-    assert.equal(record?.receipt?.messageId, "user-message-1");
-    assert.equal(record?.receipt?.conversationId, "conversation-1");
     await assert.rejects(executor.run({
       projectRoot: root, prompt, workerId: "developer", browserTurnId: commandId,
+      reportTurn: { task: { repo: "EmporioBreak/DevOS", issue: 239, pr: 241 }, active: { workerId: "developer", turn: 1, tokenHash: "a".repeat(64) } },
       browserCommand: {
-        task: { repo: "EmporioBreak/DevOS", issue: 239 },
+        task: { repo: "EmporioBreak/DevOS", issue: 239, pr: 240 },
         workerId: "developer", turn: 1, commandId,
       },
-    } as any), error => error instanceof Error && !(error instanceof BrowserPreSubmitFailureError));
-    assert.equal(sends, 1, "a claimed command cannot become a safe-to-retry pre-submit failure");
+    } as any), /Trusted browser command identity/);
+    assert.equal(sends, 0, "missing trusted report turn must be rejected before native Send");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -137,11 +137,15 @@ export class ChatGptBrowserExecutor implements Executor {
     if (!this.commandBroker) return undefined;
     const context = request.browserCommand;
     if (!context || !request.workerId || context.workerId !== request.workerId ||
-        !context.task || !Number.isSafeInteger(context.turn) || context.turn < 1 ||
-        (request.reportTurn && (request.reportTurn.task.repo !== context.task.repo ||
-          request.reportTurn.task.issue !== context.task.issue ||
-          request.reportTurn.active.workerId !== context.workerId ||
-          request.reportTurn.active.turn !== context.turn)))
+        !context.task || !Number.isSafeInteger(context.task.pr) || context.task.pr! < 1 ||
+        !Number.isSafeInteger(context.turn) || context.turn < 1 ||
+        !request.reportTurn ||
+        request.reportTurn.task.repo !== context.task.repo ||
+        request.reportTurn.task.issue !== context.task.issue ||
+        request.reportTurn.task.pr !== context.task.pr ||
+        request.reportTurn.active.workerId !== context.workerId ||
+        request.reportTurn.active.turn !== context.turn ||
+        !/^[a-f0-9]{64}$/.test(request.reportTurn.active.tokenHash))
       throw new Error("Trusted browser command identity is missing or inconsistent");
     const document = this.trackDocument(page);
     const url = new URL(page.url());
