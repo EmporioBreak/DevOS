@@ -6,6 +6,43 @@ import { join } from "node:path";
 import { createConnection, createServer } from "node:net";
 import { browserRuntimePaths, closeSharedBrowserRuntime, SharedBrowserExecutor, startSharedBrowserServer } from "../src/shared-browser-runtime.js";
 import { BrowserPreSubmitFailureError, type ChatGptBrowserExecutor } from "../src/chatgpt-browser-executor.js";
+import { BrowserCommandBroker, type BrowserCommand } from "../src/browser-command-broker.js";
+
+test("shared runtime IPC commits one durable browser command claim and provider receipt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-broker-ipc-"));
+  const task = { repo: "owner/repo", issue: 73 };
+  const paths = browserRuntimePaths(root, task.repo, task.issue);
+  const command: BrowserCommand = {
+    repo: task.repo, issue: task.issue, workerId: "developer", turn: 1,
+    commandId: "cmd-73-1", runtimeIncarnation: "runtime-a", profileOwner: "profile-a",
+    windowLease: "window-73", tabLease: "tab-73", documentId: "doc-a",
+    navigationEpoch: 2, conversationId: "conversation-a", payloadSha256: "a".repeat(64),
+  };
+  const executor = { async run() { return { text: "unused" }; }, async close() {} } as unknown as ChatGptBrowserExecutor;
+  try {
+    const broker = new BrowserCommandBroker(root);
+    await startSharedBrowserServer(paths.socket, paths.metadata, executor, undefined, broker);
+    const client = new SharedBrowserExecutor(paths.socket) as any;
+    assert.equal(typeof client.prepareBrowserCommand, "function", "browser broker IPC is missing");
+    await client.prepareBrowserCommand(command);
+    assert.equal(await client.claimBrowserCommand(command.commandId, command), true);
+    const receipt = {
+      repo: task.repo, issue: task.issue, workerId: "developer", turn: 1,
+      commandId: command.commandId, payloadSha256: command.payloadSha256,
+      conversationId: "conversation-a", messageId: "provider-message-73",
+    };
+    await client.recordBrowserProviderReceipt(command.commandId, receipt);
+    const restarted = new SharedBrowserExecutor(paths.socket) as any;
+    await restarted.acknowledgeBrowserCommand(command.commandId, receipt);
+    assert.equal((await broker.get(command.commandId))?.status, "acknowledged");
+    assert.equal(await client.claimBrowserCommand(command.commandId, command), false);
+  } finally {
+    await closeSharedBrowserRuntime(root, task);
+    await rm(paths.socket, { force: true });
+    await rm(paths.metadata, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("shared runtime carries session updates and keeps its executor across client disconnects", async () => {
   const root = await mkdtemp(join(tmpdir(), "devos-shared-browser-"));
