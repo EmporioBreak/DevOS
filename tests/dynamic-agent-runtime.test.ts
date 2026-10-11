@@ -56,7 +56,9 @@ test("direct developer->QA->Security works without a prime relay or worker.on gr
   f.as("security1");
   const c = await f.broker.send({ to: "dev", kind: "review", body: "TLS issue discovered", idempotencyKey: "review-001", inReplyTo: b.id });
   assert.equal(c.to, "dev");
-  assert.deepEqual((await f.broker.status()).messages.map(x=>x.from+">"+x.to),["dev>qa1","qa1>security1","security1>dev"]);
+  assert.deepEqual((await f.broker.status()).messages.map(x=>x.from+">"+x.to),["qa1>security1","security1>dev"]);
+  assert.equal("sessionFingerprint" in (await f.broker.status()).agents[0]!, false);
+  assert.deepEqual((await f.store.load())!.messages.map(x=>x.from+">"+x.to),["dev>qa1","qa1>security1","security1>dev"]);
 });
 
 test("unknown, cross-task, wrong-session and unauthorized admission all fail closed", async t => {
