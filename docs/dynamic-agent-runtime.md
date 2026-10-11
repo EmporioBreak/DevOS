@@ -5,6 +5,7 @@ Issue #246 / Draft PR #247. Experimental library code only. It is not a Producti
 ## Present on this branch
 
 - `src/dynamic-agent-runtime.ts`: policy-scoped agent directory, direct peer and Main Agent addressing, dynamically admitted agents, session identity binding, idempotent per-recipient queue, synchronous durable acceptance, cross-task protection, owner-only final decision and claim-before-provider-send fence.
+- `src/dynamic-agent-scheduler.ts`: bounded, on-demand, graph-free queue-drain pass; other agents progress even when one recipient has an ambiguous send. It requires authentic recipient sessions and does not poll indefinitely.
 - `src/dynamic-agent-dispatch.ts`: narrow host-verified dispatch seam requiring existing exact saved recipient session and an independently checked provider-receipt callback. It deliberately does not synthesize ChatGPT user-message IDs, create new browser contexts, close task windows or auto-retry ambiguous sends.
 - Dedicated tests for peer-to-peer routing, dynamic QA/security, frozen session binding, admission and policy denial, task isolation, ordered delivery, crash/ambiguous replay barriers, host transport and final Main Agent judgment.
 
@@ -37,4 +38,4 @@ The new store lives at `.devos/dynamic/<encoded-repo>-issue-<issue>.json` and ne
 
 ### Local isolated verification
 
-Compiled the new modules with TypeScript strict NodeNext settings, Node 22 and appropriate Node type declarations; 11 `node:test` cases pass with mocked trust/transport providers. This verification does not include the full repository dependency graph or any live browser/provider service.
+Compiled the new modules with TypeScript strict NodeNext settings, Node 22 and appropriate Node type declarations; 13 `node:test` cases pass with mocked trust/transport providers. This verification does not include the full repository dependency graph or any live browser/provider service.
