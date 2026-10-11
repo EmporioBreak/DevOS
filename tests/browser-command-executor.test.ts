@@ -66,8 +66,9 @@ test("owner wake-up sends one real user-role message through the shared broker a
   };
   const rootPage=makePage(false),ownerPage=makePage(true);
   fakeContext={pages(){return [rootPage,ownerPage]},async waitForEvent(){return ownerPage},async close(){},on(){}};
+  const broker=new BrowserCommandBroker(root,secret);
   const executor=new ChatGptBrowserExecutor({projectUrl:"https://chatgpt.com/g/project/project",
-    profileDir:join(root,"profile"),headless:true},1000,undefined,undefined,undefined,new BrowserCommandBroker(root,secret),root);
+    profileDir:join(root,"profile"),headless:true},1000,undefined,undefined,undefined,broker,root);
   Object.assign(executor,{context:fakeContext,
     taskWindowPages:new Map([[`${task.repo}#${task.issue}`,rootPage]])});
   try{
@@ -77,17 +78,16 @@ test("owner wake-up sends one real user-role message through the shared broker a
     assert.equal(status,"confirmed");
     assert.equal(sends,1);
     assert.equal(await ledger.status(task,0),"confirmed");
-    const files=(await import("node:fs/promises")).readdir;
     const {readdir:readDir,readFile:read}=await import("node:fs/promises");
     const outbox=join(root,".devos","browser-runtime","command-outbox");
-    const record=JSON.parse(await read(join(outbox,(await readDir(outbox)).find(x=>x.endsWith(".json")&&x!=="signing.key")!),"utf8"));
-    assert.equal(record.record.status,"acknowledged");
-    assert.equal(record.record.command.purpose,"owner_wakeup");
-    assert.equal(record.record.command.ownerFingerprint,fingerprint);
-    assert.equal(record.record.receipt.messageId,"owner-provider-message-0");
-    assert.equal(record.record.receipt.conversationId,"6ac799bd-7ffc-83eb-b2b0-15d6a2f558a0");
+    const event=JSON.parse(await read(join(outbox,(await readDir(outbox)).find(x=>x.endsWith(".acknowledged"))!),"utf8"));
+    const commandRecord=await broker.get(event.record.command.commandId);
+    assert.equal(commandRecord?.status,"acknowledged");
+    assert.equal(commandRecord?.command.purpose,"owner_wakeup");
+    assert.equal(commandRecord?.command.ownerFingerprint,fingerprint);
+    assert.equal(commandRecord?.receipt?.messageId,"owner-provider-message-0");
+    assert.equal(commandRecord?.receipt?.conversationId,"6ac799bd-7ffc-83eb-b2b0-15d6a2f558a0");
     assert.match(windowName,new RegExp(marker));
-    void files;
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
