@@ -20,11 +20,13 @@ async function fixture(config: DynamicAgentPolicy = policy) {
   let identity: VerifiedDynamicCaller = { task: config.task, agentId: "main_agent", sessionFingerprint: "owner-proof" };
   let allowReceipt = false;
   let allowRecovery = false;
+  let allowTransport = true;
   const store = new DynamicAgentStore(root, config.task);
   const trust = {
     resolveCaller: async () => identity,
     verifyPolicy: async () => true,
     verifyNewAgentBinding: async () => true,
+    verifyTransportLease: async () => allowTransport,
     verifyProviderReceipt: async (_receipt: DynamicDeliveryReceipt) => allowReceipt,
     verifyNoSubmit: async (_proof: DynamicNoSubmitProof) => allowRecovery,
   };
@@ -32,7 +34,7 @@ async function fixture(config: DynamicAgentPolicy = policy) {
   return { root, store, broker,
     as: (agentId: string, sessionFingerprint = agentId + "-proof") => { identity = { task: config.task, agentId, sessionFingerprint }; },
     crossTask: () => { identity = { task: { repo: "Evil/Other", issue: 1 }, agentId: "main_agent", sessionFingerprint: "owner-proof" }; },
-    allowReceipt: () => { allowReceipt = true; }, allowRecovery: () => { allowRecovery = true; },
+    allowReceipt: () => { allowReceipt = true; }, allowRecovery: () => { allowRecovery = true; }, denyTransport: () => {allowTransport = false;},
     close: async () => { await rm(root, { recursive: true, force: true }); },
   };
 }
@@ -88,7 +90,7 @@ test("claim-before-send fences uncertain delivery across process restart; only v
   assert.equal((await f.store.load())!.messages[0]!.state, "dispatch_uncertain");
   const restored = new DynamicAgentBroker(policy, new DynamicAgentStore(f.root, task), {
     resolveCaller: async () => ({ task, agentId: "qa", sessionFingerprint: "qa-proof" }),
-    verifyPolicy: async () => true, verifyNewAgentBinding: async () => true,
+    verifyPolicy: async () => true, verifyNewAgentBinding: async () => true, verifyTransportLease: async () => true,
     verifyProviderReceipt: async () => true, verifyNoSubmit: async () => false,
   });
   await assert.rejects(restored.claimForDelivery(msg.id), /not claimable/);
@@ -149,4 +151,36 @@ test("bounded queue and exclusive interprocess lock preserve state, separate Iss
   const other=new DynamicAgentStore(f.root,{repo:task.repo,issue:task.issue+1});
   assert.equal(await other.load(),null);
   const content=await readFile(f.store.path,"utf8"); assert.match(content,/send-00002/);
+});
+
+test("host transports can claim and wake another agent without forging its caller identity", async t => {
+  const f = await fixture(); t.after(f.close);
+  await f.broker.initialize(); await f.broker.admit({ id: "qa", role: "qa", sessionFingerprint: "qa-proof" });
+  const message = await f.broker.send({ to: "qa", kind: "work", body: "Check the UI", idempotencyKey: "wake-unique-0001" });
+  const lease = { task, recipientId: "qa", messageId: message.id };
+  await assert.rejects(f.broker.claimForTransport({ ...lease, recipientId: "dev" }), /recipient\/message mismatch/);
+  assert.equal((await f.broker.claimForTransport(lease)).state,"dispatch_uncertain");
+  await assert.rejects(f.broker.claimForTransport(lease),/not claimable/);
+  f.allowReceipt();
+  await f.broker.confirmTransportDelivery(lease, { task, messageId: message.id, providerMessageId: "unique-provider-receipt-02" });
+  f.as("qa"); await f.broker.acknowledge(message.id);
+  assert.equal((await f.store.load())!.messages[0]!.state,"acked");
+});
+
+test("policy must be approved and newly admitted identity must be host-verified", async t => {
+  const root = await mkdtemp(join(tmpdir(),"dynamic-agent-negative-")); t.after(async () => { await rm(root,{recursive:true,force:true}); });
+  let policyApproved = false, identityApproved = false;
+  const broker = new DynamicAgentBroker(policy, new DynamicAgentStore(root, task), {
+    resolveCaller: async () => ({ task, agentId:"main_agent", sessionFingerprint:"real-main-agent-proof" }),
+    verifyPolicy: async () => policyApproved,
+    verifyNewAgentBinding: async () => identityApproved,
+    verifyTransportLease: async () => false,
+    verifyProviderReceipt: async () => false,
+    verifyNoSubmit: async () => false,
+  });
+  await assert.rejects(broker.initialize(),/Unapproved dynamic task policy/);
+  policyApproved = true; await broker.initialize();
+  await assert.rejects(broker.admit({id:"dev",role:"developer",sessionFingerprint:"fake"}),/Unverified new agent identity/);
+  identityApproved = true; await broker.admit({id:"dev",role:"developer",sessionFingerprint:"real-worker-proof"});
+  assert.equal((await broker.status()).agents.length,2);
 });
