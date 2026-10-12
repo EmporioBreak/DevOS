@@ -124,6 +124,18 @@ export class DynamicAgentGrantRegistry {
       input.agentId==="main_agent")return false;
     const nonce=exactWorkerProbeResult(input.providerMessage,input.resourceUri);
     if(!nonce)return false;
+    return this.bindVerifiedNonce({...input,nonce});
+  }
+  /**
+   * Trusted native browser observer variant. The observer must extract nonce
+   * exclusively through exactWorkerHistoryProof from the exact provider
+   * conversation response; this method MUST NOT be registered as a tool.
+   */
+  async bindVerifiedNonce(input:{task:TaskRef;agentId:string;sessionId:string;
+    nonce:string;policy:DynamicAgentPolicy}):Promise<boolean>{
+    if(!sameTask(input.task,input.policy.task)||!AGENT.test(input.agentId)||
+      input.agentId==="main_agent")return false;
+    const nonce=input.nonce;
     const probe=new ChatWorkerProbeRegistry(this.root,this.secret);
     // The one-use nonce is consumed only by the trusted local observation path.
     const fingerprint=probe.claim(nonce);
