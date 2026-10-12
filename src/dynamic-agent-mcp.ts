@@ -123,6 +123,12 @@ export async function callDynamicAgentsMcp(input:{
       requireCondition(alive,
         "Wake was not yet confirmed by provider; retry the tool call, never replay browser Send");
     }
+    // Exact provider Send followed by THIS authenticated tool call is the
+    // missing CoS ACK; it unblocks the recipient queue without a second Send.
+    await broker.acknowledgeProviderInbox({
+      task:policy.task,recipientId:agent?.id??"",
+      callId:toolCallId,startedAt:toolCallStartedAt
+    });
   }
   const filtered={...args};
   delete filtered.repo;delete filtered.issue;delete filtered.pr;
