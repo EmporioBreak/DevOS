@@ -110,3 +110,18 @@ export function sealedDynamicPolicyVerifier(root:string,ownerSecret:string){
     catch{return false;}
   };
 }
+
+/** Read only an independently verified sealed policy, never model-provided roles. */
+export async function readSealedDynamicAgentPolicy(input:{
+  root:string;task:TaskRef;ownerSecret:string
+}):Promise<DynamicAgentPolicy>{
+  const path=dynamicPolicyPath(input.root,input.task);
+  await checkPath(path,false);
+  const raw=JSON.parse(await readFile(path,"utf8")) as SealedDynamicPolicy;
+  if(raw?.version!==1||!raw.policy||!sameTask(raw.policy.task,input.task))
+    throw new Error("Untrusted dynamic policy task selector");
+  await verifySealedDynamicAgentPolicy({
+    root:input.root,policy:raw.policy,ownerSecret:input.ownerSecret
+  });
+  return raw.policy;
+}
