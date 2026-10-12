@@ -20,6 +20,7 @@ async function fixture(config: DynamicAgentPolicy = policy) {
   let identity: VerifiedDynamicCaller = { task: config.task, agentId: "main_agent", sessionFingerprint: "owner-proof" };
   let allowReceipt = false;
   let allowRecovery = false;
+  let allowTool = false;
   let allowTransport = true;
   const store = new DynamicAgentStore(root, config.task);
   const trust = {
@@ -27,7 +28,7 @@ async function fixture(config: DynamicAgentPolicy = policy) {
     verifyPolicy: async () => true,
     verifyNewAgentBinding: async () => true,
     verifyTransportLease: async () => allowTransport,
-    verifyToolCall: async () => true,
+    verifyToolCall: async () => allowTool,
     verifyProviderReceipt: async (_receipt: DynamicDeliveryReceipt) => allowReceipt,
     verifyNoSubmit: async (_proof: DynamicNoSubmitProof) => allowRecovery,
   };
@@ -35,7 +36,7 @@ async function fixture(config: DynamicAgentPolicy = policy) {
   return { root, store, broker,
     as: (agentId: string, sessionFingerprint = agentId + "-proof") => { identity = { task: config.task, agentId, sessionFingerprint }; },
     crossTask: () => { identity = { task: { repo: "Evil/Other", issue: 1 }, agentId: "main_agent", sessionFingerprint: "owner-proof" }; },
-    allowReceipt: () => { allowReceipt = true; }, allowRecovery: () => { allowRecovery = true; }, denyTransport: () => {allowTransport = false;},
+    allowReceipt: () => { allowReceipt = true; }, allowRecovery: () => { allowRecovery = true; }, allowTool: () => { allowTool = true; }, denyTransport: () => {allowTransport = false;},
     close: async () => { await rm(root, { recursive: true, force: true }); },
   };
 }
@@ -231,4 +232,42 @@ test("CoS batch reserves per-recipient queue capacity before any durable write",
   assert.equal((await f.store.load())!.messages.length,0);
   assert.equal((await f.broker.sendBatch(batch.slice(0,2))).length,2);
   assert.equal((await f.store.load())!.messages.length,2);
+});
+
+test("CoS MCP inbox reoffers lost tool results, only subsequent proved call retires message", async t => {
+  const f=await fixture();t.after(f.close);await f.broker.initialize();
+  await f.broker.admit({id:"qa",role:"qa",sessionFingerprint:"qa-proof"});
+  const msg=await f.broker.send({to:"qa",kind:"question",body:"Please validate",idempotencyKey:"offer-tool-0001"});
+  f.as("qa");await f.broker.bindSession("qa-authenticated-c");
+  const first=await f.broker.offerToolInbox();
+  assert.equal(first[0]!.id,msg.id);
+  assert.equal(first[0]!.state,"tool_offered");
+  assert.equal(first[0]!.toolOffer?.offers,1);
+  const lease={task,recipientId:"qa",messageId:msg.id};
+  await assert.rejects(f.broker.claimForTransport(lease),/not claimable/);
+  const second=await f.broker.offerToolInbox();
+  assert.equal(second[0]!.id,msg.id);
+  assert.equal(second[0]!.toolOffer?.offers,2);
+  const offeredAt=second[0]!.toolOffer!.offeredAt;
+  const call={task,recipientId:"qa",callId:"real-mcp-call",startedAt:offeredAt+1};
+  await assert.rejects(f.broker.acknowledgeToolInbox(call),/Unverified subsequent tool call/);
+  f.allowTool();
+  assert.deepEqual(await f.broker.acknowledgeToolInbox({...call,startedAt:offeredAt}),[]);
+  assert.deepEqual(await f.broker.acknowledgeToolInbox(call),[msg.id]);
+  assert.deepEqual(await f.broker.acknowledgeToolInbox(call),[]);
+  assert.equal((await f.store.load())!.messages[0]!.state,"acked");
+});
+
+test("CoS finish-tool offer is not implicitly ACKed by a lost finish retry", async t=>{
+  const f=await fixture();t.after(f.close);await f.broker.initialize();
+  await f.broker.admit({id:"qa",role:"qa",sessionFingerprint:"qa-proof"});
+  const msg=await f.broker.send({to:"qa",kind:"work",body:"one",idempotencyKey:"offer-finish-01"});
+  f.as("qa");await f.broker.bindSession("qa-authenticated-c");
+  const offered=await f.broker.offerToolInbox(32000,true);
+  assert.equal(offered.length,1);
+  f.allowTool();
+  const call={task,recipientId:"qa",callId:"finish-duplicate",startedAt:offered[0]!.toolOffer!.offeredAt+1,byFinish:true};
+  assert.deepEqual(await f.broker.acknowledgeToolInbox(call),[]);
+  assert.equal((await f.store.load())!.messages[0]!.state,"tool_offered");
+  assert.deepEqual(await f.broker.acknowledgeToolInbox({...call,callId:"ordinary-call",byFinish:false}),[msg.id]);
 });
