@@ -44,6 +44,8 @@ export interface DynamicMessage {
   inReplyTo?: string;
   state: DynamicMessageState;
   providerMessageId?: string;
+  /** Verified delivery/ACK boundary; page visibility never proves liveness. */
+  providerDeliveredAt?: number;
   /** CoS agent inbox offer metadata, never evidence of a provider Send. */
   toolOffer?: { offeredAt: number; offers: number; offeredOnFinish: boolean };
 }
@@ -199,6 +201,9 @@ function validateSnapshot(state: DynamicSnapshot): DynamicSnapshot {
     invariant(typeof msg.id === "string" && !msgIds.has(msg.id), "Duplicate message identity");
     invariant(msg.taskKey === taskKey(state.task) && ids.has(msg.from) && ids.has(msg.to), "Cross-task or unknown message identity");
     invariant(["queued", "tool_offered", "dispatch_uncertain", "sent", "acked"].includes(msg.state), "Invalid delivery state");
+    invariant(msg.providerDeliveredAt === undefined ||
+      (Number.isSafeInteger(msg.providerDeliveredAt) && msg.providerDeliveredAt > 0),
+      "Invalid provider acceptance time");
     if (msg.state === "tool_offered") {
       invariant(msg.toolOffer && Number.isSafeInteger(msg.toolOffer.offeredAt) &&
         msg.toolOffer.offeredAt > 0 && Number.isSafeInteger(msg.toolOffer.offers) &&
@@ -616,6 +621,8 @@ export class DynamicAgentBroker {
     return this.hostDelivery(lease, (msg, state) => {
       invariant(msg.state === "dispatch_uncertain" || (msg.state === "sent" && msg.providerMessageId === receipt.providerMessageId), "Delivery not claimable");
       invariant(!state.messages.some(m => m.id !== msg.id && m.to === msg.to && m.providerMessageId === receipt.providerMessageId), "Provider receipt already attributed");
+      if (!msg.providerDeliveredAt) msg.providerDeliveredAt = Date.now();
+      if (!msg.providerDeliveredAt) msg.providerDeliveredAt = Date.now();
       msg.state = "sent"; msg.providerMessageId = receipt.providerMessageId;
       return msg;
     });
@@ -644,7 +651,8 @@ export class DynamicAgentBroker {
       const msg = state.messages.find(m => m.id === messageId && m.to === actor.id);
       invariant(msg && (msg.state === "sent" || msg.state === "acked"), "Provider delivery not confirmed");
       msg.state = "acked";
-      if (actor.status === "waking") actor.status = "busy";
+      // CoS noteAgentAlive(): the browser Send ACK is not evidence the model
+      // is responding. A later authenticated call must revive this worker.
     });
   }
   async releaseProvenUnsubmitted(proof: DynamicNoSubmitProof): Promise<void> {
@@ -701,6 +709,27 @@ export class DynamicAgentBroker {
       actor.lastResult = input.result;
       actor.status = "sleeping";
       return report;
+    });
+  }
+  /**
+   * CoS noteAgentAlive(): only a genuinely later, authenticated worker call
+   * proves a restored conversation is executing. Old turn hydration, a page
+   * observation, or the native browser Send receipt are insufficient.
+   */
+  async noteAgentAlive(call: VerifiedDynamicToolCall): Promise<boolean> {
+    invariant(sameTask(call.task, this.policy.task) && typeof call.callId === "string" &&
+      !!call.callId.trim() && Number.isSafeInteger(call.startedAt) && call.startedAt > 0,
+      "Invalid worker liveness proof");
+    invariant(await this.trust.verifyToolCall(call), "Unverified worker liveness call");
+    return this.perform((state, actor) => {
+      invariant(actor.id === call.recipientId && !!actor.sessionId, "Worker liveness identity mismatch");
+      if (actor.status !== "waking") return false;
+      const confirmed = state.messages.some(m => m.to === actor.id &&
+        (m.state === "sent" || m.state === "acked") &&
+        m.providerDeliveredAt !== undefined && m.providerDeliveredAt < call.startedAt);
+      if (!confirmed) return false;
+      actor.status = "busy";
+      return true;
     });
   }
   async requestFinalReview(): Promise<void> {
