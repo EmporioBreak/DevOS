@@ -22,6 +22,7 @@ import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { observeWorkerAuthorization } from "./chat-worker-observer.js";
 import {observeDynamicWorkerAuthorizationLocal} from "./dynamic-agent-observer.js";
 import {waitForDynamicBrowserTurn} from "./dynamic-agent-wait.js";
+import {observeDynamicNativeSendReceipt} from "./dynamic-agent-native-receipt.js";
 import { localWorkerAuthorization } from "./chat-worker-grants.js";
 import { classifyBrowserFailure, browserRecoveryDelayMs } from "./browser-recovery-policy.js";
 
@@ -115,6 +116,8 @@ export class ChatGptBrowserExecutor implements Executor {
        request.workerId !== request.dynamicTurn.agentId ||
        request.dynamicTurn.mode !== (request.sessionId ? "work" : "bootstrap")))
       throw new Error("Dynamic browser turn must use separate exact v2 worker identity and lifecycle");
+    if (request.dynamicTurn?.mode==="work" && !request.onAcceptedUserMessage)
+      throw new Error("V2 browser work requires trusted native provider-receipt callback");
     const projectScope = request.enforceProjectScope
       ? getChatGptProjectScope(this.config.projectUrl)
       : null;
@@ -169,6 +172,15 @@ export class ChatGptBrowserExecutor implements Executor {
         debugLog("browser.worker-access", { phase: "observer", decision: "unavailable" });
       });
     }
+    const receiptEvidence = request.dynamicTurn?.mode==="work" &&
+      request.onAcceptedUserMessage && reportAbort
+      ? observeDynamicNativeSendReceipt({
+          page,expectedConversation:()=>durableSession,
+          expectedOutgoingMessageId:()=>submitted?.messageId,
+          exactPrompt:request.prompt,signal:reportAbort.signal,
+          onAccepted:request.onAcceptedUserMessage
+        })
+      : undefined;
     const onOutgoingRequest = (outgoing: PlaywrightRequest) => {
       if (!mayHaveSubmitted) return;
       try {
@@ -254,6 +266,8 @@ export class ChatGptBrowserExecutor implements Executor {
       if (request.sessionId) {
         const outcome = await response;
         if ("error" in outcome) throw outcome.error;
+        if (receiptEvidence && !await receiptEvidence)
+          throw new Error("Provider acceptance not proved by exact ChatGPT history; do not replay");
         if (projectScope) assertChatGptProjectScope(this.config.projectUrl, page.url(), true);
         if (!isSameChatGptConversation(request.sessionId, page.url())) throw new Error("ChatGPT changed saved conversation after submission");
         debugLog("browser.session.ready", { sessionId: request.sessionId, actualUrl: page.url() });
