@@ -622,6 +622,20 @@ export class DynamicAgentBroker {
       invariant(state.messages.length + additions.length <= (this.policy.maxRecordedMessages ?? 8192),
         "Message history limit reached; refusing unprovable idempotency eviction");
       state.messages.push(...additions);
+      // CoS beginRevival + bridge CommandSpec(revive): wake and message set
+      // share the same disk commit; no browser side effects until host claim.
+      for (const recipientId of waking) {
+        const agent = state.agents.find(a => a.id === recipientId)!;
+        const messageIds = state.messages.filter(m => m.to === recipientId && m.state === "queued").map(m => m.id);
+        invariant(messageIds.length > 0, "Cannot wake without pending messages");
+        const wakeKey = createHash("sha256").update(messageIds.join("\0")).digest("hex");
+        invariant(!(state.wakeCommands ?? []).some(c => c.wakeKey === wakeKey), "Duplicate wake identity");
+        (state.wakeCommands ??= []).push({
+          id: randomUUID(), taskKey: taskKey(state.task), recipientId,
+          conversationId: agent.sessionId!, wakeKey, messageIds, state: "queued",
+          createdAt: Date.now()
+        });
+      }
       return planned;
     });
   }
@@ -688,6 +702,8 @@ export class DynamicAgentBroker {
     return this.perform((state, actor) => {
       const msg = state.messages.find(m => m.id === messageId && m.to === actor.id);
       invariant(msg && msg.state === "queued", "Message not claimable; may already have been submitted");
+      invariant(!state.wakeCommands?.some(c => c.state !== "alive" && c.messageIds.includes(msg.id)),
+        "Wake-owned work must use exact revival command");
       invariant(state.messages.find(m => m.to === msg.to && m.state !== "acked") === msg, "Recipient queue order violation");
       msg.state = "dispatch_uncertain";
       return msg;
@@ -711,6 +727,8 @@ export class DynamicAgentBroker {
   async claimForTransport(lease: DynamicTransportLease): Promise<DynamicMessage> {
     return this.hostDelivery(lease, (msg, state) => {
       invariant(msg.state === "queued", "Message not claimable; may already have been submitted");
+      invariant(!state.wakeCommands?.some(c => c.state !== "alive" && c.messageIds.includes(msg.id)),
+        "Wake-owned work must use exact revival command");
       invariant(state.messages.find(m => m.to === msg.to && m.state !== "acked") === msg, "Recipient queue order violation");
       msg.state = "dispatch_uncertain";
       return msg;
@@ -722,7 +740,6 @@ export class DynamicAgentBroker {
     return this.hostDelivery(lease, (msg, state) => {
       invariant(msg.state === "dispatch_uncertain" || (msg.state === "sent" && msg.providerMessageId === receipt.providerMessageId), "Delivery not claimable");
       invariant(!state.messages.some(m => m.id !== msg.id && m.to === msg.to && m.providerMessageId === receipt.providerMessageId), "Provider receipt already attributed");
-      if (!msg.providerDeliveredAt) msg.providerDeliveredAt = Date.now();
       if (!msg.providerDeliveredAt) msg.providerDeliveredAt = Date.now();
       msg.state = "sent"; msg.providerMessageId = receipt.providerMessageId;
       return msg;
@@ -832,6 +849,8 @@ export class DynamicAgentBroker {
         (m.state === "sent" || m.state === "acked") &&
         m.providerDeliveredAt !== undefined && m.providerDeliveredAt < call.startedAt);
       if (!confirmed) return false;
+      for (const command of state.wakeCommands ?? []) if (command.recipientId === actor.id &&
+        command.state === "delivered" && command.deliveredAt! < call.startedAt) command.state = "alive";
       actor.status = "busy";
       return true;
     });
