@@ -4,10 +4,12 @@ Issue #246 / Draft PR #247. Experimental library code only. It is not a Producti
 
 ## Present on this branch
 
-- `src/dynamic-agent-runtime.ts`: policy-scoped agent directory, direct peer and Main Agent addressing, dynamically admitted agents, session identity binding, idempotent per-recipient queue, synchronous durable acceptance, cross-task protection, owner-only final decision and claim-before-provider-send fence.
+- `src/dynamic-agent-runtime.ts`: policy-scoped agent directory, direct peer and Main Agent addressing, dynamically admitted agents, session identity binding, CoS-style atomic message batches, MCP tool inbox offer/reoffer and next-call ACK, bounded waking slot reservations, idempotent work-unit finish/sleep, idempotent per-recipient queue, synchronous durable acceptance, cross-task protection, owner-only final decision and claim-before-provider-send fence.
 - `src/dynamic-agent-scheduler.ts`: bounded, on-demand, graph-free queue-drain pass; other agents progress even when one recipient has an ambiguous send. It requires authentic recipient sessions and does not poll indefinitely.
 - `src/dynamic-agent-dispatch.ts`: narrow host-verified dispatch seam requiring existing exact saved recipient session and an independently checked provider-receipt callback. It deliberately does not synthesize ChatGPT user-message IDs, create new browser contexts, close task windows or auto-retry ambiguous sends.
 - Dedicated tests for peer-to-peer routing, dynamic QA/security, frozen session binding, admission and policy denial, task isolation, ordered delivery, crash/ambiguous replay barriers, host transport and final Main Agent judgment.
+
+See `docs/cos-source-port-map.md` for the pinned CoS source-to-DevOS function correspondence and missing integration, and `third_party/licenses/chat-on-steroids-MIT.txt` for upstream attribution.
 
 ## Host verification requirements (not implemented by this library)
 
@@ -17,6 +19,7 @@ A production caller must wire `DynamicTrustBoundary` to actual trusted gateway f
 - `verifyPolicy`: owner-authorized exact policy + scope and pinned skill manifests (not merely a string looking like a SHA256).
 - `verifyNewAgentBinding`: verifies the newly created worker's actual session and task ownership. A worker's requested fingerprint is not proof.
 - `verifyTransportLease`: host-owned lease on this exact task, agent and message, no role impersonation.
+- `verifyToolCall`: authenticated subsequent MCP call from the exact recipient/session, with independently verified start time; never accept timestamps from a prompt.
 - `verifyProviderReceipt`: real provider-accepted outgoing user-message or execution identity and task/turn correlation.
 - `verifyNoSubmit`: independently proven pre-submit failure, not a timeout or model statement.
 
@@ -38,4 +41,4 @@ The new store lives at `.devos/dynamic/<encoded-repo>-issue-<issue>.json` and ne
 
 ### Local isolated verification
 
-Compiled the new modules with TypeScript strict NodeNext settings, Node 22 and appropriate Node type declarations; 13 `node:test` cases pass with mocked trust/transport providers. This verification does not include the full repository dependency graph or any live browser/provider service.
+GitHub Actions `Dynamic agent core checks` runs Node 22 `npm ci`, full repository TypeScript `npm run build` and the focused `tests/dynamic-agent-*.test.ts`. At [run #38219852828](https://github.com/EmporioBreak/DevOS/actions/runs/38219852828), build succeeded and **19/19 focused tests passed** with mocked trust/transport providers. This is not the full DevOS test suite and not any real provider/browser E2E.
