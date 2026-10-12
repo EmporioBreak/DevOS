@@ -49,6 +49,14 @@ This is a **source-level port**, not a greenfield implementation inspired by COS
 
 See `docs/dynamic-agent-runtime.md`, `src/dynamic-agent-bootstrap.ts`, its focused tests and the tracked Draft PR #247. Existing legacy `src/orchestrator.ts`, `src/workflow.ts`, `src/cli.ts` are unchanged on this branch. New algorithms have only isolated test coverage unless separate CI/host result is linked; **do not convert unit-test claims into provider E2E evidence**.
 
+## V2 live MCP authorization work (feature-gated, not deployed)
+
+- `src/dynamic-agent-mcp.ts` and `src/connector-gateway.ts`: separate `devos_agents_v2` tool route, advertised **only** if `DEVOS_DYNAMIC_AGENTS_V2=enabled`. Its worker access is disjoint from both owner administrative rights and the v1 predeclared-graph/desktop grants. Tool calls go through the signed policy and broker with host-derived (not model-claimed) caller fingerprints.
+- `src/dynamic-agent-grants.ts`: owner-HMACed, bounded, 5-minute v2 grant registry, issued only after an independently proved provider-authored `devos_worker_probe` result. On every use it verifies the saved worker chat, task/PR, sealed policy, actual living task-lock process, and monotonic `grantEpoch`; it refuses sleeping/terminal workers. A revived worker may rebind in the same original chat only after this wake's independently verified provider acceptance.
+- `src/dynamic-agent-observer.ts`: v2 Camoufox observer reuses DevOS's exact-read-only provider-history reader and tool-resource pin. In `src/chatgpt-browser-executor.ts`, explicitly marked v2 requests use **only** this path, not v1 grant issuing; legacy requests are unchanged. Unknown/ambiguous provider evidence returns denial, not a synthetic success.
+- Restriction: v2 worker grants never pass through general Desktop Commander authorization or owner-password UI. The gateway returns `dynamic_worker_limited` when such a worker calls a legacy tool.
+- **Still missing:** native host-owned two-phase first-chat binding before the worker's initial probe, signed worker context/liveness correlation to an exact post-wake tool turn, and real headed signed-in Camoufox proof on two Issues. Dedicated mocked/history-fixture tests do not replace provider E2E.
+
 ## DevOS-specific trust and executor integration (not present in COS)
 
 - `src/dynamic-agent-policy.ts`: seal and verify one owner-approved immutable task/role/skill/budget policy with a separate HMAC key domain from v1 Runner; no model-generated `policyId` grants permission. `sealedDynamicPolicyVerifier` can be used as the real `DynamicTrustBoundary.verifyPolicy` implementation. Actual owner approval must still originate from the trusted host.
