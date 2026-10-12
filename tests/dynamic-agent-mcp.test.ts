@@ -22,7 +22,7 @@ const resource="/devos/production/devos_worker_probe";
 async function fixture(){
   const root=await mkdtemp(join(tmpdir(),"cos-v2-mcp-"));
   const lock=await acquireTaskLock(root,task);
-  await sealDynamicAgentPolicy({root,policy,ownerSecret:secret,assertTrustedOwnerApproval:async()=>true});
+  await sealDynamicAgentPolicy({root,policy,ownerSecret:secret});
   let actor:VerifiedDynamicCaller={task,agentId:"main_agent",sessionFingerprint:ownerFp};
   const store=new DynamicAgentStore(root,task);
   const broker=new DynamicAgentBroker(policy,store,{
