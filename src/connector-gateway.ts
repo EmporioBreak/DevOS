@@ -23,6 +23,7 @@ import { ChatApprovalTickets, CHAT_APPROVAL_WIDGET_TOOL, CHAT_APPROVAL_WIDGET_UR
 import { OwnerTaskApprovalStore, OWNER_TASK_APPROVAL_TOOL, OWNER_TASK_APPROVAL_STATUS_TOOL, ownerTaskApprovalForm } from "./owner-task-approval.js";
 import { ChatWorkerProbeRegistry, CHAT_WORKER_PROBE_TOOL } from "./chat-worker-probe.js";
 import { ChatWorkerGrantRegistry } from "./chat-worker-grants.js";
+import { DEVOS_DYNAMIC_AGENTS_TOOL, callDynamicAgentsMcp } from "./dynamic-agent-mcp.js";
 import { recordObservedHostOutage } from "./host-fallback-evidence.js";
 import { watchChatAccessRevocation } from "./chat-authorization-watch.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
@@ -410,6 +411,8 @@ export async function startGateway(options: {
     options.chatAccessRoot ?? options.root, options.ownerSecret, chatAccess);
   const workerProbe = new ChatWorkerProbeRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
   const workerGrants = new ChatWorkerGrantRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
+  // V2 grants never authorize Desktop Commander; disabled until explicitly enabled.
+  const dynamicAgentsV2Enabled = process.env.DEVOS_DYNAMIC_AGENTS_V2 === "enabled";
   const callOrigin = new AsyncLocalStorage<{ clientId: string; sessionHeader: unknown }>();
   let desktop: DesktopCommanderIntegration;
   desktop = new DesktopCommanderIntegration({
@@ -702,6 +705,18 @@ export async function startGateway(options: {
             if (fingerprint) sessionFingerprints.add(fingerprint);
             const authorized = chatAccess.isApproved(fingerprint) || workerGrants.isGranted(fingerprint);
             if (request.method === "tools/call") {
+              if (request.params?.name === DEVOS_DYNAMIC_AGENTS_TOOL.name) {
+                if (!dynamicAgentsV2Enabled)
+                  throw new Error("Dynamic agent tool is not enabled on this host");
+                // This branch never broadens the original v1 worker grant.
+                return callDynamicAgentsMcp({
+                  root: options.chatAccessRoot ?? options.root,
+                  ownerSecret: options.ownerSecret,
+                  fingerprint,
+                  ownerApproved: () => chatAccess.isApproved(fingerprint),
+                  argumentsValue: request.params?.arguments
+                });
+              }
               if (request.params?.name === CHAT_NOOP_TOOL.name) {
                 // Keep this request's signed pending-worker classification even
                 // if the local verifier consumes the nonce before responding.
@@ -1000,6 +1015,7 @@ export async function startGateway(options: {
                 String(tool.name ?? "") === OWNER_TASK_APPROVAL_TOOL.name ||
                 String(tool.name ?? "") === OWNER_TASK_APPROVAL_STATUS_TOOL.name ||
                 localTools.has(String(tool.name ?? "")) ||
+                String(tool.name ?? "") === DEVOS_DYNAMIC_AGENTS_TOOL.name ||
                 String(tool.name ?? "").startsWith("devos_"));
               if (conflicting) throw new Error("Desktop Commander tool conflicts with reserved DevOS namespace");
               const excludedForChatGpt = new Set(["track_ui_event"]);
@@ -1099,7 +1115,8 @@ export async function startGateway(options: {
                   CHAT_APPROVAL_WIDGET_TOOL,
                   OWNER_TASK_APPROVAL_TOOL,
                   OWNER_TASK_APPROVAL_STATUS_TOOL,
-                  CHAT_WORKER_PROBE_TOOL],
+                  CHAT_WORKER_PROBE_TOOL,
+                  ...(dynamicAgentsV2Enabled ? [DEVOS_DYNAMIC_AGENTS_TOOL] : [])],
               };
             }
             return result;
