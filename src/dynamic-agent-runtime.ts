@@ -685,7 +685,8 @@ export class DynamicAgentBroker {
     invariant(await this.trust.verifyToolCall(call), "Unverified subsequent tool call");
     return this.perform((state, actor) => {
       invariant(actor.id === call.recipientId && !!actor.sessionId, "Tool call recipient mismatch");
-      if (actor.status === "waking") actor.status = "busy";
+      // The verified MCP call may ACK tool offers, but cannot by itself
+      // prove a specific browser wake was delivered; noteAgentAlive owns that.
       const acknowledged: string[] = [];
       for (const msg of state.messages) {
         if (msg.to !== actor.id || msg.state !== "tool_offered" || !msg.toolOffer) continue;
@@ -905,12 +906,16 @@ export class DynamicAgentBroker {
     return this.perform((state, actor) => {
       invariant(actor.id === call.recipientId && !!actor.sessionId, "Worker liveness identity mismatch");
       if (actor.status !== "waking") return false;
-      const confirmed = state.messages.some(m => m.to === actor.id &&
-        (m.state === "sent" || m.state === "acked") &&
-        m.providerDeliveredAt !== undefined && m.providerDeliveredAt < call.startedAt);
+      const pendingWake = (state.wakeCommands ?? []).find(c =>
+        c.recipientId === actor.id && c.state !== "alive");
+      // An older, unrelated user message is NEVER proof of this wake.
+      const confirmed = pendingWake
+        ? pendingWake.state === "delivered" && pendingWake.deliveredAt! < call.startedAt
+        : state.messages.some(m => m.to === actor.id &&
+          (m.state === "sent" || m.state === "acked") &&
+          m.providerDeliveredAt !== undefined && m.providerDeliveredAt < call.startedAt);
       if (!confirmed) return false;
-      for (const command of state.wakeCommands ?? []) if (command.recipientId === actor.id &&
-        command.state === "delivered" && command.deliveredAt! < call.startedAt) command.state = "alive";
+      if (pendingWake) pendingWake.state = "alive";
       actor.status = "busy";
       return true;
     });
