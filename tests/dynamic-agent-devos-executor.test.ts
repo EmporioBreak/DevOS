@@ -87,7 +87,7 @@ test("existing Codex session uses signed skill request and only host-proven exec
     id:"dev1",executor:"codex",sessionId:"codex-1"},
     message:{id:"message-id-2",taskKey:"EmporioBreak/DevOS#246",
       from:"qa",to:"dev1",kind:"work",body:"Fix again",
-      idempotencyKey:"codex-receipt-002",state:"queued"}}),/without independent provider Send receipt/);
+      idempotencyKey:"codex-receipt-002",state:"queued"}}),/without matching independent provider Send receipt/);
 });
 test("real DevOS adapter never replaces saved ChatGPT conversation during wake",async()=>{
   const f=setup();
