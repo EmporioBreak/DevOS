@@ -14,6 +14,10 @@ export interface DynamicAgentPolicy {
   maxPendingPerAgent: number;
   /** CoS-inspired bounded journal: never silently drop prior idempotency evidence. */
   maxRecordedMessages?: number;
+  /** COS 400k-token revival ceiling; explicitly enabled on verified v2 policies only. */
+  workerContextCeilingTokens?: number;
+  /** Maximum age of trusted measurement prior to waking a sleeping worker. */
+  contextMeasurementMaxAgeMs?: number;
   roles: Record<string, { executor: ExecutorKind; manifestSha256: string; mayAdmit: boolean }>;
 }
 export interface VerifiedDynamicCaller {
@@ -23,7 +27,7 @@ export interface VerifiedDynamicCaller {
 }
 export type DynamicMessageKind = "work" | "question" | "review" | "evidence" | "blocker";
 export type DynamicMessageState = "queued" | "tool_offered" | "dispatch_uncertain" | "sent" | "acked";
-export type DynamicAgentStatus = "idle" | "busy" | "sleeping" | "waking" | "blocked";
+export type DynamicAgentStatus = "idle" | "busy" | "sleeping" | "waking" | "blocked" | "terminal";
 export interface DynamicAgent {
   id: string;
   role: string;
@@ -34,6 +38,9 @@ export interface DynamicAgent {
   status: DynamicAgentStatus;
   lastResult?: string;
   lastFinishKey?: string;
+  /** Monotonic host-measured token usage. Never derived from worker prompt. */
+  contextTokens?: number;
+  contextMeasuredAt?: number;
 }
 export interface DynamicMessage {
   id: string;
@@ -139,6 +146,16 @@ export function validateDynamicPolicy(policy: DynamicAgentPolicy): void {
   invariant(policy.maxRecordedMessages === undefined ||
     (Number.isSafeInteger(policy.maxRecordedMessages) && policy.maxRecordedMessages >= 1 &&
       policy.maxRecordedMessages <= 8192), "Invalid message history limit");
+  invariant(policy.workerContextCeilingTokens === undefined ||
+    (Number.isSafeInteger(policy.workerContextCeilingTokens) &&
+      policy.workerContextCeilingTokens >= 1_000 && policy.workerContextCeilingTokens <= 1_000_000),
+    "Invalid worker context ceiling");
+  invariant(policy.contextMeasurementMaxAgeMs === undefined ||
+    (Number.isSafeInteger(policy.contextMeasurementMaxAgeMs) &&
+      policy.contextMeasurementMaxAgeMs >= 1_000 && policy.contextMeasurementMaxAgeMs <= 3_600_000),
+    "Invalid context measurement freshness");
+  invariant(policy.contextMeasurementMaxAgeMs === undefined || policy.workerContextCeilingTokens !== undefined,
+    "Context freshness requires a context ceiling");
   invariant(!!policy.roles && typeof policy.roles === "object" && !Array.isArray(policy.roles), "Invalid role catalog");
   invariant(Object.keys(policy.roles).length > 0, "Empty role catalog");
   for (const [role, rule] of Object.entries(policy.roles)) {
@@ -211,7 +228,13 @@ function validateSnapshot(state: DynamicSnapshot): DynamicSnapshot {
         !conversations.has(agent.sessionId), "Agent conversation already owned by another teammate");
       conversations.add(agent.sessionId);
     }
-    invariant(["idle", "busy", "sleeping", "waking", "blocked"].includes(agent.status), "Invalid agent lifecycle state");
+    invariant(["idle", "busy", "sleeping", "waking", "blocked", "terminal"].includes(agent.status), "Invalid agent lifecycle state");
+    invariant(agent.contextTokens === undefined ||
+      (Number.isSafeInteger(agent.contextTokens) && agent.contextTokens >= 0),
+      "Invalid context token evidence");
+    invariant(agent.contextMeasuredAt === undefined ||
+      (Number.isSafeInteger(agent.contextMeasuredAt) && agent.contextMeasuredAt > 0),
+      "Invalid context measurement timestamp");
     invariant(agent.lastResult === undefined || (typeof agent.lastResult === "string" &&
       agent.lastResult.length > 0 && agent.lastResult.length <= MAX_MESSAGE_CHARS), "Invalid worker finish");
     invariant(agent.lastFinishKey === undefined || (typeof agent.lastFinishKey === "string" &&
@@ -319,6 +342,8 @@ export interface DynamicTrustBoundary {
     sessionFingerprint: string }): Promise<boolean>;
   verifyWakeLease?(lease: DynamicWakeLease): Promise<boolean>;
   verifyWakeReceipt?(receipt: DynamicWakeReceipt): Promise<boolean>;
+  verifyContextMeasurement?(input: { task: TaskRef; agentId: string; sessionId: string;
+    sessionFingerprint: string; tokens: number; evidenceId: string }): Promise<boolean>;
   verifyProviderReceipt(receipt: DynamicDeliveryReceipt): Promise<boolean>;
   verifyNoSubmit(proof: DynamicNoSubmitProof): Promise<boolean>;
 }
@@ -570,7 +595,7 @@ export class DynamicAgentBroker {
     invariant(Array.isArray(items) && items.length > 0 && items.length <= 16, "Message batch size must be 1..16");
     return this.perform((state, actor) => {
       invariant(actor.status !== "blocked" && actor.status !== "sleeping" &&
-        actor.status !== "waking", "Sender is not executing work");
+        actor.status !== "waking" && actor.status !== "terminal", "Sender is not executing work");
       const planned: DynamicMessage[] = [];
       const waking = new Set<string>();
       const byRecipient = new Map<string, number>();
@@ -596,9 +621,20 @@ export class DynamicAgentBroker {
         }
         // CoS beginRevival(): queue ownership and active-slot reservation are
         // one transaction; a wake already in progress refuses further work.
-        invariant(recipient.status !== "waking" && recipient.status !== "blocked", "Recipient cannot accept another wake");
+        invariant(recipient.status !== "waking" && recipient.status !== "blocked" &&
+          recipient.status !== "terminal", "Recipient cannot accept another wake");
         if (recipient.status === "sleeping") {
           invariant(!!recipient.sessionId, "Sleeping worker has no original conversation to wake");
+          if (this.policy.workerContextCeilingTokens !== undefined) {
+            invariant(recipient.contextTokens !== undefined &&
+              recipient.contextMeasuredAt !== undefined &&
+              Date.now() - recipient.contextMeasuredAt >= 0 &&
+              Date.now() - recipient.contextMeasuredAt <=
+                (this.policy.contextMeasurementMaxAgeMs ?? 30_000),
+              "WORKER_CONTEXT_UNVERIFIED: fresh host measurement required before revival");
+            invariant(recipient.contextTokens < this.policy.workerContextCeilingTokens,
+              "WORKER_CONTEXT_LIMITED: conversation cannot be revived");
+          }
           waking.add(recipient.id);
         }
         const already = byRecipient.get(input.to) ?? 0;
@@ -849,6 +885,43 @@ export class DynamicAgentBroker {
     });
   }
   /**
+   * COS noteAgentContextTokens(): persist monotonic trusted host observations.
+   * A running worker is allowed to finish its current turn after crossing the
+   * ceiling, but cannot be revived after that finish. A parked worker becomes
+   * terminal immediately, preserving its exact conversation as a denial fence.
+   */
+  async noteContextTokens(input: { task: TaskRef; agentId: string;
+    sessionId: string; sessionFingerprint: string; tokens: number;
+    evidenceId: string }): Promise<{ contextTokens: number; status: DynamicAgentStatus }> {
+    invariant(sameTask(input.task, this.policy.task) && typeof input.agentId === "string" &&
+      typeof input.sessionId === "string" && !!input.sessionId &&
+      Number.isSafeInteger(input.tokens) && input.tokens >= 0 &&
+      typeof input.evidenceId === "string" && !!input.evidenceId.trim(),
+      "Invalid independent context measurement");
+    invariant(await this.trust.verifyPolicy(this.policy) &&
+      await this.trust.verifyContextMeasurement?.(input) === true,
+      "Unverified context measurement");
+    return this.store.transact(existing => {
+      invariant(existing && existing.policyHash === policyHash(this.policy) &&
+        sameTask(existing.task, input.task), "Context measurement task/policy changed");
+      const agent = existing.agents.find(a => a.id === input.agentId);
+      invariant(agent && agent.id !== "main_agent" &&
+        agent.sessionId === input.sessionId &&
+        agent.sessionFingerprint === input.sessionFingerprint,
+        "Context measurement conversation/agent identity mismatch");
+      // Never reduce the known maximum, including across corrupted or lagged
+      // provider measurements and full restart.
+      agent.contextTokens = Math.max(agent.contextTokens ?? 0, input.tokens);
+      agent.contextMeasuredAt = Date.now();
+      if (this.policy.workerContextCeilingTokens !== undefined &&
+        agent.contextTokens >= this.policy.workerContextCeilingTokens &&
+        agent.status === "sleeping") agent.status = "terminal";
+      existing.generation++;
+      return {state:existing,result:{contextTokens:agent.contextTokens,status:agent.status}};
+    });
+  }
+
+  /**
    * CoS stageFinish()/finishAgent() adaptation: worker finishes one unit and
    * sleeps in its *original* conversation. The result is atomically reported
    * to the requester (or Main Agent), not a terminal task approval.
@@ -872,8 +945,8 @@ export class DynamicAgentBroker {
           "Previous finish report no longer has a matching recipient");
         return previous;
       }
-      invariant(actor.status !== "blocked" && actor.status !== "waking",
-        "Worker with unresolved wake cannot finish work");
+      invariant(actor.status !== "blocked" && actor.status !== "waking" &&
+        actor.status !== "terminal", "Worker with unresolved wake cannot finish work");
       const lastRequest = [...state.messages].reverse().find(m =>
         m.to === actor.id && m.kind === "work");
       const recipientId = input.reportTo ?? lastRequest?.from ?? "main_agent";
@@ -894,7 +967,8 @@ export class DynamicAgentBroker {
       state.messages.push(report);
       actor.lastFinishKey = input.idempotencyKey;
       actor.lastResult = input.result;
-      actor.status = "sleeping";
+      actor.status = this.policy.workerContextCeilingTokens !== undefined &&
+        (actor.contextTokens ?? 0) >= this.policy.workerContextCeilingTokens ? "terminal" : "sleeping";
       return report;
     });
   }
