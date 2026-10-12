@@ -12,6 +12,8 @@ export interface WorkerRequest {
   // Serialized across shared-browser IPC; identifies the single authorized
   // MCP report which can terminate browser response waiting for this turn.
   reportTurn?: { task: TaskRef; active: WorkerReportTurn };
+  /** Trusted host selects isolated COS-style v2 authorization; never from model text. */
+  dynamicAgentV2?: true;
   sessionId?: string;
   /** Trusted task/worker identity set by Orchestrator, not from prompt. */
   codexSkills?: CodexSkillAssignment;
