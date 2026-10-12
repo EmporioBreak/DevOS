@@ -14,6 +14,8 @@ export interface WorkerRequest {
   reportTurn?: { task: TaskRef; active: WorkerReportTurn };
   /** Trusted host selects isolated COS-style v2 authorization; never from model text. */
   dynamicAgentV2?: true;
+  /** Host-only CoS v2 completion receipt; independent of legacy reportTurn. */
+  dynamicTurn?: {task:TaskRef;agentId:string;mode:"bootstrap"|"work";startingGrantEpoch:number};
   sessionId?: string;
   /** Trusted task/worker identity set by Orchestrator, not from prompt. */
   codexSkills?: CodexSkillAssignment;
