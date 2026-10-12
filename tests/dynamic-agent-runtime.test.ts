@@ -430,3 +430,19 @@ test("CoS page/send ACK cannot activate sleeping worker without authenticated la
   assert.equal(await f.broker.noteAgentAlive({task,recipientId:"qa",callId:"real-new-turn",startedAt:time+1}),true);
   assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa")!.status,"busy");
 });
+
+test("CoS exact-chat ownership rejects duplicate worker fingerprints and shared saved conversations",async t=>{
+  const f=await fixture();t.after(f.close);await f.broker.initialize();
+  await f.broker.admit({id:"qa",role:"qa",sessionFingerprint:"qa-proof"});
+  await assert.rejects(f.broker.admit({id:"sec",role:"security",sessionFingerprint:"qa-proof"}),
+    /principal is claimed/);
+  await f.broker.admit({id:"sec",role:"security",sessionFingerprint:"sec-proof"});
+  f.as("qa");await f.broker.bindSession("https://chatgpt.com/c/exact-chat");
+  f.as("sec");
+  await assert.rejects(f.broker.bindSession("https://chatgpt.com/c/exact-chat"),
+    /conversation already owned/);
+  assert.equal((await f.store.load())!.agents.find(a=>a.id==="sec")?.sessionId,undefined);
+  await f.broker.bindSession("https://chatgpt.com/c/other-chat");
+  assert.equal((await f.store.load())!.agents.find(a=>a.id==="sec")?.sessionId,
+    "https://chatgpt.com/c/other-chat");
+});
