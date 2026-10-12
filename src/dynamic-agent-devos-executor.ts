@@ -112,10 +112,12 @@ export class DynamicDevosExecutorAdapter
     }
 
     const request = await this.host.prepareWake(input);
-    const kind = this.executors.chatgpt_browser.kind;
-    // Only original Camoufox owner may implement actual worker browser wake.
-    // CodeX original session resume must use a separately trusted host adapter.
-    expect(kind === "chatgpt_browser", "Wake executor kind changed");
+    // Source COS bridge's exact-chat wake reuses the existing executor owner:
+    // Camoufox resumes the exact browser chat; native Codex resumes its
+    // original thread. Never spawn a new session to "repair" a missing one.
+    const kind = input.executor;
+    expect(kind === "chatgpt_browser" || kind === "codex",
+      "Wake executor kind changed");
     verifiedSession(input.conversationId, request.sessionId, kind);
     const output = await this.run(kind, request, input.task, input.recipientId, false);
     verifiedSession(input.conversationId, output.sessionId, kind);
