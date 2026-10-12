@@ -18,7 +18,7 @@ export interface VerifiedDynamicCaller {
   sessionFingerprint: string;
 }
 export type DynamicMessageKind = "work" | "question" | "review" | "evidence" | "blocker";
-export type DynamicMessageState = "queued" | "dispatch_uncertain" | "sent" | "acked";
+export type DynamicMessageState = "queued" | "tool_offered" | "dispatch_uncertain" | "sent" | "acked";
 export type DynamicAgentStatus = "idle" | "busy" | "sleeping" | "blocked";
 export interface DynamicAgent {
   id: string;
@@ -40,6 +40,8 @@ export interface DynamicMessage {
   inReplyTo?: string;
   state: DynamicMessageState;
   providerMessageId?: string;
+  /** CoS agent inbox offer metadata, never evidence of a provider Send. */
+  toolOffer?: { offeredAt: number; offers: number; offeredOnFinish: boolean };
 }
 export interface DynamicStatusView {
   task: TaskRef;
@@ -149,13 +151,25 @@ function validateSnapshot(state: DynamicSnapshot): DynamicSnapshot {
   for (const msg of state.messages) {
     invariant(typeof msg.id === "string" && !msgIds.has(msg.id), "Duplicate message identity");
     invariant(msg.taskKey === taskKey(state.task) && ids.has(msg.from) && ids.has(msg.to), "Cross-task or unknown message identity");
-    invariant(["queued", "dispatch_uncertain", "sent", "acked"].includes(msg.state), "Invalid delivery state");
+    invariant(["queued", "tool_offered", "dispatch_uncertain", "sent", "acked"].includes(msg.state), "Invalid delivery state");
+    if (msg.state === "tool_offered") {
+      invariant(msg.toolOffer && Number.isSafeInteger(msg.toolOffer.offeredAt) &&
+        msg.toolOffer.offeredAt > 0 && Number.isSafeInteger(msg.toolOffer.offers) &&
+        msg.toolOffer.offers > 0 && typeof msg.toolOffer.offeredOnFinish === "boolean", "Invalid tool offer");
+    }
     invariant(msg.body.length > 0 && msg.body.length <= MAX_MESSAGE_CHARS, "Invalid message length");
     const key = `${msg.from}\u0000${msg.idempotencyKey}`;
     invariant(!dedupe.has(key), "Duplicate idempotency identity");
     msgIds.add(msg.id); dedupe.add(key);
   }
   return state;
+}
+export interface VerifiedDynamicToolCall {
+  task: TaskRef;
+  recipientId: string;
+  callId: string;
+  startedAt: number;
+  byFinish?: boolean;
 }
 export interface DynamicDeliveryReceipt {
   task: TaskRef;
@@ -178,6 +192,8 @@ export interface DynamicTrustBoundary {
   verifyPolicy(policy: DynamicAgentPolicy): Promise<boolean>;
   verifyNewAgentBinding(binding: { task: TaskRef; id: string; role: string; sessionFingerprint: string }): Promise<boolean>;
   verifyTransportLease(lease: DynamicTransportLease): Promise<boolean>;
+  /** Prove a later, exact MCP call belongs to the already bound recipient. */
+  verifyToolCall(call: VerifiedDynamicToolCall): Promise<boolean>;
   verifyProviderReceipt(receipt: DynamicDeliveryReceipt): Promise<boolean>;
   verifyNoSubmit(proof: DynamicNoSubmitProof): Promise<boolean>;
 }
@@ -313,6 +329,57 @@ export class DynamicAgentBroker {
   async send(input: { to: string; kind: DynamicMessageKind; body: string;
     idempotencyKey: string; inReplyTo?: string }): Promise<DynamicMessage> {
     return (await this.sendBatch([input]))[0]!;
+  }
+
+  /**
+   * Port of CoS offerAgentMessages(): deliver queued work through the next
+   * authenticated MCP tool result without opening a *second* ChatGPT user turn.
+   * Offered rows are at-least-once; re-offer on lost tool results is intentional.
+   * Never combine browser-send custody and tool-result delivery.
+   */
+  async offerToolInbox(maxChars = 32_000, byFinish = false): Promise<DynamicMessage[]> {
+    invariant(Number.isSafeInteger(maxChars) && maxChars > 0 && maxChars <= 32_000, "Invalid offer byte budget");
+    return this.perform((state, actor) => {
+      invariant(actor.status !== "blocked" && !!actor.sessionId, "No active bound agent session for tool offer");
+      const pending = state.messages.filter(m => m.to === actor.id && m.state !== "acked");
+      const offered: DynamicMessage[] = [];
+      let size = 0;
+      for (const msg of pending) {
+        // A browser Send might already have reached ChatGPT: never duplicate it in a tool result.
+        if (msg.state === "sent" || msg.state === "dispatch_uncertain") break;
+        if (msg.state !== "queued" && msg.state !== "tool_offered") break;
+        if (offered.length && size + msg.body.length > maxChars) break;
+        if (!offered.length && msg.body.length > maxChars) break;
+        size += msg.body.length;
+        const old = msg.toolOffer;
+        msg.state = "tool_offered";
+        msg.toolOffer = { offeredAt: Date.now(), offers: (old?.offers ?? 0) + 1, offeredOnFinish: byFinish };
+        offered.push(msg);
+      }
+      return offered;
+    });
+  }
+  /**
+   * Port of CoS acknowledgeAgentOffers(): caller identity AND a subsequent
+   * trusted MCP call whose start strictly follows the latest offer are needed.
+   * A finish retry must not acknowledge its *own* lost finish-result offer.
+   */
+  async acknowledgeToolInbox(call: VerifiedDynamicToolCall): Promise<string[]> {
+    invariant(sameTask(call.task, this.policy.task) && typeof call.callId === "string" &&
+      !!call.callId.trim() && Number.isSafeInteger(call.startedAt) && call.startedAt > 0,
+      "Invalid tool call receipt");
+    invariant(await this.trust.verifyToolCall(call), "Unverified subsequent tool call");
+    return this.perform((state, actor) => {
+      invariant(actor.id === call.recipientId && !!actor.sessionId, "Tool call recipient mismatch");
+      const acknowledged: string[] = [];
+      for (const msg of state.messages) {
+        if (msg.to !== actor.id || msg.state !== "tool_offered" || !msg.toolOffer) continue;
+        if (msg.toolOffer.offeredAt >= call.startedAt || (call.byFinish && msg.toolOffer.offeredOnFinish)) continue;
+        msg.state = "acked";
+        acknowledged.push(msg.id);
+      }
+      return acknowledged;
+    });
   }
 
   /** Commit the uncertain dispatch fence before touching ChatGPT/Codex. */
