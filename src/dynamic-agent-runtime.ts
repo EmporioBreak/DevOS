@@ -78,7 +78,31 @@ export interface DynamicSpawnLease {
 export interface DynamicSpawnNoStartProof extends DynamicSpawnLease {
   evidenceId: string;
 }
+export interface DynamicWakeCommand {
+  id: string;
+  taskKey: string;
+  recipientId: string;
+  conversationId: string;
+  wakeKey: string;
+  messageIds: string[];
+  state: "queued" | "claimed" | "delivered" | "alive";
+  createdAt: number;
+  claimedAt?: number;
+  deliveredAt?: number;
+  providerMessageId?: string;
+}
+export interface DynamicWakeLease {
+  task: TaskRef;
+  commandId: string;
+  recipientId: string;
+  conversationId: string;
+  wakeKey: string;
+}
+export interface DynamicWakeReceipt extends DynamicWakeLease {
+  providerMessageId: string;
+}
 export interface DynamicSnapshot {
+  wakeCommands?: DynamicWakeCommand[];
   pendingSpawns?: PendingDynamicSpawn[];
   version: 2;
   task: TaskRef;
@@ -171,6 +195,7 @@ function validateSnapshot(state: DynamicSnapshot): DynamicSnapshot {
   invariant(Number.isSafeInteger(state.generation) && state.generation >= 0, "Invalid dynamic generation");
   invariant(Array.isArray(state.agents) && Array.isArray(state.messages), "Invalid dynamic collections");
   invariant(state.pendingSpawns === undefined || Array.isArray(state.pendingSpawns), "Invalid spawn ledger");
+  invariant(state.wakeCommands === undefined || Array.isArray(state.wakeCommands), "Invalid wake ledger");
   invariant(typeof state.finalReviewRequested === "boolean", "Invalid review state");
   invariant(state.ownerDecision === undefined || state.ownerDecision === "approved" || state.ownerDecision === "changes_requested", "Invalid owner decision");
   const ids = new Set<string>();
@@ -228,6 +253,31 @@ function validateSnapshot(state: DynamicSnapshot): DynamicSnapshot {
     invariant(!dedupe.has(key), "Duplicate idempotency identity");
     msgIds.add(msg.id); dedupe.add(key);
   }
+  const wakeIds = new Set<string>(), wakeKeys = new Set<string>();
+  for (const command of state.wakeCommands ?? []) {
+    invariant(typeof command.id === "string" && !wakeIds.has(command.id), "Duplicate wake command");
+    invariant(command.taskKey === taskKey(state.task) && ids.has(command.recipientId) &&
+      command.recipientId !== "main_agent", "Invalid wake recipient");
+    const recipient = state.agents.find(a => a.id === command.recipientId)!;
+    invariant(recipient.sessionId === command.conversationId, "Wake lost exact saved conversation");
+    invariant(SHA256.test(command.wakeKey) && !wakeKeys.has(command.wakeKey), "Duplicate wake identity");
+    invariant(["queued","claimed","delivered","alive"].includes(command.state), "Invalid wake state");
+    invariant(Number.isSafeInteger(command.createdAt) && command.createdAt > 0, "Invalid wake timestamp");
+    invariant(Array.isArray(command.messageIds) && command.messageIds.length > 0 &&
+      new Set(command.messageIds).size === command.messageIds.length &&
+      command.messageIds.every(id => state.messages.some(m => m.id === id && m.to === command.recipientId)),
+      "Wake refers to missing/foreign messages");
+    invariant(command.wakeKey === createHash("sha256").update(command.messageIds.join("\0")).digest("hex"),
+      "Wake message identity changed");
+    invariant(command.state === "queued" ||
+      (Number.isSafeInteger(command.claimedAt) && command.claimedAt! > 0), "Wake claim not durable");
+    invariant(!["delivered","alive"].includes(command.state) ||
+      (!!command.providerMessageId && Number.isSafeInteger(command.deliveredAt) && command.deliveredAt! > 0),
+      "Wake provider acceptance not durable");
+    if (command.state !== "alive") invariant(recipient.status === "waking" ||
+      recipient.status === "blocked", "Unresolved wake recipient not waking");
+    wakeIds.add(command.id); wakeKeys.add(command.wakeKey);
+  }
   return state;
 }
 export interface VerifiedDynamicToolCall {
@@ -267,6 +317,8 @@ export interface DynamicTrustBoundary {
   /** Independent code/QA/security evidence verified by host, not by worker's prompt. */
   verifyIndependentReview?(input: { task: TaskRef; requesterId: string;
     sessionFingerprint: string }): Promise<boolean>;
+  verifyWakeLease?(lease: DynamicWakeLease): Promise<boolean>;
+  verifyWakeReceipt?(receipt: DynamicWakeReceipt): Promise<boolean>;
   verifyProviderReceipt(receipt: DynamicDeliveryReceipt): Promise<boolean>;
   verifyNoSubmit(proof: DynamicNoSubmitProof): Promise<boolean>;
 }
@@ -287,7 +339,7 @@ export class DynamicAgentBroker {
         version: 2, task: this.policy.task, policyHash: policyHash(this.policy), generation: 0,
         agents: [{ id: "main_agent", role: "main_agent", executor: "main_agent", manifestSha256: null,
           sessionFingerprint: caller.sessionFingerprint, status: "idle" }],
-        messages: [], pendingSpawns: [], finalReviewRequested: false,
+        messages: [], pendingSpawns: [], wakeCommands: [], finalReviewRequested: false,
       };
       return { state, result: state };
     });
