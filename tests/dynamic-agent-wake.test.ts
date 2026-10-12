@@ -189,3 +189,22 @@ test("CoS repeated wake cycles in same conversation never reuse an earlier comma
   assert.equal((await f.store.load())!.wakeCommands?.[0]?.state,"alive");
   assert.equal((await f.store.load())!.wakeCommands?.[1]?.state,"delivered");
 });
+
+test("neither model caller nor generic host executor can bypass accepted wake command",async t=>{
+  const f=await fixture();t.after(f.close);
+  const msg=await f.broker.send({to:"qa1",kind:"work",body:"Wake only via command",
+    idempotencyKey:"wake-no-bypass-001"});
+  let ordinarySends=0;
+  const generic=new DynamicAgentDispatcher(f.broker,f.store,{
+    send:async()=>{ordinarySends++;return{providerMessageId:"should-never-send"};}
+  });
+  await assert.rejects(generic.dispatch({task,recipientId:"qa1",messageId:msg.id}),
+    /Dispatch requires exact saved recipient session and message/);
+  await assert.rejects(f.broker.claimForTransport({task,recipientId:"qa1",messageId:msg.id}),
+    /Stopped worker requires exact wake/);
+  f.as("qa1");
+  await assert.rejects(f.broker.claimForDelivery(msg.id),/Stopped worker requires exact wake/);
+  assert.equal(ordinarySends,0);
+  assert.equal((await f.store.load())!.wakeCommands?.[0]?.state,"queued");
+  assert.equal((await f.store.load())!.messages.find(m=>m.id===msg.id)?.state,"queued");
+});
