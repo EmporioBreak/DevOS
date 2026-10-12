@@ -294,6 +294,9 @@ test("CoS worker finish sleeps exact conversation; same-key report is idempotent
   assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa")?.status,"waking");
   await assert.rejects(f.broker.send({to:"qa",kind:"work",body:"new job",idempotencyKey:"recheck-qa-02"}),/Recipient cannot accept another wake/);
   const lease={task,recipientId:"qa",messageId:work.id};
+  const beforeClaim=await f.store.load();
+  assert.deepEqual(beforeClaim!.messages.filter(m=>m.to==="qa").map(m=>[m.id,m.state]),
+    [[assigned.id,"acked"],[work.id,"queued"]]);
   await f.broker.claimForTransport(lease);
   await f.broker.confirmTransportDelivery(lease,{task,messageId:work.id,providerMessageId:"provider-revival"});
   f.as("qa");await f.broker.acknowledge(work.id);
