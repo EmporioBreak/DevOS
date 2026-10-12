@@ -112,3 +112,22 @@ test("first authenticated v2 tool call after confirmed wake makes QA active befo
   assert.equal(after!.agents.find(a=>a.id==="qa1")!.grantEpoch,2);
   assert.equal(await f.registry.resolveCaller(qaFp,policy),null);
 });
+
+test("verified later MCP action ACKs native provider message and unblocks next task without resend",async t=>{
+  const f=await fixture();t.after(f.close);assert.equal(await f.bind(),true);
+  f.asOwner();
+  const first=await f.broker.send({to:"qa1",kind:"work",
+    body:"Check the first item",idempotencyKey:"inbox-ack-first"});
+  const lease={task,recipientId:"qa1",messageId:first.id};
+  await f.broker.claimForTransport(lease);
+  await f.broker.confirmTransportDelivery(lease,{task,messageId:first.id,
+    providerMessageId:"provider-delivered-001"});
+  assert.equal((await f.store.load())!.messages.find(m=>m.id===first.id)!.state,"sent");
+  await new Promise(resolve=>setTimeout(resolve,5));
+  await f.call(qaFp,()=>false,{action:"status"});
+  assert.equal((await f.store.load())!.messages.find(m=>m.id===first.id)!.state,"acked");
+  const next=await f.broker.send({to:"qa1",kind:"work",
+    body:"Check second item",idempotencyKey:"inbox-ack-second"});
+  await f.broker.claimForTransport({task,recipientId:"qa1",messageId:next.id});
+  assert.equal((await f.store.load())!.messages.find(m=>m.id===next.id)!.state,"dispatch_uncertain");
+});
