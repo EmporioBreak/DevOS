@@ -66,6 +66,13 @@ export class DynamicFirstBrowserE2E {
       verifyWakeReceipt:async receipt=>host.verifyWakeReceipt(receipt),
       verifyToolCall:async()=>false,verifyNoSubmit:async()=>false,
     });
+    host.setWakeAcceptance(async receipt=>{
+      await this.broker.confirmWake({
+        task:receipt.task,commandId:receipt.commandId,
+        recipientId:receipt.recipientId,conversationId:receipt.conversationId,
+        wakeKey:receipt.wakeKey
+      },receipt);
+    });
     const unsupportedCodex:Executor={kind:"codex",run:async()=>{
       throw new Error("First E2E is browser-only: original signed Codex adapter required");
     }};
