@@ -271,3 +271,50 @@ test("CoS finish-tool offer is not implicitly ACKed by a lost finish retry", asy
   assert.equal((await f.store.load())!.messages[0]!.state,"tool_offered");
   assert.deepEqual(await f.broker.acknowledgeToolInbox({...call,callId:"ordinary-call",byFinish:false}),[msg.id]);
 });
+
+test("CoS worker finish sleeps exact conversation; same-key report is idempotent and peer wake reserves slot", async t => {
+  const f=await fixture();t.after(f.close);await f.broker.initialize();
+  await f.broker.admit({id:"qa",role:"qa",sessionFingerprint:"qa-proof"});
+  const assigned=await f.broker.send({to:"qa",kind:"work",body:"Review code",idempotencyKey:"assigned-qa-001"});
+  f.as("qa");await f.broker.bindSession("persisted-original-qa-chat");
+  await f.broker.claimForDelivery(assigned.id);
+  f.allowReceipt();
+  await f.broker.confirmDelivery({task,messageId:assigned.id,providerMessageId:"provider-original-turn"});
+  const report=await f.broker.finishWork({result:"Found defect",idempotencyKey:"report-qa-001"});
+  assert.equal(report.to,"main_agent");
+  assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa")?.status,"sleeping");
+  const repeat=await f.broker.finishWork({result:"Found defect",idempotencyKey:"report-qa-001"});
+  assert.equal(repeat.id,report.id);
+  await assert.rejects(f.broker.send({to:"main_agent",kind:"work",body:"illegal",idempotencyKey:"sleep-send-01"}),/Sender is not executing work/);
+  f.as("main_agent","owner-proof");
+  const work=await f.broker.send({to:"qa",kind:"work",body:"Recheck fix",idempotencyKey:"recheck-qa-01"});
+  const duplicate=await f.broker.send({to:"qa",kind:"work",body:"Recheck fix",idempotencyKey:"recheck-qa-01"});
+  assert.equal(duplicate.id,work.id);
+  assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa")?.status,"waking");
+  await assert.rejects(f.broker.send({to:"qa",kind:"work",body:"new job",idempotencyKey:"recheck-qa-02"}),/Recipient cannot accept another wake/);
+  const lease={task,recipientId:"qa",messageId:work.id};
+  await f.broker.claimForTransport(lease);
+  await f.broker.confirmTransportDelivery(lease,{task,messageId:work.id,providerMessageId:"provider-revival"});
+  f.as("qa");await f.broker.acknowledge(work.id);
+  const state=await f.store.load();
+  assert.equal(state!.agents.find(a=>a.id==="qa")?.status,"busy");
+  assert.equal(state!.agents.find(a=>a.id==="qa")?.sessionId,"persisted-original-qa-chat");
+});
+
+test("CoS wake slot quota atomically rejects a second sleeping worker",async t=>{
+  const limited: typeof policy={...policy,maxActiveWorkers:1};
+  const f=await fixture(limited);t.after(f.close);await f.broker.initialize();
+  await f.broker.admit({id:"qa",role:"qa",sessionFingerprint:"qa-proof"});
+  await f.broker.admit({id:"sec",role:"security",sessionFingerprint:"sec-proof"});
+  f.as("qa");await f.broker.bindSession("original-qa");
+  await f.broker.finishWork({result:"QA done",idempotencyKey:"qa-slot-done-01"});
+  f.as("sec");await f.broker.bindSession("original-sec");
+  await f.broker.finishWork({result:"Security done",idempotencyKey:"sec-slot-done-1"});
+  f.as("main_agent","owner-proof");
+  const msg=await f.broker.send({to:"qa",kind:"work",body:"review again",idempotencyKey:"qa-revive-001"});
+  await assert.rejects(f.broker.send({to:"sec",kind:"work",body:"audit again",idempotencyKey:"sec-revive-01"}),/NO_FREE_SLOT/);
+  const state=await f.store.load();
+  assert.equal(state!.agents.find(a=>a.id==="qa")?.status,"waking");
+  assert.equal(state!.agents.find(a=>a.id==="sec")?.status,"sleeping");
+  assert.equal(state!.messages.filter(m=>m.to==="qa" && m.id===msg.id).length,1);
+});
