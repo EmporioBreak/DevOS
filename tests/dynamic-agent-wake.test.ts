@@ -163,3 +163,29 @@ test("CoS wake scheduler isolates uncertain QA wake while second sleeping worker
   assert.deepEqual(await scheduler.drainWakes(wake),{sent:[],blocked:[]});
   assert.equal(calls,2);
 });
+
+test("CoS repeated wake cycles in same conversation never reuse an earlier command lease",async t=>{
+  const f=await fixture();t.after(f.close);f.proveReceipt();f.proveCall();
+  await f.broker.send({to:"qa1",kind:"work",body:"First wake",idempotencyKey:"wake-cycle-first"});
+  const one=leaseOf((await f.store.load())!);
+  await f.broker.claimWake(one);
+  await f.broker.confirmWake(one,{...one,providerMessageId:"provider-first-cycle"});
+  const firstAt=(await f.store.load())!.wakeCommands![0]!.deliveredAt!;
+  f.as("qa1");
+  assert.equal(await f.broker.noteAgentAlive({task,recipientId:"qa1",callId:"first-cycle-tool",startedAt:firstAt+1}),true);
+  await f.broker.finishWork({result:"First wake complete",idempotencyKey:"wake-cycle-finish"});
+  f.as("main_agent");
+  await f.broker.send({to:"qa1",kind:"work",body:"Second wake",idempotencyKey:"wake-cycle-second"});
+  const commands=(await f.store.load())!.wakeCommands!;
+  assert.equal(commands.length,2);
+  const two={task,commandId:commands[1]!.id,recipientId:"qa1",
+    conversationId:commands[1]!.conversationId,wakeKey:commands[1]!.wakeKey};
+  assert.notEqual(two.commandId,one.commandId);
+  assert.notEqual(two.wakeKey,one.wakeKey);
+  assert.equal(two.conversationId,one.conversationId);
+  await assert.rejects(f.broker.claimWake(one),/Wake recipient is not in waking state|Wake may already have reached provider/);
+  await f.broker.claimWake(two);
+  await f.broker.confirmWake(two,{...two,providerMessageId:"provider-second-cycle"});
+  assert.equal((await f.store.load())!.wakeCommands?.[0]?.state,"alive");
+  assert.equal((await f.store.load())!.wakeCommands?.[1]?.state,"delivered");
+});
