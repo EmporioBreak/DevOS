@@ -1,0 +1,48 @@
+# COS source-to-DevOS port matrix (Issue #246)
+
+Upstream **Chat on Steroids**: [totec448-spec/chat-on-steroids at f64ee51bf33a0ef194b7b0849d52c4aef9ac07d9](https://github.com/totec448-spec/chat-on-steroids/tree/f64ee51bf33a0ef194b7b0849d52c4aef9ac07d9) (2026-10-12 source pin; MIT license). DevOS branch: `architecture/dynamic-agent-runtime-246`, draft PR #247.
+
+## Interpretation of the requested migration
+
+This is a **source-level port**, not a greenfield implementation inspired by COS terminology. COS and DevOS are both TypeScript, so the target conversion is from the Electron/Chrome extension and its bridge/provider surfaces into DevOS's Node.js/Camoufox/MCP/local Codex integration. All material source state transitions, failure models, tests and invariants should be traced to their original implementations. Preserve differences only when required by DevOS's task-scoped GitHub/Spec Kit/skills/security boundaries.
+
+**Do not claim completion from this document or a passing unit suite:** the table distinguishes algorithms already adapted from parts requiring code/host integration.
+
+## Implementation mapping
+
+| COS authoritative source | What it actually does | DevOS adaptation | Current state |
+| --- | --- | --- | --- |
+| `src/main/agents.ts` `spawn`, `stageSpawn`, `settleSpawnStage` | Proves caller, stages owner/worker topology, requires durable acceptance, creates browser workers afterward; retries do not duplicate worker chats | `DynamicAgentBroker.admit`, `DynamicTrustBoundary.verifyNewAgentBinding`; move toward staged *reservation before worker creation*, verified bind after actual provider acceptance | **Partial**: validated existing-agent admission, **not** complete staged spawn |
+| `src/main/agents.ts` `stageMessagesActive`, `stageMessages`, `sendMessages` | Validates all recipients, quotas, grants and wake reservations before all-or-nothing durable message acceptance; staged messages invisible until commit | `sendBatch` checks the entire batch and per-recipient quotas within one cloned per-Issue store transaction; publication happens after the transactional durable rename | **Ported algorithm**, needs adverse-storage and concurrency fault testing |
+| `src/main/agents.ts` `persistCriticalSwarmNow`, `snapshotSwarmIncludingUnpublished` | Writes the exact staged revision before making externally visible, with rollback compensation and persistent generation fence | `DynamicAgentStore.transact` clone + single-writer lock + fsync + atomic rename; no early tool-result publication | **Partial**: crash lock reclamation / multi-process fencing absent |
+| `src/main/agents.ts` `offerAgentMessages`, `acknowledgeAgentOffers` | Reoffers unread messages through ordinary MCP results (at-least-once), distinguishes browser-revival offers, retires only when a later authenticated call starts strictly after the offer; finish retry guard | `offerToolInbox`, `acknowledgeToolInbox`, `verifyToolCall`; `tool_offered` state separate from browser-send custody | **Ported core protocol**, requires true gateway callback wiring |
+| `src/main/agents.ts` `beginRevival`, `planRevivalText`, `requestWorkerRevivals`, `noteWorkerRevived`, `noteAgentAlive` | Reserves working slot, targets exact existing saved conversation, waits for actual browser proof, avoids retyping offered work; page visibility does not count as generation | Task-scoped sleeping/waking transport events and leases; no new conversation on reuse; use existing Camoufox task window/turn authority | **Not yet ported** |
+| `src/main/agents.ts` `stageFinish`, `finishAgent`, `finishWorkerConversation` | Idempotent finish, durable report to prime, frees scarce worker slot but retains chat/history; terminal only at context ceiling | Separate work-unit finish from task acceptance, peer-directed report and idle/sleep state | **Not yet ported** |
+| `src/main/agents.ts` `restoreSwarm`, dormant runs, former run IDs, retired worker fences | Reconstructs known authorities without guessing identity; prevents stale conversations reacquiring rights; prunes history safely | Validate v2 snapshot and retain task owner fences, reject reused/foreign session, maintain legacy v1 compatibility | **Partial**: restored v2 messages, no full dormant/tombstone logic |
+| `src/main/mcp/tools-core.ts` `registerAgentsTool`, `acceptAgentMutation`, `callerNow` | Parses action, resolves caller from exact MCP evidence, fsyncs staged change, checks admission again and then publishes; no prompt-supplied impersonation | Native `DevosToolRegistry` v2 agent surface, verified caller/owner policy and source/target recheck under one host-owned lease | **Not yet wired** |
+| `src/main/mcp/kernel.ts` and `src/main/session/correlation.ts` | Correlates request origin, conversation/session, subsequent tool calls and inbox delivery | Existing DevOS MCP identity/session grants plus `verifyToolCall` and transport lease; fail closed on unknown caller | **API contract only** |
+| `src/main/bridge.ts` command lease + revival `/commands/redeem`/`ack` | Per-command state, exact page/turn/caller provenance, claim/redeem/ACK and crash-safe revival with persisted receipts | Integrate task window and browser command broker from #239/#226 without duplicating browser command owner; bound lease + provider receipt | **Not yet integrated** |
+| `src/main/session/input.ts` `claimBrowserInput`, `acknowledgeBrowserInput`, `transition` | Serial before-send custody, provider message receipt vs ambiguous send, neutralized retry when may-have-submitted | `DynamicAgentDispatcher`, `DynamicAgentBroker.claimForTransport`, `confirmTransportDelivery`, `releaseTransportNoSubmit` | **Partial protocol port**, actual user-message receipt callback still missing |
+| `src/main/session/store.ts` and `src/main/session/recorder.ts` | Canonical durable transcript and exact turn/report evidence across restarts | Keep DevOS task/turn saved state and signed MCP reports; do not invent transcript facts | **Not yet integrated** |
+| `test/agents.test.ts` (5k+ lines) and CoS `test/mcp.test.ts` | Regression cases for provenance, multi-prime isolation, staged writes, wake, finish, ownership expiry and browser interactions | `tests/dynamic-agent-*.test.ts` plus required true multi-process/real browser test harness | **Partial parity tests**, neither full-suite nor browser E2E equivalent |
+
+## Intentional deviations
+
+- COS's `assertRoute` restricts workers to messages addressed to the prime and only the prime may `spawn`; **replace its star topology with authenticated direct peer-to-peer routing and policy-limited specialist admission**.
+- COS uses broad app-specific browser/session roots; DevOS must bind every operation to repo + Issue + PR + signed task policy + exact agent identity and immutable saved browser/Codex session, not a friendly `worker-1` label.
+- COS does not perform DevOS Spec Kit, GitHub PR, signed independent-review and Main Agent final-acceptance policy; these remain DevOS-specific.
+- Do not copy COS's Electron/extension UI or start an alternate browser profile. Host adapters must reuse existing project Camoufox process and original provider send authority.
+- CoS-inspired code must retain MIT attribution and the reviewed source pin; **a new source revision is a separate reviewed change**, not an automatic unpinned upgrade.
+
+## Critical acceptance left before replacement
+
+1. Two-phase spawn/reservation and host-authoritative first session binding (fail-closed if browser bootstrap ambiguous).
+2. Slot-based sleeping-worker revival with durable command lease and independently observed native Send, including cancellation/late ACK and context-ceiling terminal worker fencing.
+3. Finish/reports, independent reviewer and Main Agent handoff in the same Issue/PR without fixed `worker.on` graph.
+4. Full crash/power-loss/lock stale-owner recovery, provider message-id correlation, bounded mutation costs and message retention.
+5. Real DevOS MCP/Camoufox/Codex integration, signed grant tests, preservation of all v1 in-flight saved tasks.
+6. Actual `npm run build`, complete affected/full test suite, independent code/security review and headed signed-in two-Issue provider E2E. Only then a separately authorized Production cutover.
+
+## Current implementation and evidence
+
+See `docs/dynamic-agent-runtime.md` and the tracked Draft PR #247. Existing legacy `src/orchestrator.ts`, `src/workflow.ts`, `src/cli.ts` are unchanged on this branch. New algorithms have only isolated test coverage unless separate CI/host result is linked; **do not convert unit-test claims into provider E2E evidence**.
