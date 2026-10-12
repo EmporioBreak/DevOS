@@ -21,6 +21,7 @@ async function fixture(config: DynamicAgentPolicy = policy) {
   let allowReceipt = false;
   let allowRecovery = false;
   let allowTool = false;
+  let allowIndependentReview = true;
   let allowTransport = true;
   const store = new DynamicAgentStore(root, config.task);
   const trust = {
@@ -29,6 +30,7 @@ async function fixture(config: DynamicAgentPolicy = policy) {
     verifyNewAgentBinding: async () => true,
     verifyTransportLease: async () => allowTransport,
     verifyToolCall: async () => allowTool,
+    verifyIndependentReview: async () => allowIndependentReview,
     verifyProviderReceipt: async (_receipt: DynamicDeliveryReceipt) => allowReceipt,
     verifyNoSubmit: async (_proof: DynamicNoSubmitProof) => allowRecovery,
   };
@@ -36,7 +38,7 @@ async function fixture(config: DynamicAgentPolicy = policy) {
   return { root, store, broker,
     as: (agentId: string, sessionFingerprint = agentId + "-proof") => { identity = { task: config.task, agentId, sessionFingerprint }; },
     crossTask: () => { identity = { task: { repo: "Evil/Other", issue: 1 }, agentId: "main_agent", sessionFingerprint: "owner-proof" }; },
-    allowReceipt: () => { allowReceipt = true; }, allowRecovery: () => { allowRecovery = true; }, allowTool: () => { allowTool = true; }, denyTransport: () => {allowTransport = false;},
+    allowReceipt: () => { allowReceipt = true; }, allowRecovery: () => { allowRecovery = true; }, allowTool: () => { allowTool = true; }, denyReview: () => { allowIndependentReview = false; }, denyTransport: () => {allowTransport = false;},
     close: async () => { await rm(root, { recursive: true, force: true }); },
   };
 }
@@ -445,4 +447,19 @@ test("CoS exact-chat ownership rejects duplicate worker fingerprints and shared 
   await f.broker.bindSession("https://chatgpt.com/c/other-chat");
   assert.equal((await f.store.load())!.agents.find(a=>a.id==="sec")?.sessionId,
     "https://chatgpt.com/c/other-chat");
+});
+
+test("independent final review is unavailable without trusted external proof even if worker claims tests passed", async t=>{
+  const f=await fixture();t.after(f.close);
+  await f.broker.initialize();await f.broker.admit({id:"qa",role:"qa",sessionFingerprint:"qa-proof"});
+  f.as("qa");
+  const msg=await f.broker.send({to:"main_agent",kind:"evidence",body:"I approved my own changes",
+    idempotencyKey:"self-approval-001"});
+  f.as("main_agent","owner-proof");
+  await f.broker.claimForDelivery(msg.id);f.allowReceipt();
+  await f.broker.confirmDelivery({task,messageId:msg.id,providerMessageId:"owner-accepted-message"});
+  await f.broker.acknowledge(msg.id);
+  f.as("qa");f.denyReview();
+  await assert.rejects(f.broker.requestFinalReview(),/Missing host-verified independent review evidence/);
+  assert.equal((await f.store.load())!.finalReviewRequested,false);
 });
