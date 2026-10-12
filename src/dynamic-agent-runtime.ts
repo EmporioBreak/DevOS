@@ -948,8 +948,8 @@ export class DynamicAgentBroker {
           "Previous finish report no longer has a matching recipient");
         return previous;
       }
-      invariant(actor.status !== "blocked" && actor.status !== "waking" &&
-        actor.status !== "terminal", "Worker with unresolved wake cannot finish work");
+      invariant(actor.status !== "blocked" && actor.status !== "waking",
+        "Worker with unresolved wake cannot finish work");
       const lastRequest = [...state.messages].reverse().find(m =>
         m.to === actor.id && m.kind === "work");
       const recipientId = input.reportTo ?? lastRequest?.from ?? "main_agent";
