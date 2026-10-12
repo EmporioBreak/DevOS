@@ -24,6 +24,8 @@ import { OwnerTaskApprovalStore, OWNER_TASK_APPROVAL_TOOL, OWNER_TASK_APPROVAL_S
 import { ChatWorkerProbeRegistry, CHAT_WORKER_PROBE_TOOL } from "./chat-worker-probe.js";
 import { ChatWorkerGrantRegistry } from "./chat-worker-grants.js";
 import { DEVOS_DYNAMIC_AGENTS_TOOL, callDynamicAgentsMcp } from "./dynamic-agent-mcp.js";
+import { DynamicAgentGrantRegistry } from "./dynamic-agent-grants.js";
+import { readSealedDynamicAgentPolicy } from "./dynamic-agent-policy.js";
 import { recordObservedHostOutage } from "./host-fallback-evidence.js";
 import { watchChatAccessRevocation } from "./chat-authorization-watch.js";
 import { appendDesktopCommanderDiagnostic } from "./connector-diagnostics.js";
@@ -413,6 +415,20 @@ export async function startGateway(options: {
   const workerGrants = new ChatWorkerGrantRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret);
   // V2 grants never authorize Desktop Commander; disabled until explicitly enabled.
   const dynamicAgentsV2Enabled = process.env.DEVOS_DYNAMIC_AGENTS_V2 === "enabled";
+  const dynamicV2Grants = dynamicAgentsV2Enabled
+    ? new DynamicAgentGrantRegistry(options.chatAccessRoot ?? options.root, options.ownerSecret)
+    : undefined;
+  const isRestrictedDynamicWorker = async (fp: string | undefined): Promise<boolean> => {
+    if (!fp || !dynamicV2Grants) return false;
+    try {
+      const task = dynamicV2Grants.candidateTask(fp);
+      if (!task) return false;
+      const policy = await readSealedDynamicAgentPolicy({
+        root: options.chatAccessRoot ?? options.root, task, ownerSecret: options.ownerSecret
+      });
+      return !!await dynamicV2Grants.resolveCaller(fp, policy);
+    } catch { return false; }
+  };
   const callOrigin = new AsyncLocalStorage<{ clientId: string; sessionHeader: unknown }>();
   let desktop: DesktopCommanderIntegration;
   desktop = new DesktopCommanderIntegration({
@@ -718,6 +734,14 @@ export async function startGateway(options: {
                 });
               }
               if (request.params?.name === CHAT_NOOP_TOOL.name) {
+                if (!authorized && await isRestrictedDynamicWorker(fingerprint)) {
+                  return {
+                    content: [{ type:"text", text:
+                      "Dynamic v2 worker is authorized for devos_agents_v2 ONLY. Desktop Commander and other Mac tools remain denied." }],
+                    structuredContent: { status:"dynamic_worker_limited",
+                      approved:false, coordination_approved:true, operation_executed:false }
+                  };
+                }
                 // Keep this request's signed pending-worker classification even
                 // if the local verifier consumes the nonce before responding.
                 // This session's HMAC-verified probe only permits a bounded wait.
@@ -800,6 +824,12 @@ export async function startGateway(options: {
                   !chatAccess.isApproved(fingerprint))
                 throw new Error("Skill preferences require an owner-approved chat");
               if (!authorized) {
+                if (await isRestrictedDynamicWorker(fingerprint)) {
+                  return {content:[{type:"text",text:
+                    "Dynamic v2 grant is restricted to devos_agents_v2; no owner password or Mac capability is available."}],
+                    structuredContent:{status:"dynamic_worker_limited",
+                      operation_executed:false,coordination_approved:true}};
+                }
                 // Ordinary tools never own a widget. The assistant invokes
                 // devos_authorize_chat as the next tool call in this user turn.
                 // No file, shell or task operation is executed while denied.
