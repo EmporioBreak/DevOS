@@ -300,6 +300,11 @@ test("CoS worker finish sleeps exact conversation; same-key report is idempotent
   await f.broker.claimForTransport(lease);
   await f.broker.confirmTransportDelivery(lease,{task,messageId:work.id,providerMessageId:"provider-revival"});
   f.as("qa");await f.broker.acknowledge(work.id);
+  assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa")?.status,"waking");
+  const acceptedAt=(await f.store.load())!.messages.find(m=>m.id===work.id)!.providerDeliveredAt!;
+  f.allowTool();
+  assert.equal(await f.broker.noteAgentAlive({task,recipientId:"qa",callId:"old-turn",startedAt:acceptedAt}),false);
+  assert.equal(await f.broker.noteAgentAlive({task,recipientId:"qa",callId:"accepted-work-call",startedAt:acceptedAt+1}),true);
   const state=await f.store.load();
   assert.equal(state!.agents.find(a=>a.id==="qa")?.status,"busy");
   assert.equal(state!.agents.find(a=>a.id==="qa")?.sessionId,"persisted-original-qa-chat");
@@ -402,4 +407,26 @@ test("CoS host-proved pre-bootstrap release never silently retries unknown spawn
   assert.equal((await broker.status()).agents.length,1);
   const claim=await broker.claimSpawnBootstrap(lease);
   assert.equal(claim.state,"bootstrap_uncertain");
+});
+
+test("CoS page/send ACK cannot activate sleeping worker without authenticated later tool call", async t=>{
+  const f=await fixture();t.after(f.close);await f.broker.initialize();
+  await f.broker.admit({id:"qa",role:"qa",sessionFingerprint:"qa-proof"});
+  f.as("qa");await f.broker.bindSession("persisted-chat-id");
+  await f.broker.finishWork({result:"Round done",idempotencyKey:"sleep-for-wake-1"});
+  f.as("main_agent","owner-proof");
+  const work=await f.broker.send({to:"qa",kind:"work",body:"Run second review",idempotencyKey:"wake-for-liveness-1"});
+  const lease={task,recipientId:"qa",messageId:work.id};
+  await f.broker.claimForTransport(lease); f.allowReceipt();
+  await f.broker.confirmTransportDelivery(lease,{task,messageId:work.id,providerMessageId:"real-provider-id"});
+  const time=(await f.store.load())!.messages.find(x=>x.id===work.id)!.providerDeliveredAt!;
+  assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa")!.status,"waking");
+  f.as("qa");
+  await assert.rejects(f.broker.noteAgentAlive({task,recipientId:"qa",callId:"unverified",startedAt:time+1}),
+    /Unverified worker liveness call/);
+  f.allowTool();
+  assert.equal(await f.broker.noteAgentAlive({task,recipientId:"qa",callId:"stale-turn",startedAt:time}),false);
+  assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa")!.status,"waking");
+  assert.equal(await f.broker.noteAgentAlive({task,recipientId:"qa",callId:"real-new-turn",startedAt:time+1}),true);
+  assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa")!.status,"busy");
 });
