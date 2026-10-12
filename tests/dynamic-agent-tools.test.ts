@@ -37,11 +37,11 @@ test("CoS tool protocol permits dynamic peer spawn, direct messages and structur
   assert.deepEqual(r.structuredContent.workers,[{id:"sec1",role:"security",state:"reserved"}]);
   assert.equal((await f.store.load())!.agents.some(a=>a.id==="sec1"),false);
   f.as("main_agent");
-  await f.broker.admit({id:"sec1",role:"security",sessionFingerprint:"sec-proof"});
+  await f.broker.admit({id:"sec2",role:"security",sessionFingerprint:"sec-proof"});
   f.as("qa1");
-  const result=await f.tools.call({action:"message",messages:[{to:"sec1",kind:"question",
+  const result=await f.tools.call({action:"message",messages:[{to:"sec2",kind:"question",
     body:"Audit this API",idempotency_key:"qa-security-001"}]});
-  assert.equal((result.structuredContent.queued as Array<{to:string}>)[0]?.to,"sec1");
+  assert.equal((result.structuredContent.queued as Array<{to:string}>)[0]?.to,"sec2");
   const status=await f.tools.call({action:"status"});
   const agents=status.structuredContent.agents as Array<Record<string,unknown>>;
   assert.equal(agents.some(a=>"sessionFingerprint" in a),false);
