@@ -16,7 +16,7 @@ export const DEVOS_DYNAMIC_AGENTS_TOOL={
   description:"Dynamic task-scoped agents: spawn, message, status, finish and review handoff. Requires a separately sealed v2 policy and exact authenticated worker session. Does not authorize Desktop Commander.",
   inputSchema:{type:"object",properties:{
     action:{type:"string",enum:["spawn","message","status","finish","request_final_review"]},
-    repo:{type:"string"},issue:{type:"integer",minimum:1},
+    repo:{type:"string"},issue:{type:"integer",minimum:1},pr:{type:"integer",minimum:1},
     workers:{type:"array",maxItems:8,items:{type:"object"}},
     messages:{type:"array",maxItems:16,items:{type:"object"}},
     result:{type:"string",maxLength:16000},
@@ -31,12 +31,14 @@ function requireCondition(value:unknown,text:string):asserts value {
   if(!value)throw new Error("DEVOS_AGENTS_V2: "+text);
 }
 function validatedTaskSelector(args:Record<string,unknown>):TaskRef {
-  const repo=args.repo,issue=args.issue;
+  const repo=args.repo,issue=args.issue,pr=args.pr;
   requireCondition(typeof repo==="string" &&
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) &&
     !repo.includes("..") && Number.isSafeInteger(issue) && (issue as number)>0,
     "Owner must select a valid Issue; model values never grant permissions");
-  return {repo,issue:issue as number};
+  requireCondition(pr===undefined||(Number.isSafeInteger(pr)&&(pr as number)>0),
+    "Invalid linked PR selector");
+  return {repo,issue:issue as number,...(pr===undefined?{}:{pr:pr as number})};
 }
 /**
  * Inputs 'ownerApproved' and 'fingerprint' must originate from ChatAccess
@@ -62,7 +64,7 @@ export async function callDynamicAgentsMcp(input:{
   if(owner){
     task=validatedTaskSelector(args);
   }else{
-    requireCondition(!("repo" in args)&&!("issue" in args),
+    requireCondition(!("repo" in args)&&!("issue" in args)&&!("pr" in args),
       "Worker cannot select another Issue");
     requireCondition(claimedTask,"No authenticated v2 worker grant for this session");
     task=claimedTask;
@@ -93,6 +95,6 @@ export async function callDynamicAgentsMcp(input:{
   };
   const broker=new DynamicAgentBroker(policy,new DynamicAgentStore(input.root,policy.task),trust);
   const filtered={...args};
-  delete filtered.repo;delete filtered.issue;
+  delete filtered.repo;delete filtered.issue;delete filtered.pr;
   return new DynamicAgentToolProtocol(broker,true).call(filtered);
 }
