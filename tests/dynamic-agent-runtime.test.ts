@@ -32,6 +32,8 @@ async function fixture(config: DynamicAgentPolicy = policy) {
     verifyToolCall: async () => allowTool,
     verifyIndependentReview: async () => allowIndependentReview,
     verifyProviderReceipt: async (_receipt: DynamicDeliveryReceipt) => allowReceipt,
+    verifyWakeLease: async () => allowTransport,
+    verifyWakeReceipt: async () => allowReceipt,
     verifyNoSubmit: async (_proof: DynamicNoSubmitProof) => allowRecovery,
   };
   const broker = new DynamicAgentBroker(config, store, trust);
@@ -295,12 +297,16 @@ test("CoS worker finish sleeps exact conversation; same-key report is idempotent
   assert.equal(duplicate.id,work.id);
   assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa")?.status,"waking");
   await assert.rejects(f.broker.send({to:"qa",kind:"work",body:"new job",idempotencyKey:"recheck-qa-02"}),/Recipient cannot accept another wake/);
-  const lease={task,recipientId:"qa",messageId:work.id};
+  const wake=(await f.store.load())!.wakeCommands![0]!;
+  const lease={task,recipientId:"qa",conversationId:wake.conversationId,
+    commandId:wake.id,wakeKey:wake.wakeKey};
   const beforeClaim=await f.store.load();
   assert.deepEqual(beforeClaim!.messages.filter(m=>m.to==="qa").map(m=>[m.id,m.state]),
     [[assigned.id,"acked"],[work.id,"queued"]]);
-  await f.broker.claimForTransport(lease);
-  await f.broker.confirmTransportDelivery(lease,{task,messageId:work.id,providerMessageId:"provider-revival"});
+  await assert.rejects(f.broker.claimForTransport({task,recipientId:"qa",messageId:work.id}),
+    /Wake-owned work/);
+  await f.broker.claimWake(lease);
+  await f.broker.confirmWake(lease,{...lease,providerMessageId:"provider-revival"});
   f.as("qa");await f.broker.acknowledge(work.id);
   assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa")?.status,"waking");
   const acceptedAt=(await f.store.load())!.messages.find(m=>m.id===work.id)!.providerDeliveredAt!;
@@ -418,9 +424,11 @@ test("CoS page/send ACK cannot activate sleeping worker without authenticated la
   await f.broker.finishWork({result:"Round done",idempotencyKey:"sleep-for-wake-1"});
   f.as("main_agent","owner-proof");
   const work=await f.broker.send({to:"qa",kind:"work",body:"Run second review",idempotencyKey:"wake-for-liveness-1"});
-  const lease={task,recipientId:"qa",messageId:work.id};
-  await f.broker.claimForTransport(lease); f.allowReceipt();
-  await f.broker.confirmTransportDelivery(lease,{task,messageId:work.id,providerMessageId:"real-provider-id"});
+  const wake=(await f.store.load())!.wakeCommands![0]!;
+  const lease={task,recipientId:"qa",conversationId:wake.conversationId,
+    commandId:wake.id,wakeKey:wake.wakeKey};
+  await f.broker.claimWake(lease); f.allowReceipt();
+  await f.broker.confirmWake(lease,{...lease,providerMessageId:"real-provider-id"});
   const time=(await f.store.load())!.messages.find(x=>x.id===work.id)!.providerDeliveredAt!;
   assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa")!.status,"waking");
   f.as("qa");
