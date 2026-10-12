@@ -18,7 +18,7 @@ async function fixture(){
   let actor:VerifiedDynamicCaller={task,agentId:"main_agent",sessionFingerprint:"owner"};
   const store=new DynamicAgentStore(root,task),broker=new DynamicAgentBroker(policy,store,{
     resolveCaller:async()=>actor,verifyPolicy:async()=>true,verifyNewAgentBinding:async()=>true,
-    verifyTransportLease:async()=>true,verifyProviderReceipt:async()=>true,verifyNoSubmit:async()=>false,
+    verifyTransportLease:async()=>true,verifyToolCall:async()=>true,verifyProviderReceipt:async()=>true,verifyNoSubmit:async()=>false,
   });
   await broker.initialize();
   async function add(id:string,role:string){actor={task,agentId:"main_agent",sessionFingerprint:"owner"};
