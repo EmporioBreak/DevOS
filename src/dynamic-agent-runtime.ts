@@ -697,6 +697,66 @@ export class DynamicAgentBroker {
     });
   }
 
+  /** CoS bridge: a claimed wake is permanently uncertain until provider proof. */
+  private async hostWake<T>(lease: DynamicWakeLease, fn: (command: DynamicWakeCommand,
+    state: DynamicSnapshot) => T): Promise<T> {
+    invariant(sameTask(lease.task, this.policy.task), "Cross-task wake denied");
+    invariant(await this.trust.verifyPolicy(this.policy) &&
+      await this.trust.verifyWakeLease?.(lease) === true, "Unverified wake lease");
+    return this.store.transact(existing => {
+      invariant(existing && existing.policyHash === policyHash(this.policy) &&
+        sameTask(existing.task, this.policy.task) && existing.ownerDecision !== "approved",
+        "Wake policy or task changed");
+      const command = existing.wakeCommands?.find(c => c.id === lease.commandId &&
+        c.recipientId === lease.recipientId && c.conversationId === lease.conversationId &&
+        c.wakeKey === lease.wakeKey);
+      invariant(command, "Wake command/exact chat identity mismatch");
+      invariant(existing.agents.find(a => a.id === lease.recipientId)?.status === "waking",
+        "Wake recipient is not in waking state");
+      const result = fn(command, existing);
+      existing.generation++;
+      return { state: existing, result };
+    });
+  }
+  async claimWake(lease: DynamicWakeLease): Promise<DynamicWakeCommand> {
+    return this.hostWake(lease, (command, state) => {
+      invariant(command.state === "queued", "Wake may already have reached provider; do not retry");
+      invariant(command.messageIds.every(id => state.messages.some(m => m.id === id && m.state === "queued")),
+        "Wake message set already handled");
+      command.state = "claimed";
+      command.claimedAt = Date.now();
+      return command;
+    });
+  }
+  async confirmWake(lease: DynamicWakeLease, receipt: DynamicWakeReceipt): Promise<DynamicWakeCommand> {
+    invariant(sameTask(receipt.task, lease.task) && receipt.commandId === lease.commandId &&
+      receipt.recipientId === lease.recipientId && receipt.conversationId === lease.conversationId &&
+      receipt.wakeKey === lease.wakeKey && !!receipt.providerMessageId?.trim(),
+      "Wake receipt/caller mismatch");
+    invariant(await this.trust.verifyWakeReceipt?.(receipt) === true, "Unverified provider wake receipt");
+    return this.hostWake(lease, (command, state) => {
+      invariant(command.state === "claimed" || (command.state === "delivered" &&
+        command.providerMessageId === receipt.providerMessageId), "Wake not claimable for receipt");
+      invariant(!state.messages.some(m => m.to === lease.recipientId &&
+        !command.messageIds.includes(m.id) && m.providerMessageId === receipt.providerMessageId),
+        "Provider message identity already attributed");
+      invariant(command.messageIds.every(id => state.messages.some(m => m.id === id &&
+        (m.state === "queued" || m.providerMessageId === receipt.providerMessageId))),
+        "Wake message ownership conflict");
+      if (command.state === "claimed") {
+        const when = Date.now();
+        command.deliveredAt = when;
+        for (const msg of state.messages) if (command.messageIds.includes(msg.id)) {
+          msg.state = "sent"; msg.providerMessageId = receipt.providerMessageId;
+          msg.providerDeliveredAt = when;
+        }
+      }
+      command.providerMessageId = receipt.providerMessageId;
+      command.state = "delivered";
+      return command;
+    });
+  }
+
   /** Commit the uncertain dispatch fence before touching ChatGPT/Codex. */
   async claimForDelivery(messageId: string): Promise<DynamicMessage> {
     return this.perform((state, actor) => {
