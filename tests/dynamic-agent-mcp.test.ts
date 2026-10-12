@@ -53,14 +53,14 @@ async function fixture(){
 }
 test("gated MCP v2 verifies real owner session and exact sealed issue policy",async t=>{
   const f=await fixture();t.after(f.close);
-  const result=await f.call(ownerFp,()=>true,{action:"status",repo:task.repo,issue:task.issue});
+  const result=await f.call(ownerFp,()=>true,{action:"status",repo:task.repo,issue:task.issue,pr:task.pr});
   assert.equal(result.structuredContent.action,"status");
   assert.equal((result.structuredContent.agents as Array<{id:string}>).length,2);
-  await assert.rejects(f.call(ownerFp,()=>false,{action:"status",repo:task.repo,issue:task.issue}),
+  await assert.rejects(f.call(ownerFp,()=>false,{action:"status",repo:task.repo,issue:task.issue,pr:task.pr}),
     /Worker cannot select another Issue/);
-  await assert.rejects(f.call(unownedFp,()=>true,{action:"status",repo:task.repo,issue:task.issue}),
+  await assert.rejects(f.call(unownedFp,()=>true,{action:"status",repo:task.repo,issue:task.issue,pr:task.pr}),
     /Unverified agent\/session identity/);
-  await assert.rejects(f.call(ownerFp,()=>true,{action:"status",repo:task.repo,issue:247}),
+  await assert.rejects(f.call(ownerFp,()=>true,{action:"status",repo:task.repo,issue:247,pr:task.pr}),
     /ENOENT|policy/i);
 });
 test("v2 worker cannot select other Issue or borrow v1, owner or Mac privilege",async t=>{
@@ -72,11 +72,11 @@ test("v2 worker cannot select other Issue or borrow v1, owner or Mac privilege",
   ]});
   assert.equal(sent.structuredContent.action,"message");
   assert.equal((sent.structuredContent.queued as Array<{to:string}>)[0]!.to,"main_agent");
-  await assert.rejects(f.call(qaFp,()=>false,{action:"status",repo:task.repo,issue:task.issue}),
+  await assert.rejects(f.call(qaFp,()=>false,{action:"status",repo:task.repo,issue:task.issue,pr:task.pr}),
     /Worker cannot select another Issue/);
   await assert.rejects(f.call(unownedFp,()=>false,{action:"status"}),
     /No authenticated v2 worker grant/);
-  await assert.rejects(f.call(qaFp,()=>true,{action:"status",repo:task.repo,issue:task.issue}),
+  await assert.rejects(f.call(qaFp,()=>true,{action:"status",repo:task.repo,issue:task.issue,pr:task.pr}),
     /Ambiguous owner and worker session/);
 });
 test("v2 gateway rechecks worker generation and rejects stale grant after finish",async t=>{
