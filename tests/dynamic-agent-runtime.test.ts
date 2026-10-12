@@ -280,6 +280,7 @@ test("CoS worker finish sleeps exact conversation; same-key report is idempotent
   await f.broker.claimForDelivery(assigned.id);
   f.allowReceipt();
   await f.broker.confirmDelivery({task,messageId:assigned.id,providerMessageId:"provider-original-turn"});
+  await f.broker.acknowledge(assigned.id);
   const report=await f.broker.finishWork({result:"Found defect",idempotencyKey:"report-qa-001"});
   assert.equal(report.to,"main_agent");
   assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa")?.status,"sleeping");
@@ -317,4 +318,82 @@ test("CoS wake slot quota atomically rejects a second sleeping worker",async t=>
   assert.equal(state!.agents.find(a=>a.id==="qa")?.status,"waking");
   assert.equal(state!.agents.find(a=>a.id==="sec")?.status,"sleeping");
   assert.equal(state!.messages.filter(m=>m.to==="qa" && m.id===msg.id).length,1);
+});
+
+test("CoS two-stage spawn fences uncertain bootstrap and binds only exact host-proved session",async t=>{
+  const f=await fixture();t.after(f.close);await f.broker.initialize();
+  f.as("main_agent","owner-proof");
+  // Default-deny: the old trust implementation has no independent bootstrap grant.
+  const reserved=await f.broker.requestSpawn({id:"qa-new",role:"qa",idempotencyKey:"staged-qa-00001"});
+  assert.equal(reserved.state,"reserved");
+  assert.equal((await f.store.load())!.agents.some(a=>a.id==="qa-new"),false);
+  const same=await f.broker.requestSpawn({id:"qa-new",role:"qa",idempotencyKey:"staged-qa-00001"});
+  assert.equal(same.id,reserved.id);
+  await assert.rejects(f.broker.claimSpawnBootstrap({task,agentId:"qa-new",idempotencyKey:"staged-qa-00001"}),/Unverified spawn bootstrap lease/);
+  await assert.rejects(f.broker.bindSpawn({task,agentId:"qa-new",idempotencyKey:"staged-qa-00001"},
+    {sessionId:"unauthorized",sessionFingerprint:"qa-new-proof"}),/Unverified spawned provider identity/);
+  assert.equal((await f.store.load())!.pendingSpawns?.[0]?.state,"reserved");
+});
+
+test("CoS staged spawn survives crash, rejects replay, retains exact original binding",async t=>{
+  const root=await mkdtemp(join(tmpdir(),"staged-bootstrap-"));t.after(async()=>rm(root,{recursive:true,force:true}));
+  let actor: VerifiedDynamicCaller={task,agentId:"main_agent",sessionFingerprint:"owner"};
+  let leaseOk=true,providerOk=true,recoveryOk=false;
+  const trust={
+    resolveCaller:async()=>actor,verifyPolicy:async()=>true,
+    verifyNewAgentBinding:async(input:{id:string;role:string;sessionFingerprint:string})=>
+      providerOk&&input.id==="qa-new"&&input.role==="qa"&&input.sessionFingerprint==="qa-proven",
+    verifyToolCall:async()=>true,verifyTransportLease:async()=>true,
+    verifyProviderReceipt:async()=>true,verifyNoSubmit:async()=>true,
+    verifySpawnLease:async()=>leaseOk,verifySpawnNoStart:async()=>recoveryOk,
+  };
+  const store=new DynamicAgentStore(root,task);
+  const broker=new DynamicAgentBroker(policy,store,trust);
+  await broker.initialize();
+  const req={id:"qa-new",role:"qa",idempotencyKey:"qa-bootstrap-001"};
+  const lease={task,agentId:req.id,idempotencyKey:req.idempotencyKey};
+  await broker.requestSpawn(req);
+  await broker.claimSpawnBootstrap(lease);
+  await assert.rejects(broker.claimSpawnBootstrap(lease),/already claimed/);
+  const recovered=new DynamicAgentBroker(policy,new DynamicAgentStore(root,task),trust);
+  await assert.rejects(recovered.releaseUnstartedSpawn({...lease,evidenceId:"fake"}),/Missing independent no-bootstrap proof/);
+  await assert.rejects(recovered.claimSpawnBootstrap(lease),/already claimed/);
+  providerOk=false;
+  await assert.rejects(recovered.bindSpawn(lease,{sessionId:"wrong",sessionFingerprint:"qa-proven"}),/Unverified spawned provider identity/);
+  providerOk=true;
+  const member=await recovered.bindSpawn(lease,{sessionId:"https://chatgpt.com/c/saved-qa",sessionFingerprint:"qa-proven"});
+  assert.equal(member.id,"qa-new");
+  assert.equal(member.status,"idle");
+  assert.equal((await store.load())!.pendingSpawns?.[0]?.state,"bound");
+  const duplicate=await recovered.bindSpawn(lease,{sessionId:member.sessionId!,sessionFingerprint:"qa-proven"});
+  assert.equal(duplicate.sessionId,member.sessionId);
+  await assert.rejects(recovered.bindSpawn(lease,{sessionId:"https://chatgpt.com/c/other-chat",sessionFingerprint:"qa-proven"}),/Spawn binding conflict/);
+  leaseOk=false;
+  await assert.rejects(recovered.bindSpawn(lease,{sessionId:member.sessionId!,sessionFingerprint:"qa-proven"}),/Unverified spawned provider identity/);
+  assert.equal((await store.load())!.agents.filter(a=>a.id==="qa-new").length,1);
+});
+
+test("CoS host-proved pre-bootstrap release never silently retries unknown spawned chat",async t=>{
+  const root=await mkdtemp(join(tmpdir(),"spawn-no-start-"));t.after(async()=>rm(root,{recursive:true,force:true}));
+  let allowRelease=false;
+  const trust={
+    resolveCaller:async()=>({task,agentId:"main_agent",sessionFingerprint:"owner"}),
+    verifyPolicy:async()=>true,verifyNewAgentBinding:async()=>true,
+    verifyToolCall:async()=>true,verifyTransportLease:async()=>true,
+    verifyProviderReceipt:async()=>true,verifyNoSubmit:async()=>true,
+    verifySpawnLease:async()=>true,verifySpawnNoStart:async()=>allowRelease,
+  };
+  const broker=new DynamicAgentBroker(policy,new DynamicAgentStore(root,task),trust);
+  await broker.initialize();
+  const idempotencyKey="qa-unknown-00001";
+  await broker.requestSpawn({id:"qa-new",role:"qa",idempotencyKey});
+  const lease={task,agentId:"qa-new",idempotencyKey};
+  await broker.claimSpawnBootstrap(lease);
+  await assert.rejects(broker.claimSpawnBootstrap(lease),/already claimed/);
+  await assert.rejects(broker.releaseUnstartedSpawn({...lease,evidenceId:"host-observed-no-start"}),/Missing independent/);
+  allowRelease=true;
+  await broker.releaseUnstartedSpawn({...lease,evidenceId:"host-observed-no-start"});
+  assert.equal((await broker.status()).agents.length,1);
+  const claim=await broker.claimSpawnBootstrap(lease);
+  assert.equal(claim.state,"bootstrap_uncertain");
 });
