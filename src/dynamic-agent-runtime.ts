@@ -61,6 +61,8 @@ export interface PendingDynamicSpawn {
   role: string;
   requestedBy: string;
   idempotencyKey: string;
+  /** Immutable model-facing task brief, captured in the same durable admission. */
+  brief: string;
   /** Once claimed, browser/host bootstrap may have begun and cannot be retried blindly. */
   state: "reserved" | "bootstrap_uncertain" | "bound";
 }
@@ -180,6 +182,8 @@ function validateSnapshot(state: DynamicSnapshot): DynamicSnapshot {
   for (const pending of state.pendingSpawns ?? []) {
     invariant(IDENT.test(pending.id) && !reserved.has(pending.id), "Duplicate spawn reservation");
     invariant(IDENT.test(pending.role) && ids.has(pending.requestedBy), "Invalid reserved spawn identity");
+    invariant(typeof pending.brief === "string" && pending.brief.trim().length > 0 &&
+      pending.brief.length <= 4_000, "Invalid durable worker bootstrap brief");
     invariant(["reserved", "bootstrap_uncertain", "bound"].includes(pending.state), "Invalid spawn lifecycle");
     invariant(typeof pending.idempotencyKey === "string" && pending.idempotencyKey.length >= 8 &&
       pending.idempotencyKey.length <= 128, "Invalid spawn idempotency key");
@@ -233,7 +237,8 @@ export interface DynamicNoSubmitProof {
 export interface DynamicTrustBoundary {
   resolveCaller(): Promise<VerifiedDynamicCaller>;
   verifyPolicy(policy: DynamicAgentPolicy): Promise<boolean>;
-  verifyNewAgentBinding(binding: { task: TaskRef; id: string; role: string; sessionFingerprint: string }): Promise<boolean>;
+  verifyNewAgentBinding(binding: { task: TaskRef; id: string; role: string; sessionFingerprint: string;
+    sessionId?: string }): Promise<boolean>;
   verifyTransportLease(lease: DynamicTransportLease): Promise<boolean>;
   /** Prove a later, exact MCP call belongs to the already bound recipient. */
   verifyToolCall(call: VerifiedDynamicToolCall): Promise<boolean>;
@@ -307,18 +312,21 @@ export class DynamicAgentBroker {
    * is durably published, but remains unreachable to worker calls until host
    * proves the real new session in bindSpawn().
    */
-  async requestSpawn(input: { id: string; role: string; idempotencyKey: string }): Promise<PendingDynamicSpawn> {
+  async requestSpawn(input: { id: string; role: string; idempotencyKey: string; brief: string }): Promise<PendingDynamicSpawn> {
     return this.perform((state, actor) => {
       invariant(actor.id === "main_agent" || this.policy.roles[actor.role]?.mayAdmit, "Actor cannot admit specialists");
       invariant(IDENT.test(input.id) && input.id !== "main_agent" && IDENT.test(input.role),
         "Invalid requested agent identity");
       invariant(typeof input.idempotencyKey === "string" && input.idempotencyKey.length >= 8 &&
         input.idempotencyKey.length <= 128, "Invalid spawn idempotency key");
+      invariant(typeof input.brief === "string" && input.brief.trim().length > 0 &&
+        input.brief.length <= 4_000, "Invalid worker bootstrap brief");
       const pending = state.pendingSpawns ??= [];
       const repeated = pending.find(p => p.requestedBy === actor.id &&
         p.idempotencyKey === input.idempotencyKey);
       if (repeated) {
-        invariant(repeated.id === input.id && repeated.role === input.role, "Spawn idempotency-key conflict");
+        invariant(repeated.id === input.id && repeated.role === input.role &&
+          repeated.brief === input.brief, "Spawn idempotency-key conflict");
         return repeated;
       }
       invariant(!state.agents.some(a => a.id === input.id) && !pending.some(p => p.id === input.id),
@@ -333,7 +341,7 @@ export class DynamicAgentBroker {
         "NO_FREE_SLOT: worker bootstrap capacity exhausted");
       const entry: PendingDynamicSpawn = {
         id: input.id, role: input.role, idempotencyKey: input.idempotencyKey,
-        requestedBy: actor.id, state: "reserved"
+        requestedBy: actor.id, brief: input.brief, state: "reserved"
       };
       pending.push(entry);
       return entry;
@@ -376,7 +384,7 @@ export class DynamicAgentBroker {
         task: this.policy.task, id: lease.agentId,
         role: (await this.store.load())?.pendingSpawns?.find(p => p.id === lease.agentId &&
           p.idempotencyKey === lease.idempotencyKey)?.role ?? "",
-        sessionFingerprint: binding.sessionFingerprint,
+        sessionFingerprint: binding.sessionFingerprint, sessionId: binding.sessionId,
       }), "Unverified spawned provider identity");
     return this.store.transact(existing => {
       invariant(existing && existing.policyHash === policyHash(this.policy) &&
