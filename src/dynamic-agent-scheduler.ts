@@ -23,6 +23,10 @@ export class DynamicAgentScheduler {
       if (!state || state.ownerDecision === "approved") break;
       const candidate = state.messages.find(message => {
         if (attempted.has(message.id) || message.state !== "queued") return false;
+        // CoS browser revival has its own durable, exact-chat command. The
+        // ordinary send lane must never steal that message while worker wakes.
+        if (state.wakeCommands?.some(cmd => cmd.state !== "alive" &&
+          cmd.messageIds.includes(message.id))) return false;
         const prior = state.messages.find(m => m.to === message.to && m.state !== "acked");
         return prior === message;
       });
