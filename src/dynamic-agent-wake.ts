@@ -1,4 +1,4 @@
-import type { TaskRef } from "./workflow.js";
+import type { ExecutorKind, TaskRef } from "./workflow.js";
 import { DynamicAgentBroker, DynamicAgentStore, type DynamicWakeLease,
   type DynamicWakeCommand, type DynamicMessage } from "./dynamic-agent-runtime.js";
 
@@ -10,7 +10,7 @@ import { DynamicAgentBroker, DynamicAgentStore, type DynamicWakeLease,
 export interface DynamicWakeTransport {
   send(input: {
     task: TaskRef; commandId: string; wakeKey: string;
-    conversationId: string; recipientId: string;
+    conversationId: string; recipientId: string; executor: ExecutorKind;
     messages: ReadonlyArray<Pick<DynamicMessage, "id" | "from" | "kind" | "body">>;
   }): Promise<{ providerMessageId: string }>;
 }
@@ -35,7 +35,9 @@ export class DynamicWakeDispatcher {
       c.wakeKey === lease.wakeKey);
     const agent = state.agents.find(a => a.id === lease.recipientId);
     if (!command || command.state !== "queued" || agent?.status !== "waking" ||
-      agent.sessionId !== command.conversationId) throw new Error("Wake not queued for exact owned chat");
+      agent.sessionId !== command.conversationId ||
+      (agent.executor !== "chatgpt_browser" && agent.executor !== "codex"))
+      throw new Error("Wake not queued for exact owned chat/thread");
     const messages = command.messageIds.map(id => state.messages.find(m => m.id === id));
     if (messages.some(m => !m || m.to !== command.recipientId || m.state !== "queued"))
       throw new Error("Wake message set changed before dispatch");
@@ -45,6 +47,7 @@ export class DynamicWakeDispatcher {
     const result = await this.transport.send({
       task: state.task, commandId: command.id, wakeKey: command.wakeKey,
       recipientId: command.recipientId, conversationId: command.conversationId,
+      executor: agent.executor,
       messages: messages.map(m => ({id:m!.id,from:m!.from,kind:m!.kind,body:m!.body}))
     });
     if (!result.providerMessageId?.trim()) throw new Error("Wake provider acceptance not proven");
