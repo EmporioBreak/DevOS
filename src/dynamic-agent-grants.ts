@@ -101,7 +101,11 @@ export class DynamicAgentGrantRegistry {
       const state=await new DynamicAgentStore(this.root,grant.task).load();
       if(!state||!sameTask(state.task,grant.task)||state.ownerDecision==="approved")return false;
       const agent=state.agents.find(a=>a.id===grant.agentId);
-      return !!agent&&agent.executor==="chatgpt_browser"&&
+      const wakeAccepted=agent?.status!=="waking" ||
+        state.wakeCommands?.some(cmd=>cmd.recipientId===grant.agentId&&
+          cmd.conversationId===grant.sessionId&&cmd.state==="delivered"&&
+          !!cmd.providerMessageId)===true;
+      return !!agent&&wakeAccepted&&agent.executor==="chatgpt_browser"&&
         ["idle","busy","waking"].includes(agent.status)&&
         agent.sessionFingerprint===grant.fingerprint&&
         agent.sessionId===grant.sessionId&&
