@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ExecutorKind, TaskRef } from "./workflow.js";
+import { captureProcessIdentity } from "./process-identity.js";
 
 /** Owner authorization is verified independently by the host, never by a model. */
 export interface DynamicAgentPolicy {
@@ -174,7 +175,7 @@ export function validateDynamicPolicy(policy: DynamicAgentPolicy): void {
  */
 export class DynamicAgentStore {
   readonly path: string;
-  constructor(projectRoot: string, task: TaskRef) {
+  constructor(projectRoot: string, private readonly task: TaskRef) {
     invariant(typeof projectRoot === "string" && projectRoot.length > 0, "Missing project root");
     invariant(typeof task.repo === "string" && !!task.repo.trim() && Number.isSafeInteger(task.issue) && task.issue > 0, "Invalid task");
     this.path = join(projectRoot, ".devos", "dynamic", `${encodeURIComponent(task.repo)}-issue-${task.issue}.json`);
@@ -190,6 +191,16 @@ export class DynamicAgentStore {
       throw err;
     });
     try {
+      // Record the real process lifetime, not just a PID or stale timestamp.
+      // This file is denial-only on restart until trusted quiescent recovery.
+      const identity = await captureProcessIdentity(process.pid);
+      invariant(identity, "Cannot prove writer process identity");
+      await lock.writeFile(JSON.stringify({
+        version: 1, repo: this.task.repo, issue: this.task.issue,
+        pr: this.task.pr ?? null, pid: process.pid, identity,
+        nonce: randomUUID(), createdAt: Date.now(),
+      }) + "\\n", "utf8");
+      await lock.sync();
       const before = await this.load();
       const { state, result } = update(before === null ? null : structuredClone(before));
       validateSnapshot(state);
