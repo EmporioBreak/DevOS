@@ -199,3 +199,34 @@ test("per-recipient delivery order is enforced despite independent senders", asy
   f.as("main_agent","owner-proof"); await f.broker.claimForTransport(later);
   assert.equal((await f.store.load())!.messages[1]!.state,"dispatch_uncertain");
 });
+
+test("CoS-style batch admission is all-or-nothing across recipients", async t => {
+  const f = await fixture(); t.after(f.close);
+  await f.broker.initialize();
+  await f.broker.admit({id:"dev",role:"developer",sessionFingerprint:"dev-proof"});
+  await f.broker.admit({id:"qa",role:"qa",sessionFingerprint:"qa-proof"});
+  const valid={to:"dev",kind:"work" as const,body:"one",idempotencyKey:"batch-dev-001"};
+  await assert.rejects(f.broker.sendBatch([valid,
+    {to:"nonexistent",kind:"work",body:"two",idempotencyKey:"batch-bad-002"}]),/Unknown recipient/);
+  assert.equal((await f.store.load())!.messages.length,0);
+  const batch=await f.broker.sendBatch([valid,
+    {to:"qa",kind:"review",body:"independent review",idempotencyKey:"batch-qa-0002"}]);
+  assert.deepEqual(batch.map(m=>m.to),["dev","qa"]);
+  assert.equal((await f.store.load())!.messages.length,2);
+  const repeated=await f.broker.sendBatch([valid,valid]);
+  assert.equal(repeated[0]!.id,batch[0]!.id);
+  assert.equal(repeated[1]!.id,batch[0]!.id);
+  assert.equal((await f.store.load())!.messages.length,2);
+});
+
+test("CoS batch reserves per-recipient queue capacity before any durable write", async t => {
+  const f=await fixture(); t.after(f.close);await f.broker.initialize();
+  await f.broker.admit({id:"qa",role:"qa",sessionFingerprint:"qa-proof"});
+  const batch=[{to:"qa",kind:"work" as const,body:"one",idempotencyKey:"cap-qa-00001"},
+    {to:"qa",kind:"work" as const,body:"two",idempotencyKey:"cap-qa-00002"},
+    {to:"qa",kind:"work" as const,body:"three",idempotencyKey:"cap-qa-00003"}];
+  await assert.rejects(f.broker.sendBatch(batch),/Inbox budget exhausted/);
+  assert.equal((await f.store.load())!.messages.length,0);
+  assert.equal((await f.broker.sendBatch(batch.slice(0,2))).length,2);
+  assert.equal((await f.store.load())!.messages.length,2);
+});
