@@ -45,7 +45,7 @@ test("CoS tool protocol permits dynamic peer spawn, direct messages and structur
   const status=await f.tools.call({action:"status"});
   const agents=status.structuredContent.agents as Array<Record<string,unknown>>;
   assert.equal(agents.some(a=>"sessionFingerprint" in a),false);
-  assert.equal((status.structuredContent.messages as Array<{to:string}>)[0]?.to,"sec1");
+  assert.equal((status.structuredContent.messages as Array<{to:string}>)[0]?.to,"sec2");
 });
 
 test("CoS agent tool rejects spoofed source, session, unsupported role or mixed payload atomically",async t=>{
