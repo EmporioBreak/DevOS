@@ -28,7 +28,8 @@ function setup(){
       ...(executor==="chatgpt_browser"?{
         dynamicAgentV2:true,
         enforceProjectScope:true,
-        reportTurn:{task,active:{workerId,turn:1,tokenHash:"d".repeat(64)}},
+        dynamicTurn:{task,agentId:workerId,mode:sessionId?"work":"bootstrap",
+          startingGrantEpoch:0},
       }:{
         codexSkills:{task,workerId:invalidSkills?"other-worker":workerId,mandatory:true},
       })
@@ -62,7 +63,9 @@ test("DevOS real adapter refuses fabricated grants and fails closed on unknown b
     executor:"chatgpt_browser",manifestSha256:"a".repeat(64)}),/independently verified worker session/);
   assert.equal(f.calls.length,1);
   assert.equal(f.calls[0]!.request.enforceProjectScope,true);
-  assert.equal(f.calls[0]!.request.reportTurn?.active.workerId,"qa");
+  assert.equal(f.calls[0]!.request.dynamicTurn?.agentId,"qa");
+  assert.equal(f.calls[0]!.request.dynamicTurn?.mode,"bootstrap");
+  assert.equal(f.calls[0]!.request.reportTurn,undefined);
 });
 test("existing Codex session uses signed skill request and only host-proven execution receipt",async()=>{
   const f=setup();
