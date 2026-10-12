@@ -44,6 +44,25 @@ function verifiedSession(expected: string, actual: string | undefined, executor:
     isSameChatGptConversation(expected, actual) : expected === actual,
     "Executor changed the exact saved worker conversation/thread");
 }
+/**
+ * Only a native browser executor may call this callback, after its own
+ * read-only provider history confirmation. The host retains independent
+ * receipt verification and never trusts a worker's textual response.
+ */
+function collectNativeBrowserReceipt(request:WorkerRequest, expectedChat:string){
+  let accepted:string|undefined;
+  const prior=request.onAcceptedUserMessage;
+  request.onAcceptedUserMessage=async receipt=>{
+    verifiedSession(expectedChat,receipt.sessionId,"chatgpt_browser");
+    expect(/^[A-Za-z0-9_-]{1,200}$/.test(receipt.providerMessageId),
+      "Browser reported an invalid provider message ID");
+    expect(!accepted || accepted===receipt.providerMessageId,
+      "Conflicting provider receipts for one worker turn");
+    await prior?.(receipt);
+    accepted=receipt.providerMessageId;
+  };
+  return ()=>accepted;
+}
 export class DynamicDevosExecutorAdapter
   implements DynamicAgentBootstrapTransport, DynamicMessageTransport, DynamicWakeTransport {
   constructor(private readonly executors: Record<ExecutorKind, Executor>,
@@ -103,14 +122,19 @@ export class DynamicDevosExecutorAdapter
       expect(!!input.recipient.sessionId, "No saved worker session");
       const request = await this.host.prepareMessage(input);
       verifiedSession(input.recipient.sessionId, request.sessionId, kind);
+      const nativeReceipt=kind==="chatgpt_browser"
+        ? collectNativeBrowserReceipt(request,input.recipient.sessionId) : undefined;
       const output = await this.run(kind, request, input.task, input.recipient.id, false);
       verifiedSession(input.recipient.sessionId, output.sessionId, kind);
+      if(nativeReceipt)expect(nativeReceipt(),
+        "Browser worker returned without exact provider GET Send acceptance");
       const providerMessageId = await this.host.verifiedProviderMessage({
         task: input.task, workerId: input.recipient.id, sessionId: input.recipient.sessionId,
         output, commandId: input.message.id
       });
-      expect(providerMessageId && !!providerMessageId.trim(),
-        "External worker turn completed without independent provider Send receipt");
+      expect(providerMessageId && !!providerMessageId.trim() &&
+        (!nativeReceipt || providerMessageId===nativeReceipt()),
+        "External worker turn completed without matching independent provider Send receipt");
       return {providerMessageId};
     }
 
@@ -122,14 +146,19 @@ export class DynamicDevosExecutorAdapter
     expect(kind === "chatgpt_browser" || kind === "codex",
       "Wake executor kind changed");
     verifiedSession(input.conversationId, request.sessionId, kind);
+    const nativeReceipt=kind==="chatgpt_browser"
+      ? collectNativeBrowserReceipt(request,input.conversationId) : undefined;
     const output = await this.run(kind, request, input.task, input.recipientId, false);
     verifiedSession(input.conversationId, output.sessionId, kind);
+    if(nativeReceipt)expect(nativeReceipt(),
+      "Browser revival returned without exact provider GET Send acceptance");
     const providerMessageId = await this.host.verifiedProviderMessage({
       task: input.task,workerId:input.recipientId,sessionId:input.conversationId,
       output,commandId:input.commandId,
     });
-    expect(providerMessageId && !!providerMessageId.trim(),
-      "Wake completed without independently verified provider acceptance");
+    expect(providerMessageId && !!providerMessageId.trim() &&
+      (!nativeReceipt || providerMessageId===nativeReceipt()),
+      "Wake completed without matching independently verified provider acceptance");
     return {providerMessageId};
   }
 }
