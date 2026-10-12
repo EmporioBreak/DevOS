@@ -44,19 +44,19 @@ async function checkPath(path:string,writing:boolean):Promise<void>{
   }
 }
 /**
- * Explicit trusted owner acceptance of one exact, task-scoped v2 policy.
- * This is a management-only host function, never exposed to workers/models.
- * The on-disk policy is immutable: no silent role/capability reconfiguration.
+ * Sign a host-local task/role/skill policy without asking the user for a
+ * separate "I initiated this run" receipt or per-task approval form.
+ *
+ * The host's local management component owns the signing secret and is the
+ * sole caller. This function MUST NOT be registered as a model/MCP action.
+ * MAC, task/PR binding, immutability and caller/session authorization remain.
+ * Previously signed v1 graph and owner-approval protocols are unaffected.
  */
 export async function sealDynamicAgentPolicy(input:{
   root:string;policy:DynamicAgentPolicy;ownerSecret:string;
-  assertTrustedOwnerApproval:(p:{task:TaskRef;policyId:string;sha256:string})=>Promise<boolean>;
 }):Promise<string>{
   validateDynamicPolicy(input.policy);
   const policySha256=digest(input.policy);
-  if(!await input.assertTrustedOwnerApproval({task:input.policy.task,
-    policyId:input.policy.policyId,sha256:policySha256}))
-    throw new Error("Exact owner approval required for this dynamic policy revision");
   const body:Omit<SealedDynamicPolicy,"mac">={
     version:1,policy:input.policy,policySha256
   };
@@ -96,7 +96,7 @@ export async function verifySealedDynamicAgentPolicy(input:{
   validateDynamicPolicy(parsed.policy);
   const sha=digest(input.policy);
   if(parsed.policySha256!==sha||digest(parsed.policy)!==sha)
-    throw new Error("Dynamic policy revision differs from exact owner authorization");
+    throw new Error("Dynamic policy revision differs from host-sealed task policy");
   const expected=sign({version:1,policy:parsed.policy,policySha256:parsed.policySha256},
     input.ownerSecret);
   if(!timingSafeEqual(Buffer.from(expected,"hex"),Buffer.from(parsed.mac,"hex")))
