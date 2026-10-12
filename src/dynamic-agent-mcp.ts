@@ -110,6 +110,8 @@ export async function callDynamicAgentsMcp(input:{
   const store=new DynamicAgentStore(input.root,policy.task);
   const broker=new DynamicAgentBroker(policy,store,trust);
   if(!owner){
+    requireCondition(await grants.resolveCaller(fingerprint,policy),
+      "Worker grant revoked, expired, or exact saved session changed");
     // CoS noteAgentAlive: a later authenticated MCP request from the SAME
     // verified chat proves wake has actually resumed. A page/DOM observation
     // or the native browser Send receipt alone is insufficient.
