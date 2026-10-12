@@ -57,9 +57,10 @@ export class DynamicDevosExecutorAdapter
       !!request.prompt.trim() && request.workerId === workerId,
       "Host did not prepare an exact worker request");
     if (kind === "chatgpt_browser") {
-      expect(request.enforceProjectScope === true &&
+      expect(request.dynamicAgentV2 === true &&
+        request.enforceProjectScope === true &&
         !!request.reportTurn && sameTask(request.reportTurn.task, task),
-        "Browser requires exact Project and authenticated report-turn custody");
+        "V2 browser requires explicit host flag, exact Project and authenticated report-turn custody");
     } else {
       expect(request.codexSkills?.mandatory === true &&
         request.codexSkills.workerId === workerId &&
