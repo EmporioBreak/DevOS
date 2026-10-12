@@ -4,7 +4,8 @@ Issue #246 / Draft PR #247. Experimental library code only. It is not a Producti
 
 ## Present on this branch
 
-- `src/dynamic-agent-runtime.ts`: policy-scoped agent directory, direct peer and Main Agent addressing, dynamically admitted agents, session identity binding, CoS-style atomic message batches, MCP tool inbox offer/reoffer and next-call ACK, bounded waking slot reservations, idempotent work-unit finish/sleep, idempotent per-recipient queue, synchronous durable acceptance, cross-task protection, owner-only final decision and claim-before-provider-send fence.
+- `src/dynamic-agent-runtime.ts`: policy-scoped agent directory, direct peer and Main Agent addressing, dynamically admitted agents, session identity binding, CoS-style atomic message batches, MCP tool inbox offer/reoffer and next-call ACK, bounded waking slot reservations, separate post-provider authenticated worker liveness, authenticated two-phase spawn intent/bind, idempotent work-unit finish/sleep, idempotent per-recipient queue, synchronous durable acceptance, cross-task protection, owner-only final decision and claim-before-provider-send fence.
+- `src/dynamic-agent-bootstrap.ts`: CoS-derived two-phase worker bootstrap adapter; host-verified reservation, claim-before-provider session creation and exact authentic session binding. Unknown bootstrap outcome remains fenced.
 - `src/dynamic-agent-scheduler.ts`: bounded, on-demand, graph-free queue-drain pass; other agents progress even when one recipient has an ambiguous send. It requires authentic recipient sessions and does not poll indefinitely.
 - `src/dynamic-agent-dispatch.ts`: narrow host-verified dispatch seam requiring existing exact saved recipient session and an independently checked provider-receipt callback. It deliberately does not synthesize ChatGPT user-message IDs, create new browser contexts, close task windows or auto-retry ambiguous sends.
 - Dedicated tests for peer-to-peer routing, dynamic QA/security, frozen session binding, admission and policy denial, task isolation, ordered delivery, crash/ambiguous replay barriers, host transport and final Main Agent judgment.
@@ -20,6 +21,9 @@ A production caller must wire `DynamicTrustBoundary` to actual trusted gateway f
 - `verifyNewAgentBinding`: verifies the newly created worker's actual session and task ownership. A worker's requested fingerprint is not proof.
 - `verifyTransportLease`: host-owned lease on this exact task, agent and message, no role impersonation.
 - `verifyToolCall`: authenticated subsequent MCP call from the exact recipient/session, with independently verified start time; never accept timestamps from a prompt.
+- `verifySpawnLease`: validates host authority to create exactly the reserved worker session once.
+- `verifySpawnNoStart`: independently proven no-bootstrap outcome, never a generic timeout.
+- `verifyIndependentReview`: host-verified independent acceptance evidence, not a worker's self-reported approval.
 - `verifyProviderReceipt`: real provider-accepted outgoing user-message or execution identity and task/turn correlation.
 - `verifyNoSubmit`: independently proven pre-submit failure, not a timeout or model statement.
 
@@ -32,7 +36,8 @@ The new store lives at `.devos/dynamic/<encoded-repo>-issue-<issue>.json` and ne
 ## Known unfinished integration / gates
 
 1. Wire the new runtime through a separately versioned CLI and MCP tool surface; existing `Workflow(version:1)` and `Orchestrator` remain unchanged.
-2. Connect actual ChatGPT Camoufox worker identities, conversation wake/turn, provider receipts and original owner conversation, **after** #239/#224/#226 browser shared-custody gates are independently resolved.
+2. Replace mock `DynamicAgentBootstrapTransport` with exact Camoufox/Codex native session ownership, verifying existing task/PR/skill and provider acceptance without duplicate bootstrap.
+3. Connect actual ChatGPT Camoufox worker identities, conversation wake/turn, provider receipts and original owner conversation, **after** #239/#224/#226 browser shared-custody gates are independently resolved.
 3. Connect local Codex skill manifests and exactly one launch/receipt identity; test resumes without duplicate external commands.
 4. Enforce real independent reviewer evidence gates and finish/merge controls at the Main Agent boundary.
 5. Replace permanent crash lock with a provably fenced automatic process-exit recovery; add multi-process SIGKILL tests and realistic queue backpressure/retention tests.
@@ -41,4 +46,8 @@ The new store lives at `.devos/dynamic/<encoded-repo>-issue-<issue>.json` and ne
 
 ### Local isolated verification
 
-GitHub Actions `Dynamic agent core checks` runs Node 22 `npm ci`, full repository TypeScript `npm run build` and the focused `tests/dynamic-agent-*.test.ts`. At [run #38219852828](https://github.com/EmporioBreak/DevOS/actions/runs/38219852828), build succeeded and **19/19 focused tests passed** with mocked trust/transport providers. This is not the full DevOS test suite and not any real provider/browser E2E.
+GitHub Actions `Dynamic agent core checks` runs Node 22 `npm ci`, full repository TypeScript `npm run build` and the focused `tests/dynamic-agent-*.test.ts`. At [run #38219852828](https://github.com/EmporioBreak/DevOS/actions/runs/38219852828), build succeeded and **19/19 focused tests passed on the earlier cited revision** with mocked trust/transport providers. This is not the full DevOS test suite and not any real provider/browser E2E.
+
+## Newer port revisions (after the cited 19-test run)
+
+Added two-phase durable `requestSpawn/claimSpawnBootstrap/bindSpawn`, an isolated `DynamicAgentBootstrapper` and fault-injection tests; separated provider Send receipts from later verified agent liveness; require independent host evidence for final review; enforce unique saved conversations and agent principals; bound retained message history without discarding past idempotency evidence. The cited earlier run does not verify these newer commits; see the current PR CI result. Full test suite execution has been enabled in `.github/workflows/dynamic-agent-runtime.yml`, but must not be claimed green before its exact current-head completion. No Production transport has been attached.
