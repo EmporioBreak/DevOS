@@ -14,7 +14,7 @@ async function setup() {
   const root=await mkdtemp(join(tmpdir(),"agent-dispatch-"));
   let caller: VerifiedDynamicCaller={task,agentId:"main_agent",sessionFingerprint:"owner-binding"};
   const trust={resolveCaller:async()=>caller, verifyPolicy:async()=>true, verifyNewAgentBinding:async()=>true,
-    verifyTransportLease:async()=>true, verifyProviderReceipt:async()=>true,verifyNoSubmit:async()=>false};
+    verifyTransportLease:async()=>true,verifyToolCall:async()=>true, verifyProviderReceipt:async()=>true,verifyNoSubmit:async()=>false};
   const store=new DynamicAgentStore(root,task),broker=new DynamicAgentBroker(policy,store,trust);
   await broker.initialize(); await broker.admit({id:"qa",role:"qa",sessionFingerprint:"qa-binding"});
   caller={task,agentId:"qa",sessionFingerprint:"qa-binding"};
