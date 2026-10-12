@@ -16,6 +16,48 @@ Issue #246 / Draft PR #247. Experimental library code only. It is not a Producti
 
 See `docs/cos-source-port-map.md` for the pinned CoS source-to-DevOS function correspondence and missing integration, and `third_party/licenses/chat-on-steroids-MIT.txt` for upstream attribution.
 
+## First native browser E2E: current implementation boundary
+
+The first end-to-end test now has a **browser-only, explicit, runnerless** composition point:
+`src/dynamic-agent-first-e2e.ts` constructs the broker, bootstrap, normal
+dispatcher, wake dispatcher and bounded scheduler using an **injected, existing**
+DevOS `ChatGptBrowserExecutor`. Its `DynamicBrowserE2EHost`
+(`src/dynamic-agent-browser-e2e-host.ts`) prepares task-pinned requests and
+collects only **host-confirmed** original provider user-message receipts.
+
+Implemented first-E2E protocol:
+- First worker prompt calls `devos_worker_probe` **only**; provider-authoritative
+  history proof atomically binds the preclaimed spawn to its actual new ChatGPT
+  session and issues a separate v2 grant. No password, no user-initiation receipt,
+  no second chat on ambiguous bootstrap.
+- `WorkerRequest.dynamicTurn` and `waitForDynamicBrowserTurn` separate bootstrap
+  authorization from the work-unit `finish`; **v1 `reportTurn` remains untouched**.
+- `exactProviderAcceptedUserMessage` and the read-only browser verifier
+  validate that the exact outgoing user message ID and whole submitted prompt
+  exist in the original provider's chat history; outbound POST, DOM and assistant
+  reply are not acceptance proofs. `DynamicDevosExecutorAdapter` matches the
+  native proof against a second host-side command/recipient/session ledger.
+- A real provider wake ACK is recorded during the running browser turn, **before**
+  the worker may finish. The first subsequent authenticated `devos_agents_v2`
+  request proves wake liveness and acknowledges previously accepted inbox
+  messages, unblocking subsequent turns in the same chat without replay.
+
+**This is an integration seam with mocked-provider tests, NOT evidence of a
+successful headed/signed-in E2E.** It has not been executed against real
+ChatGPT worker conversations. The native host must still supply the
+authorized existing Camoufox owner, true signed task policy, live task lock,
+actual main-agent session fingerprint and real browser authorization. Never
+run it against in-flight v1 tasks or unowned/ambiguous profiles.
+
+Acceptance journey for the first headed E2E: an isolated test Issue and
+preauthorized task policy, fresh Developer and QA worker conversations in
+the configured ChatGPT Project, initial proof and v2 grant in each, Developer
+sends directly to QA, QA requests a correction directly from Developer,
+Developer resumes the **same** chat, QA confirms the result, and Main Agent
+receives the independent report. Verify every observed provider user-message
+receipt and original session URL, no duplicate sends and no owner-password
+form for v2 workers. Do not call a synthetic/in-memory journey a live E2E.
+
 ## Host verification requirements (not implemented by this library)
 
 A production caller must wire `DynamicTrustBoundary` to actual trusted gateway facts rather than model-authored fields:
@@ -39,8 +81,8 @@ The new store lives at `.devos/dynamic/<encoded-repo>-issue-<issue>.json`, never
 
 ## Known unfinished integration / gates
 
-1. Wire the new runtime through a separately versioned CLI and MCP tool surface; existing `Workflow(version:1)` and `Orchestrator` remain unchanged.
-2. Replace mock `DynamicAgentBootstrapTransport` with exact Camoufox/Codex native session ownership, verifying existing task/PR/skill and provider acceptance without duplicate bootstrap.
+1. Finish native host activation/run control for the first browser-only live E2E; the isolated `devos_agents_v2` MCP route already exists behind an OFF-by-default flag, but no production cutover/runner replacement exists; existing `Workflow(version:1)` and `Orchestrator` remain unchanged.
+2. Execute the browser-only host through the existing native Camoufox runtime, without new profile/process/socket, and verify actual provider user-message acceptance. The adapter is connected by types and tests, but has no live E2E evidence.
 3. Connect actual ChatGPT Camoufox worker identities, conversation wake/turn, provider receipts and original owner conversation, **after** #239/#224/#226 browser shared-custody gates are independently resolved.
 3. Connect local Codex skill manifests and exactly one launch/receipt identity; test resumes without duplicate external commands.
 4. Enforce real independent reviewer evidence gates and finish/merge controls at the Main Agent boundary.
