@@ -335,40 +335,65 @@ export class DynamicAgentBroker {
    * proves the real new session in bindSpawn().
    */
   async requestSpawn(input: { id: string; role: string; idempotencyKey: string; brief: string }): Promise<PendingDynamicSpawn> {
+    return (await this.requestSpawnBatch([input]))[0]!;
+  }
+  /**
+   * CoS spawn() batch admission: validate the entire requested team and
+   * reserve every slot atomically; no partial worker bootstraps if a later
+   * requested capability, identity, idempotency key or quota is rejected.
+   * Browser/host creation happens later and separately for each accepted
+   * reservation using claimSpawnBootstrap().
+   */
+  async requestSpawnBatch(inputs: ReadonlyArray<{
+    id: string; role: string; idempotencyKey: string; brief: string
+  }>): Promise<PendingDynamicSpawn[]> {
+    invariant(Array.isArray(inputs) && inputs.length >= 1 && inputs.length <= 8,
+      "Spawn batch size must be 1..8");
     return this.perform((state, actor) => {
       invariant(actor.status !== "sleeping" && actor.status !== "waking" &&
         actor.status !== "blocked", "Inactive worker cannot admit specialists");
-      invariant(actor.id === "main_agent" || this.policy.roles[actor.role]?.mayAdmit, "Actor cannot admit specialists");
-      invariant(IDENT.test(input.id) && input.id !== "main_agent" && IDENT.test(input.role),
-        "Invalid requested agent identity");
-      invariant(typeof input.idempotencyKey === "string" && input.idempotencyKey.length >= 8 &&
-        input.idempotencyKey.length <= 128, "Invalid spawn idempotency key");
-      invariant(typeof input.brief === "string" && input.brief.trim().length > 0 &&
-        input.brief.length <= 4_000, "Invalid worker bootstrap brief");
-      const pending = state.pendingSpawns ??= [];
-      const repeated = pending.find(p => p.requestedBy === actor.id &&
-        p.idempotencyKey === input.idempotencyKey);
-      if (repeated) {
-        invariant(repeated.id === input.id && repeated.role === input.role &&
-          repeated.brief === input.brief, "Spawn idempotency-key conflict");
-        return repeated;
+      invariant(actor.id === "main_agent" || this.policy.roles[actor.role]?.mayAdmit,
+        "Actor cannot admit specialists");
+      const accepted = state.pendingSpawns ??= [];
+      const additions: PendingDynamicSpawn[] = [];
+      const results: PendingDynamicSpawn[] = [];
+      for (const input of inputs) {
+        invariant(IDENT.test(input.id) && input.id !== "main_agent" && IDENT.test(input.role),
+          "Invalid requested agent identity");
+        invariant(typeof input.idempotencyKey === "string" &&
+          input.idempotencyKey.length >= 8 && input.idempotencyKey.length <= 128,
+          "Invalid spawn idempotency key");
+        invariant(typeof input.brief === "string" && input.brief.trim().length > 0 &&
+          input.brief.length <= 4_000, "Invalid worker bootstrap brief");
+        const existing = [...accepted, ...additions].find(p =>
+          p.requestedBy === actor.id && p.idempotencyKey === input.idempotencyKey);
+        if (existing) {
+          invariant(existing.id === input.id && existing.role === input.role &&
+            existing.brief === input.brief, "Spawn idempotency-key conflict");
+          results.push(existing);
+          continue;
+        }
+        invariant(!state.agents.some(a => a.id === input.id) &&
+          !accepted.some(p => p.id === input.id) && !additions.some(p => p.id === input.id),
+          "Agent identity already owned or reserved");
+        invariant(this.policy.roles[input.role], "Role/capability outside task policy");
+        const entry: PendingDynamicSpawn = {
+          id: input.id, role: input.role, idempotencyKey: input.idempotencyKey,
+          requestedBy: actor.id, brief: input.brief, state: "reserved"
+        };
+        additions.push(entry);
+        results.push(entry);
       }
-      invariant(!state.agents.some(a => a.id === input.id) && !pending.some(p => p.id === input.id),
-        "Agent identity already owned or reserved");
-      invariant(this.policy.roles[input.role], "Role/capability outside task policy");
-      invariant(state.agents.length + pending.filter(p => p.state !== "bound").length <
-        this.policy.maxAgents, "Agent budget exhausted");
+      const unbound = accepted.filter(p => p.state !== "bound").length;
       const active = state.agents.filter(a => a.id !== "main_agent" &&
         ["busy", "waking"].includes(a.status)).length;
-      const pendingActive = pending.filter(p => p.state !== "bound").length;
-      invariant(active + pendingActive < (this.policy.maxActiveWorkers ?? this.policy.maxAgents - 1),
+      invariant(state.agents.length + unbound + additions.length <= this.policy.maxAgents,
+        "Agent budget exhausted");
+      invariant(active + unbound + additions.length <=
+        (this.policy.maxActiveWorkers ?? this.policy.maxAgents - 1),
         "NO_FREE_SLOT: worker bootstrap capacity exhausted");
-      const entry: PendingDynamicSpawn = {
-        id: input.id, role: input.role, idempotencyKey: input.idempotencyKey,
-        requestedBy: actor.id, brief: input.brief, state: "reserved"
-      };
-      pending.push(entry);
-      return entry;
+      accepted.push(...additions);
+      return results;
     });
   }
   /**
