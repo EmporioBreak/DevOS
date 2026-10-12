@@ -32,7 +32,7 @@ export function isExactWorkerHistoryResponse(
 /** Read the provider's structured response for ONE exact saved worker chat.
  * A separate temporary page avoids reloading/resubmitting the worker turn.
  * Never search arbitrary chats, the sidebar, assistant text, or tool arguments. */
-async function readExactHistory(
+export async function readExactHistory(
   workerPage: Page,
   url: string,
   userMessageId: string | undefined,
