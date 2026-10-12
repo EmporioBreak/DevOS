@@ -4,6 +4,7 @@ import {DynamicAgentGrantRegistry} from "./dynamic-agent-grants.js";
 import {DynamicAgentToolProtocol,type DynamicAgentToolResponse} from "./dynamic-agent-tools.js";
 import {readSealedDynamicAgentPolicy,sealedDynamicPolicyVerifier} from "./dynamic-agent-policy.js";
 import type {TaskRef} from "./workflow.js";
+import {randomUUID} from "node:crypto";
 
 /**
  * Feature-gated v2 MCP surface. Unlike the old v1 worker access grant, this
@@ -30,6 +31,9 @@ export const DEVOS_DYNAMIC_AGENTS_TOOL={
 function requireCondition(value:unknown,text:string):asserts value {
   if(!value)throw new Error("DEVOS_AGENTS_V2: "+text);
 }
+function matchDynamicToolCallTask(a:TaskRef,b:TaskRef):boolean {
+  return a.repo===b.repo&&a.issue===b.issue&&(a.pr??null)===(b.pr??null);
+}
 function validatedTaskSelector(args:Record<string,unknown>):TaskRef {
   const repo=args.repo,issue=args.issue,pr=args.pr;
   requireCondition(typeof repo==="string" &&
@@ -53,6 +57,10 @@ export async function callDynamicAgentsMcp(input:{
     /^chat_[a-f0-9]{64}$/.test(input.fingerprint),
     "Exact authenticated MCP request session is missing");
   const fingerprint=input.fingerprint;
+  // Capture the real request's entry time here. It must be strictly later
+  // than the broker's independent provider wake-acceptance receipt.
+  const toolCallStartedAt=Date.now();
+  const toolCallId=randomUUID();
   requireCondition(input.argumentsValue && typeof input.argumentsValue==="object" &&
     !Array.isArray(input.argumentsValue),"Expected action object");
   const args=input.argumentsValue as Record<string,unknown>;
@@ -90,10 +98,32 @@ export async function callDynamicAgentsMcp(input:{
     verifyProviderReceipt:async()=>false,
     verifyTransportLease:async()=>false,
     verifyNoSubmit:async()=>false,
-    verifyToolCall:async()=>false,
+    verifyToolCall:async proof=>{
+      if(owner || !matchDynamicToolCallTask(proof.task,policy.task) ||
+        proof.recipientId==="" || proof.callId!==toolCallId ||
+        proof.startedAt!==toolCallStartedAt || proof.byFinish)return false;
+      const active=await grants.resolveCaller(fingerprint,policy);
+      return !!active && active.agentId===proof.recipientId;
+    },
     verifyIndependentReview:async()=>false,
   };
-  const broker=new DynamicAgentBroker(policy,new DynamicAgentStore(input.root,policy.task),trust);
+  const store=new DynamicAgentStore(input.root,policy.task);
+  const broker=new DynamicAgentBroker(policy,store,trust);
+  if(!owner){
+    // CoS noteAgentAlive: a later authenticated MCP request from the SAME
+    // verified chat proves wake has actually resumed. A page/DOM observation
+    // or the native browser Send receipt alone is insufficient.
+    const state=await store.load();
+    const agent=state?.agents.find(a=>a.sessionFingerprint===fingerprint);
+    if(agent?.status==="waking"){
+      const alive=await broker.noteAgentAlive({
+        task:policy.task,recipientId:agent.id,callId:toolCallId,
+        startedAt:toolCallStartedAt
+      });
+      requireCondition(alive,
+        "Wake was not yet confirmed by provider; retry the tool call, never replay browser Send");
+    }
+  }
   const filtered={...args};
   delete filtered.repo;delete filtered.issue;delete filtered.pr;
   return new DynamicAgentToolProtocol(broker,true).call(filtered);
