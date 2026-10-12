@@ -114,3 +114,52 @@ test("CoS graph-free normal scheduler never steals pending exact-chat revival",a
   assert.equal(sends,0);
   assert.equal((await f.store.load())!.wakeCommands![0]!.state,"queued");
 });
+
+test("CoS wake scheduler isolates uncertain QA wake while second sleeping worker proceeds",async t=>{
+  const f=await fixture();t.after(f.close);
+  f.as("main_agent");
+  await f.broker.admit({id:"qa2",role:"qa",sessionFingerprint:"qa2-proof"});
+  // Separate authenticated saved conversation for the additional specialist.
+  // This fixture's as() only produces qa1-proof; use explicit existing agent
+  // session setup below through a task-local second broker identity.
+  const otherTrust={
+    resolveCaller:async()=>({task,agentId:"qa2",sessionFingerprint:"qa2-proof"}),
+    verifyPolicy:async()=>true,verifyNewAgentBinding:async()=>true,
+    verifyTransportLease:async()=>true,verifyProviderReceipt:async()=>true,
+    verifyNoSubmit:async()=>false,verifyToolCall:async()=>true,
+    verifyWakeLease:async()=>true,verifyWakeReceipt:async()=>true,
+  };
+  const second=new DynamicAgentBroker(policy,f.store,otherTrust);
+  await second.bindSession("https://chatgpt.com/c/second-owned-qa");
+  await second.finishWork({result:"Old work completed",idempotencyKey:"second-sleep-001"});
+  const first=await f.broker.send({to:"qa1",kind:"work",body:"QA first",
+    idempotencyKey:"first-uncertain-001"});
+  const secondMessage=await f.broker.send({to:"qa2",kind:"work",body:"QA second",
+    idempotencyKey:"second-verified-01"});
+  const state=await f.store.load();
+  assert.equal(state!.wakeCommands?.length,2);
+  let calls=0;
+  f.proveReceipt();
+  const wake=new DynamicWakeDispatcher(f.broker,f.store,{
+    send:async input=>{
+      calls++;
+      if(input.recipientId==="qa1")throw new Error("browser may have accepted");
+      return {providerMessageId:"provider-accepted-qa2"};
+    }
+  });
+  const scheduler=new DynamicAgentScheduler(f.store,new DynamicAgentDispatcher(f.broker,f.store,{
+    send:async()=>{throw new Error("normal path must not be used");}
+  }));
+  const report=await scheduler.drainWakes(wake);
+  assert.equal(report.blocked.length,1);
+  assert.equal(report.blocked[0]!.recipientId,"qa1");
+  assert.equal(report.blocked[0]!.reason,"dispatch_uncertain");
+  assert.equal(report.sent.length,1);
+  assert.equal(calls,2);
+  assert.equal((await f.store.load())!.wakeCommands?.find(c=>c.recipientId==="qa1")?.state,"claimed");
+  assert.equal((await f.store.load())!.wakeCommands?.find(c=>c.recipientId==="qa2")?.state,"delivered");
+  assert.equal((await f.store.load())!.messages.find(m=>m.id===first.id)?.state,"queued");
+  assert.equal((await f.store.load())!.messages.find(m=>m.id===secondMessage.id)?.state,"sent");
+  assert.deepEqual(await scheduler.drainWakes(wake),{sent:[],blocked:[]});
+  assert.equal(calls,2);
+});
