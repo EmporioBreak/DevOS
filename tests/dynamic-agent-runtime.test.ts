@@ -480,3 +480,33 @@ test("CoS bounded inbox/journal never silently discards old idempotency evidence
     idempotencyKey:"journal-dev-1"});
   assert.equal(again.id,first[0]!.id);
 });
+
+test("CoS multi-worker spawn refuses entire batch on one invalid role or over-capacity",async t=>{
+  const f=await fixture();t.after(f.close);await f.broker.initialize();
+  const one={id:"qa-new",role:"qa",brief:"Review feature",idempotencyKey:"qa-team-000001"};
+  const two={id:"security-new",role:"security",brief:"Audit permissions",idempotencyKey:"sec-team-00001"};
+  await assert.rejects(f.broker.requestSpawnBatch([one,{...two,role:"unknown"}]),
+    /Role\/capability outside task policy/);
+  assert.deepEqual((await f.store.load())!.pendingSpawns,[]);
+  const accepted=await f.broker.requestSpawnBatch([one,two]);
+  assert.deepEqual(accepted.map(p=>p.id),["qa-new","security-new"]);
+  const again=await f.broker.requestSpawnBatch([one,two]);
+  assert.deepEqual(again.map(p=>p.id),accepted.map(p=>p.id));
+  assert.equal((await f.store.load())!.pendingSpawns?.length,2);
+  await assert.rejects(f.broker.requestSpawnBatch([one,{...two,brief:"Change scope"}]),
+    /Spawn idempotency-key conflict/);
+  assert.equal((await f.store.load())!.pendingSpawns?.length,2);
+});
+
+test("CoS batch capacity counts all reservations before publishing any",async t=>{
+  const restricted:typeof policy={...policy,maxActiveWorkers:1};
+  const f=await fixture(restricted);t.after(f.close);await f.broker.initialize();
+  const first={id:"qa-new",role:"qa",brief:"Run browser E2E",idempotencyKey:"qa-budget-00001"};
+  const second={id:"sec-new",role:"security",brief:"Audit MCP",idempotencyKey:"sec-budget-001"};
+  await assert.rejects(f.broker.requestSpawnBatch([first,second]),/NO_FREE_SLOT/);
+  assert.equal((await f.store.load())!.pendingSpawns?.length,0);
+  const one=await f.broker.requestSpawn(first);
+  assert.equal(one.state,"reserved");
+  await assert.rejects(f.broker.requestSpawn(second),/NO_FREE_SLOT/);
+  assert.equal((await f.store.load())!.pendingSpawns?.length,1);
+});
