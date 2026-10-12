@@ -27,6 +27,7 @@ async function fixture(config: DynamicAgentPolicy = policy) {
     verifyPolicy: async () => true,
     verifyNewAgentBinding: async () => true,
     verifyTransportLease: async () => allowTransport,
+    verifyToolCall: async () => true,
     verifyProviderReceipt: async (_receipt: DynamicDeliveryReceipt) => allowReceipt,
     verifyNoSubmit: async (_proof: DynamicNoSubmitProof) => allowRecovery,
   };
@@ -90,7 +91,7 @@ test("claim-before-send fences uncertain delivery across process restart; only v
   assert.equal((await f.store.load())!.messages[0]!.state, "dispatch_uncertain");
   const restored = new DynamicAgentBroker(policy, new DynamicAgentStore(f.root, task), {
     resolveCaller: async () => ({ task, agentId: "qa", sessionFingerprint: "qa-proof" }),
-    verifyPolicy: async () => true, verifyNewAgentBinding: async () => true, verifyTransportLease: async () => true,
+    verifyPolicy: async () => true, verifyNewAgentBinding: async () => true, verifyTransportLease: async () => true, verifyToolCall: async () => true,
     verifyProviderReceipt: async () => true, verifyNoSubmit: async () => false,
   });
   await assert.rejects(restored.claimForDelivery(msg.id), /not claimable/);
@@ -175,6 +176,7 @@ test("policy must be approved and newly admitted identity must be host-verified"
     verifyPolicy: async () => policyApproved,
     verifyNewAgentBinding: async () => identityApproved,
     verifyTransportLease: async () => false,
+    verifyToolCall: async () => false,
     verifyProviderReceipt: async () => false,
     verifyNoSubmit: async () => false,
   });
