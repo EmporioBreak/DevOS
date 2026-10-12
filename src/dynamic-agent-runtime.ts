@@ -259,6 +259,9 @@ export interface DynamicTrustBoundary {
   /** Host-owned, exact reserved agent bootstrap identity. Absent = default deny. */
   verifySpawnLease?(lease: DynamicSpawnLease): Promise<boolean>;
   verifySpawnNoStart?(proof: DynamicSpawnNoStartProof): Promise<boolean>;
+  /** Independent code/QA/security evidence verified by host, not by worker's prompt. */
+  verifyIndependentReview?(input: { task: TaskRef; requesterId: string;
+    sessionFingerprint: string }): Promise<boolean>;
   verifyProviderReceipt(receipt: DynamicDeliveryReceipt): Promise<boolean>;
   verifyNoSubmit(proof: DynamicNoSubmitProof): Promise<boolean>;
 }
@@ -328,6 +331,10 @@ export class DynamicAgentBroker {
    */
   async requestSpawn(input: { id: string; role: string; idempotencyKey: string; brief: string }): Promise<PendingDynamicSpawn> {
     return this.perform((state, actor) => {
+      invariant(actor.status !== "sleeping" && actor.status !== "waking" &&
+        actor.status !== "blocked", "Inactive worker cannot admit specialists");
+      invariant(actor.status !== "sleeping" && actor.status !== "waking" &&
+        actor.status !== "blocked", "Inactive worker cannot admit specialists");
       invariant(actor.id === "main_agent" || this.policy.roles[actor.role]?.mayAdmit, "Actor cannot admit specialists");
       invariant(IDENT.test(input.id) && input.id !== "main_agent" && IDENT.test(input.role),
         "Invalid requested agent identity");
@@ -697,7 +704,8 @@ export class DynamicAgentBroker {
           "Previous finish report no longer has a matching recipient");
         return previous;
       }
-      invariant(actor.status !== "blocked", "Blocked worker cannot report finished work");
+      invariant(actor.status !== "blocked" && actor.status !== "waking",
+        "Worker with unresolved wake cannot finish work");
       const lastRequest = [...state.messages].reverse().find(m =>
         m.to === actor.id && m.kind === "work");
       const recipientId = input.reportTo ?? lastRequest?.from ?? "main_agent";
@@ -742,7 +750,15 @@ export class DynamicAgentBroker {
     });
   }
   async requestFinalReview(): Promise<void> {
+    const caller = await this.trust.resolveCaller();
+    invariant(await this.trust.verifyIndependentReview?.({
+      task: this.policy.task, requesterId: caller.agentId,
+      sessionFingerprint: caller.sessionFingerprint
+    }) === true, "Missing host-verified independent review evidence");
     await this.perform((state, actor) => {
+      invariant(actor.id === caller.agentId &&
+        actor.sessionFingerprint === caller.sessionFingerprint,
+        "Reviewer caller changed during evidence verification");
       invariant(actor.id !== "main_agent", "Owner does not self-request review");
       invariant(state.messages.some(m => m.from === actor.id && m.kind === "evidence" && m.state === "acked"), "No acknowledged independent evidence");
       state.finalReviewRequested = true;
