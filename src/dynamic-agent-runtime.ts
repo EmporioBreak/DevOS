@@ -12,6 +12,8 @@ export interface DynamicAgentPolicy {
   /** Simultaneously executing or waking worker slots; absent uses maxAgents minus owner. */
   maxActiveWorkers?: number;
   maxPendingPerAgent: number;
+  /** CoS-inspired bounded journal: never silently drop prior idempotency evidence. */
+  maxRecordedMessages?: number;
   roles: Record<string, { executor: ExecutorKind; manifestSha256: string; mayAdmit: boolean }>;
 }
 export interface VerifiedDynamicCaller {
@@ -110,6 +112,9 @@ export function validateDynamicPolicy(policy: DynamicAgentPolicy): void {
   invariant(policy.maxActiveWorkers === undefined || (Number.isSafeInteger(policy.maxActiveWorkers) &&
     policy.maxActiveWorkers > 0 && policy.maxActiveWorkers < policy.maxAgents), "Invalid active worker slots");
   invariant(Number.isSafeInteger(policy.maxPendingPerAgent) && policy.maxPendingPerAgent >= 1 && policy.maxPendingPerAgent <= 256, "Invalid inbox limit");
+  invariant(policy.maxRecordedMessages === undefined ||
+    (Number.isSafeInteger(policy.maxRecordedMessages) && policy.maxRecordedMessages >= 1 &&
+      policy.maxRecordedMessages <= 8192), "Invalid message history limit");
   invariant(!!policy.roles && typeof policy.roles === "object" && !Array.isArray(policy.roles), "Invalid role catalog");
   invariant(Object.keys(policy.roles).length > 0, "Empty role catalog");
   for (const [role, rule] of Object.entries(policy.roles)) {
@@ -536,7 +541,10 @@ export class DynamicAgentBroker {
       for (const agent of state.agents) if (waking.has(agent.id)) agent.status = "waking";
       // This synchronous, single-writer projection is published *only* when
       // DynamicAgentStore.transact() has fsynced and renamed the accepted snapshot.
-      state.messages.push(...planned.filter(m => !state.messages.includes(m)).filter((m,i,a)=>a.indexOf(m)===i));
+      const additions = planned.filter(m => !state.messages.includes(m)).filter((m,i,a)=>a.indexOf(m)===i);
+      invariant(state.messages.length + additions.length <= (this.policy.maxRecordedMessages ?? 8192),
+        "Message history limit reached; refusing unprovable idempotency eviction");
+      state.messages.push(...additions);
       return planned;
     });
   }
@@ -721,6 +729,8 @@ export class DynamicAgentBroker {
       const report: DynamicMessage = { id: randomUUID(), taskKey: taskKey(state.task), from: actor.id,
         to: recipientId, kind: "evidence", body: input.result, idempotencyKey: input.idempotencyKey,
         ...(lastRequest ? { inReplyTo: lastRequest.id } : {}), state: "queued" };
+      invariant(state.messages.length < (this.policy.maxRecordedMessages ?? 8192),
+        "Message history limit reached; cannot safely discard accepted receipts");
       state.messages.push(report);
       actor.lastFinishKey = input.idempotencyKey;
       actor.lastResult = input.result;
