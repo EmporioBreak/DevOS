@@ -34,3 +34,5 @@ jobs:
         run: npm run build
       - name: CoS-derived agent protocol tests
         run: npx tsx --test --test-concurrency=1 tests/dynamic-agent-*.test.ts
+      - name: Full DevOS unit and integration test suite
+        run: npm test
