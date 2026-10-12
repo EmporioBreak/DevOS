@@ -1,0 +1,36 @@
+name: Dynamic agent core checks
+
+on:
+  push:
+    branches: [architecture/dynamic-agent-runtime-246]
+    paths:
+      - '.github/workflows/dynamic-agent-runtime.yml'
+      - 'src/dynamic-agent-*.ts'
+      - 'tests/dynamic-agent-*.test.ts'
+      - 'package.json'
+      - 'package-lock.json'
+  pull_request:
+    paths:
+      - '.github/workflows/dynamic-agent-runtime.yml'
+      - 'src/dynamic-agent-*.ts'
+      - 'tests/dynamic-agent-*.test.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: TypeScript build
+        run: npm run build
+      - name: CoS-derived agent protocol tests
+        run: npx tsx --test --test-concurrency=1 tests/dynamic-agent-*.test.ts
