@@ -327,11 +327,13 @@ test("CoS two-stage spawn fences uncertain bootstrap and binds only exact host-p
   const f=await fixture();t.after(f.close);await f.broker.initialize();
   f.as("main_agent","owner-proof");
   // Default-deny: the old trust implementation has no independent bootstrap grant.
-  const reserved=await f.broker.requestSpawn({id:"qa-new",role:"qa",idempotencyKey:"staged-qa-00001"});
+  const reserved=await f.broker.requestSpawn({id:"qa-new",role:"qa",idempotencyKey:"staged-qa-00001",brief:"Validate browser flow"});
   assert.equal(reserved.state,"reserved");
   assert.equal((await f.store.load())!.agents.some(a=>a.id==="qa-new"),false);
-  const same=await f.broker.requestSpawn({id:"qa-new",role:"qa",idempotencyKey:"staged-qa-00001"});
+  const same=await f.broker.requestSpawn({id:"qa-new",role:"qa",idempotencyKey:"staged-qa-00001",brief:"Validate browser flow"});
   assert.equal(same.id,reserved.id);
+  await assert.rejects(f.broker.requestSpawn({id:"qa-new",role:"qa",idempotencyKey:"staged-qa-00001",
+    brief:"Different scope"}),/Spawn idempotency-key conflict/);
   await assert.rejects(f.broker.claimSpawnBootstrap({task,agentId:"qa-new",idempotencyKey:"staged-qa-00001"}),/Unverified spawn bootstrap lease/);
   await assert.rejects(f.broker.bindSpawn({task,agentId:"qa-new",idempotencyKey:"staged-qa-00001"},
     {sessionId:"unauthorized",sessionFingerprint:"qa-new-proof"}),/Unverified spawned provider identity/);
@@ -344,8 +346,9 @@ test("CoS staged spawn survives crash, rejects replay, retains exact original bi
   let leaseOk=true,providerOk=true,recoveryOk=false;
   const trust={
     resolveCaller:async()=>actor,verifyPolicy:async()=>true,
-    verifyNewAgentBinding:async(input:{id:string;role:string;sessionFingerprint:string})=>
-      providerOk&&input.id==="qa-new"&&input.role==="qa"&&input.sessionFingerprint==="qa-proven",
+    verifyNewAgentBinding:async(input:{id:string;role:string;sessionFingerprint:string;sessionId?:string})=>
+      providerOk&&input.id==="qa-new"&&input.role==="qa"&&input.sessionFingerprint==="qa-proven" &&
+      input.sessionId?.startsWith("https://chatgpt.com/c/")===true,
     verifyToolCall:async()=>true,verifyTransportLease:async()=>true,
     verifyProviderReceipt:async()=>true,verifyNoSubmit:async()=>true,
     verifySpawnLease:async()=>leaseOk,verifySpawnNoStart:async()=>recoveryOk,
@@ -353,7 +356,7 @@ test("CoS staged spawn survives crash, rejects replay, retains exact original bi
   const store=new DynamicAgentStore(root,task);
   const broker=new DynamicAgentBroker(policy,store,trust);
   await broker.initialize();
-  const req={id:"qa-new",role:"qa",idempotencyKey:"qa-bootstrap-001"};
+  const req={id:"qa-new",role:"qa",idempotencyKey:"qa-bootstrap-001",brief:"Analyze real tests"};
   const lease={task,agentId:req.id,idempotencyKey:req.idempotencyKey};
   await broker.requestSpawn(req);
   await broker.claimSpawnBootstrap(lease);
@@ -389,7 +392,7 @@ test("CoS host-proved pre-bootstrap release never silently retries unknown spawn
   const broker=new DynamicAgentBroker(policy,new DynamicAgentStore(root,task),trust);
   await broker.initialize();
   const idempotencyKey="qa-unknown-00001";
-  await broker.requestSpawn({id:"qa-new",role:"qa",idempotencyKey});
+  await broker.requestSpawn({id:"qa-new",role:"qa",idempotencyKey,brief:"Verify secured login"});
   const lease={task,agentId:"qa-new",idempotencyKey};
   await broker.claimSpawnBootstrap(lease);
   await assert.rejects(broker.claimSpawnBootstrap(lease),/already claimed/);
