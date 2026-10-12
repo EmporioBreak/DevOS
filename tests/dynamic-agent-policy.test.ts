@@ -28,28 +28,22 @@ test("sealed COS dynamic policy can be used as actual broker authorization gate"
   });
   assert.equal(await checker(policy),false);
   await assert.rejects(broker.initialize(),/Unapproved dynamic task policy/);
-  const signed=await sealDynamicAgentPolicy({root:f.root,policy,ownerSecret:secret,
-    assertTrustedOwnerApproval:async meta=>{
-      assert.equal(meta.policyId,policy.policyId);
-      assert.equal(meta.task.issue,246);
-      assert.match(meta.sha256,/^[a-f0-9]{64}$/);
-      return true;
-    }});
+  // No per-task owner initiation proof or approval-ref is required for a
+  // host-local signer holding the distinct v2 signing key.
+  const signed=await sealDynamicAgentPolicy({root:f.root,policy,ownerSecret:secret});
   assert.match(signed,/^[a-f0-9]{64}$/);
   assert.equal(await checker(policy),true);
   await broker.initialize();
   assert.equal((await broker.status()).agents[0]!.id,"main_agent");
-  const repeated=await sealDynamicAgentPolicy({root:f.root,policy,ownerSecret:secret,
-    assertTrustedOwnerApproval:async()=>true});
+  const repeated=await sealDynamicAgentPolicy({root:f.root,policy,ownerSecret:secret});
   assert.equal(repeated,signed);
 });
-test("owner MAC rejects modified policy, foreign task, wrong secret and unapproved policy changes",async t=>{
+test("host MAC rejects modified policy, foreign task, wrong secret and changed permissions",async t=>{
   const f=await fixture();t.after(f.close);
-  await assert.rejects(sealDynamicAgentPolicy({root:f.root,policy,ownerSecret:secret,
-    assertTrustedOwnerApproval:async()=>false}),/Exact owner approval required/);
+  // A private trusted host can sign a task without asking the user to
+  // produce "I started this" evidence. Tampering and wrong keys still fail.
   await assert.rejects(readFile(dynamicPolicyPath(f.root,task),"utf8"),/ENOENT/);
-  await sealDynamicAgentPolicy({root:f.root,policy,ownerSecret:secret,
-    assertTrustedOwnerApproval:async()=>true});
+  await sealDynamicAgentPolicy({root:f.root,policy,ownerSecret:secret});
   assert.equal(await verifySealedDynamicAgentPolicy({root:f.root,policy,ownerSecret:secret}),true);
   await assert.rejects(verifySealedDynamicAgentPolicy({root:f.root,policy,
     ownerSecret:secret+"wrong"}),/owner MAC is invalid/);
@@ -58,16 +52,14 @@ test("owner MAC rejects modified policy, foreign task, wrong secret and unapprov
       manifestSha256:"d".repeat(64),mayAdmit:true}}},ownerSecret:secret}),
       /revision differs/);
   await assert.rejects(sealDynamicAgentPolicy({root:f.root,
-    policy:{...policy,maxAgents:9},ownerSecret:secret,
-    assertTrustedOwnerApproval:async()=>true}),/already sealed/);
+    policy:{...policy,maxAgents:9},ownerSecret:secret}),/already sealed/);
   const otherTask={...task,pr:999};
   await assert.rejects(verifySealedDynamicAgentPolicy({root:f.root,
     policy:{...policy,task:otherTask},ownerSecret:secret}),/signature or task binding missing/);
 });
 test("tampering with signed payload or symlinked scope fails closed",async t=>{
   const f=await fixture();t.after(f.close);
-  await sealDynamicAgentPolicy({root:f.root,policy,ownerSecret:secret,
-    assertTrustedOwnerApproval:async()=>true});
+  await sealDynamicAgentPolicy({root:f.root,policy,ownerSecret:secret});
   const file=dynamicPolicyPath(f.root,task);
   const data=JSON.parse(await readFile(file,"utf8"));
   data.policy.roles.qa.mayAdmit=true;
@@ -77,6 +69,5 @@ test("tampering with signed payload or symlinked scope fails closed",async t=>{
   const outside=join(f.root,"external");
   await mkdir(outside);
   await symlink(outside,file);
-  await assert.rejects(sealDynamicAgentPolicy({root:f.root,policy,ownerSecret:secret,
-    assertTrustedOwnerApproval:async()=>true}),/not private and regular/);
+  await assert.rejects(sealDynamicAgentPolicy({root:f.root,policy,ownerSecret:secret}),/not private and regular/);
 });
