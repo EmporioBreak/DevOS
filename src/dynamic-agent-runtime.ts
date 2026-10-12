@@ -313,13 +313,6 @@ export class DynamicAgentBroker {
           input.idempotencyKey.length >= 8 && input.idempotencyKey.length <= 128, "Invalid idempotency key");
         const recipient = state.agents.find(a => a.id === input.to);
         invariant(input.to !== actor.id && recipient, "Unknown recipient or self-send");
-        // CoS beginRevival(): queue ownership and active-slot reservation are
-        // one transaction; a wake already in progress refuses further work.
-        invariant(recipient.status !== "waking" && recipient.status !== "blocked", "Recipient cannot accept another wake");
-        if (recipient.status === "sleeping") {
-          invariant(!!recipient.sessionId, "Sleeping worker has no original conversation to wake");
-          waking.add(recipient.id);
-        }
         invariant(!input.inReplyTo || [...state.messages, ...planned].some(m =>
           m.id === input.inReplyTo && (m.to === actor.id || m.from === actor.id)), "Invalid reply chain");
         const existing = byKey.get(input.idempotencyKey) ??
@@ -330,6 +323,13 @@ export class DynamicAgentBroker {
           byKey.set(input.idempotencyKey, existing);
           planned.push(existing);
           continue;
+        }
+        // CoS beginRevival(): queue ownership and active-slot reservation are
+        // one transaction; a wake already in progress refuses further work.
+        invariant(recipient.status !== "waking" && recipient.status !== "blocked", "Recipient cannot accept another wake");
+        if (recipient.status === "sleeping") {
+          invariant(!!recipient.sessionId, "Sleeping worker has no original conversation to wake");
+          waking.add(recipient.id);
         }
         const already = byRecipient.get(input.to) ?? 0;
         invariant(state.messages.filter(m => m.to === input.to && m.state !== "acked").length +
