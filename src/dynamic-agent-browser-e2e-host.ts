@@ -27,6 +27,11 @@ interface SendEvidence {
  */
 export class DynamicBrowserE2EHost implements DynamicTrustedExecutorHost {
   private readonly accepted=new Map<string,SendEvidence>();
+  private onWakeAccepted?: (receipt:DynamicWakeReceipt)=>Promise<void>;
+  /** Native host-only callback: persist wake ACK as soon as provider GET proves it. */
+  setWakeAcceptance(handler:(receipt:DynamicWakeReceipt)=>Promise<void>):void{
+    this.onWakeAccepted=handler;
+  }
   constructor(
     private readonly root:string,
     private readonly policy:DynamicAgentPolicy,
@@ -152,8 +157,20 @@ export class DynamicBrowserE2EHost implements DynamicTrustedExecutorHost {
       "Use devos_agents_v2 for direct teammate messages and finish.",
       "Do not open another conversation or request owner credentials."
     ].join("\n");
-    return this.prepareWork(agent.id,agent.sessionId!,command.id,prompt,
+    const request=this.prepareWork(agent.id,agent.sessionId!,command.id,prompt,
       agent.grantEpoch??0);
+    const prior=request.onAcceptedUserMessage;
+    request.onAcceptedUserMessage=async receipt=>{
+      await prior?.(receipt);
+      // The browser turn may still be running. Confirming AFTER Executor.run
+      // returns would deadlock noteAgentAlive/finishWork in the same turn.
+      await this.onWakeAccepted?.({
+        task:this.policy.task,commandId:command.id,recipientId:agent.id,
+        conversationId:agent.sessionId!,wakeKey:command.wakeKey,
+        providerMessageId:receipt.providerMessageId
+      });
+    };
+    return request;
   }
   async verifiedBootstrap(input:Parameters<DynamicTrustedExecutorHost["verifiedBootstrap"]>[0])
     :Promise<string|null>{
