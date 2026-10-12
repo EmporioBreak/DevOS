@@ -22,7 +22,7 @@ async function fixture(){
   const root=await mkdtemp(join(tmpdir(),"dynamic-v2-grants-"));
   let actor:VerifiedDynamicCaller={task,agentId:"main_agent",sessionFingerprint:"main-proof"};
   const store=new DynamicAgentStore(root,task);
-  await sealDynamicAgentPolicy({root,policy,ownerSecret:secret,assertTrustedOwnerApproval:async()=>true});
+  await sealDynamicAgentPolicy({root,policy,ownerSecret:secret});
   const taskLock=await acquireTaskLock(root,task);
   const broker=new DynamicAgentBroker(policy,store,{
     resolveCaller:async()=>actor,verifyPolicy:sealedDynamicPolicyVerifier(root,secret),
