@@ -134,12 +134,20 @@ export class DynamicAgentGrantRegistry {
     if(!isGrant(grant)||!await this.live(grant,input.policy))return false;
     try{
       const existing=this.read();
-      const collisions=existing.some(g=>g.expiresAt>Date.now()&&
-        (g.fingerprint===grant.fingerprint||
-          (sameTask(g.task,grant.task)&&g.agentId===grant.agentId&&
-            g.grantEpoch===grant.grantEpoch)));
+      const now=Date.now();
+      // CoS revisits the SAME worker conversation after finish. Its previous
+      // grant must be invalidated by the durable epoch, not pin the agent out
+      // of all future revivals until a TTL expires.
+      const collisions=existing.some(g=>g.expiresAt>now&&(
+        (g.fingerprint===grant.fingerprint &&
+          !(sameTask(g.task,grant.task)&&g.agentId===grant.agentId&&
+            g.grantEpoch<grant.grantEpoch)) ||
+        (sameTask(g.task,grant.task)&&g.agentId===grant.agentId&&
+          g.grantEpoch===grant.grantEpoch)
+      ));
       if(collisions)return false;
-      this.write([...existing.filter(g=>g.expiresAt>Date.now()),grant]);
+      this.write([...existing.filter(g=>g.expiresAt>now&&
+        g.fingerprint!==grant.fingerprint),grant]);
       return true;
     }catch{return false;}
   }
