@@ -79,8 +79,8 @@ test("CoS bridge wake command is atomic with worker revival and targets exact ol
   await assert.rejects(dispatcher.dispatch(lease),/not queued/);
   const at=(await f.store.load())!.wakeCommands![0]!.deliveredAt!;
   f.as("qa1");
-  assert.equal(await f.broker.noteAgentAlive({task,recipientId:"qa1",callId:"before-wake",startedAt:at}),false);
   f.proveCall();
+  assert.equal(await f.broker.noteAgentAlive({task,recipientId:"qa1",callId:"before-wake",startedAt:at}),false);
   assert.equal(await f.broker.noteAgentAlive({task,recipientId:"qa1",callId:"new-worker-call",startedAt:at+1}),true);
   assert.equal((await f.store.load())!.wakeCommands![0]!.state,"alive");
 });
