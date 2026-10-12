@@ -37,7 +37,7 @@ function setup(){
     prepareBootstrap:async input=>prepare(input.agentId,input.executor),
     prepareMessage:async input=>prepare(input.recipient.id,input.recipient.executor as "codex"|"chatgpt_browser",
       input.recipient.sessionId),
-    prepareWake:async input=>prepare(input.recipientId,"chatgpt_browser",input.conversationId),
+    prepareWake:async input=>prepare(input.recipientId,input.executor,input.conversationId),
     verifiedBootstrap:async()=>binding,
     verifiedProviderMessage:async()=>receipt,
   };
@@ -82,14 +82,14 @@ test("existing Codex session uses signed skill request and only host-proven exec
 test("real DevOS adapter never replaces saved ChatGPT conversation during wake",async()=>{
   const f=setup();
   const result=await f.adapter.send({task,recipientId:"qa",conversationId:chat,
-    commandId:"wake-cmd",wakeKey:"e".repeat(64),messages:[{
+    executor:"chatgpt_browser",commandId:"wake-cmd",wakeKey:"e".repeat(64),messages:[{
       id:"m-1",from:"dev",kind:"work",body:"Retest"
     }]});
   assert.equal(result.providerMessageId,"trusted-provider-message-id");
   assert.equal(f.calls[0]!.request.sessionId,chat);
   f.wrongSession();
   await assert.rejects(f.adapter.send({task,recipientId:"qa",conversationId:chat,
-    commandId:"wake-cmd-2",wakeKey:"e".repeat(64),messages:[{
+    executor:"chatgpt_browser",commandId:"wake-cmd-2",wakeKey:"e".repeat(64),messages:[{
       id:"m-2",from:"dev",kind:"work",body:"Retest again"
     }]}),/Executor changed the exact saved worker conversation/);
 });
@@ -99,4 +99,21 @@ test("DevOS adapter rejects wrong Codex signed assignment before any external to
     brief:"Implement",executor:"codex",manifestSha256:"a".repeat(64)}),
     /mandatory signed skill assignment/);
   assert.equal(f.calls.length,0);
+});
+
+test("dynamic waking Codex peer resumes exact original thread with signed skill assignment",async()=>{
+  const f=setup();
+  const output=await f.adapter.send({task,recipientId:"dev1",executor:"codex",
+    conversationId:"codex-1",commandId:"codex-wake-1",wakeKey:"a".repeat(64),
+    messages:[{id:"msg-codex-1",from:"qa1",kind:"work",body:"Fix the API"}]});
+  assert.equal(output.providerMessageId,"trusted-provider-message-id");
+  assert.equal(f.calls.length,1);
+  assert.equal(f.calls[0]!.kind,"codex");
+  assert.equal(f.calls[0]!.request.sessionId,"codex-1");
+  assert.equal(f.calls[0]!.request.codexSkills?.mandatory,true);
+  f.wrongSession();
+  await assert.rejects(f.adapter.send({task,recipientId:"dev1",executor:"codex",
+    conversationId:"codex-1",commandId:"codex-wake-2",wakeKey:"b".repeat(64),
+    messages:[{id:"msg-codex-2",from:"qa1",kind:"work",body:"Fix again"}]}),
+    /Executor changed the exact saved worker conversation\/thread/);
 });
