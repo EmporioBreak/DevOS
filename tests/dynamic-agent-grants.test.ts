@@ -46,6 +46,7 @@ async function fixture(){
       providerMessage,resourceUri,policy});
   }
   return {root,store,broker,registry,probe,bind,asQa:()=>actor={task,agentId:"qa1",sessionFingerprint:fp},
+    asOwner:()=>actor={task,agentId:"main_agent",sessionFingerprint:"main-proof"},
     close:async()=>{await taskLock.release();await rm(root,{recursive:true,force:true})}};
 }
 test("real v2 grant needs exact provider-authored probe, signed policy and live owner",async t=>{
@@ -85,4 +86,20 @@ test("v2 grants fail closed when native lock owner dies or task lock changes",as
   lock.identity.startTime="unrelated-process";
   await writeFile(lockPath,JSON.stringify(lock)+"\n");
   assert.equal(await f.registry.resolveCaller(fp,policy),null);
+});
+
+test("COS saved QA conversation can receive a newly authenticated v2 grant after finish and wake",async t=>{
+  const f=await fixture();t.after(f.close);
+  assert.equal(await f.bind(),true);
+  f.asQa();
+  await f.broker.finishWork({result:"Original review finished",
+    idempotencyKey:"grant-revive-finish-01"});
+  assert.equal(await f.registry.resolveCaller(fp,policy),null);
+  f.asOwner();
+  await f.broker.send({to:"qa1",kind:"work",body:"Review the corrected PR",
+    idempotencyKey:"grant-revive-message-01"});
+  assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa1")?.status,"waking");
+  assert.equal(await f.bind(),true,"new provider-authenticated probe creates new epoch grant");
+  assert.deepEqual(await f.registry.resolveCaller(fp,policy),
+    {task,agentId:"qa1",sessionFingerprint:fp});
 });
