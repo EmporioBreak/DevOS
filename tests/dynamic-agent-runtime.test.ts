@@ -463,3 +463,20 @@ test("independent final review is unavailable without trusted external proof eve
   await assert.rejects(f.broker.requestFinalReview(),/Missing host-verified independent review evidence/);
   assert.equal((await f.store.load())!.finalReviewRequested,false);
 });
+
+test("CoS bounded inbox/journal never silently discards old idempotency evidence",async t=>{
+  const capped: typeof policy={...policy,maxRecordedMessages:2};
+  const f=await fixture(capped);t.after(f.close);await f.broker.initialize();
+  await f.broker.admit({id:"dev",role:"developer",sessionFingerprint:"dev-proof"});
+  await f.broker.admit({id:"qa",role:"qa",sessionFingerprint:"qa-proof"});
+  const first=await f.broker.sendBatch([
+    {to:"dev",kind:"work",body:"implement",idempotencyKey:"journal-dev-1"},
+    {to:"qa",kind:"work",body:"test",idempotencyKey:"journal-qa-01"}]);
+  assert.equal(first.length,2);
+  await assert.rejects(f.broker.send({to:"dev",kind:"question",body:"retry",
+    idempotencyKey:"journal-dev-2"}),/Message history limit reached/);
+  assert.equal((await f.store.load())!.messages.length,2);
+  const again=await f.broker.send({to:"dev",kind:"work",body:"implement",
+    idempotencyKey:"journal-dev-1"});
+  assert.equal(again.id,first[0]!.id);
+});
