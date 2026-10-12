@@ -1,4 +1,9 @@
 import type {Page} from "playwright-core";
+import {readFile} from "node:fs/promises";
+import {join} from "node:path";
+import {parseEnvFile} from "./connector-env.js";
+import {localWorkerAuthorization} from "./chat-worker-grants.js";
+import {readSealedDynamicAgentPolicy} from "./dynamic-agent-policy.js";
 import {readExactHistory} from "./chat-worker-observer.js";
 import {DynamicAgentGrantRegistry} from "./dynamic-agent-grants.js";
 import {isSameChatGptConversation} from "./chatgpt-browser-executor.js";
@@ -60,4 +65,35 @@ export async function observeDynamicWorkerAuthorization(input:{
     });
   }
   return false;
+}
+
+/**
+ * Launch from the EXISTING ChatGptBrowserExecutor only when the trusted v2
+ * WorkerRequest capability is explicitly selected. Local secrets/pinned
+ * resource URI stay on the Mac and never enter worker prompts or MCP args.
+ * No v1 fallback on failed evidence.
+ */
+export async function observeDynamicWorkerAuthorizationLocal(input:{
+  page:Page;root:string;task:TaskRef;agentId:string;
+  expectedConversation:()=>string|undefined;
+  expectedUserMessageId:()=>string|undefined;
+  exactSubmittedPrompt:string;signal:AbortSignal;
+}):Promise<boolean>{
+  if(process.env.DEVOS_DYNAMIC_AGENTS_V2!=="enabled")return false;
+  const pinned=localWorkerAuthorization(input.root);
+  if(!pinned)return false;
+  let env:Record<string,string>={};
+  try{env=parseEnvFile(await readFile(join(input.root,".env"),"utf8"));}catch{}
+  const secret=process.env.DEVOS_CONNECTOR_OWNER_SECRET?.trim() ||
+    env.DEVOS_CONNECTOR_OWNER_SECRET?.trim() || "";
+  if(Buffer.byteLength(secret)<32)return false;
+  let policy:DynamicAgentPolicy;
+  try{
+    policy=await readSealedDynamicAgentPolicy({
+      root:input.root,task:input.task,ownerSecret:secret
+    });
+  }catch{return false;}
+  return observeDynamicWorkerAuthorization({
+    ...input,ownerSecret:secret,policy,resourceUri:pinned.resourceUri
+  });
 }
