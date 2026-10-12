@@ -999,6 +999,34 @@ export class DynamicAgentBroker {
    * proves a restored conversation is executing. Old turn hydration, a page
    * observation, or the native browser Send receipt are insufficient.
    */
+  /**
+   * CoS accepted-message ACK: a later authenticated MCP call from this exact
+   * saved worker conversation proves the worker reached the next execution
+   * point. The host attests call start time; any old, prompt-supplied timestamp
+   * or a mere provider Send response is not sufficient. This unblocks the next
+   * per-recipient queued message without replaying the previous Send.
+   */
+  async acknowledgeProviderInbox(call:VerifiedDynamicToolCall):Promise<string[]>{
+    invariant(sameTask(call.task,this.policy.task)&&!!call.callId?.trim()&&
+      Number.isSafeInteger(call.startedAt)&&call.startedAt>0,
+      "Invalid authenticated provider inbox tool call");
+    invariant(await this.trust.verifyToolCall(call),
+      "Unverified provider inbox acknowledgment caller");
+    return this.perform((state,actor)=>{
+      invariant(actor.id===call.recipientId&&!!actor.sessionId,
+        "Provider inbox acknowledgment session mismatch");
+      const acked:string[]=[];
+      for(const message of state.messages){
+        if(message.to!==actor.id||message.state!=="sent"||
+          !message.providerDeliveredAt ||
+          message.providerDeliveredAt>=call.startedAt)continue;
+        message.state="acked";
+        acked.push(message.id);
+      }
+      return acked;
+    });
+  }
+
   async noteAgentAlive(call: VerifiedDynamicToolCall): Promise<boolean> {
     invariant(sameTask(call.task, this.policy.task) && typeof call.callId === "string" &&
       !!call.callId.trim() && Number.isSafeInteger(call.startedAt) && call.startedAt > 0,
