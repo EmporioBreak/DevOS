@@ -103,3 +103,48 @@ export function exactWorkerHistoryProof(
   }
   return candidate;
 }
+
+/**
+ * A real provider GET/history response can prove that the exact outgoing
+ * user-message ID reached the original saved ChatGPT conversation. An
+ * intercepted POST payload, click event, or assistant text alone cannot.
+ *
+ * Reject duplicate IDs, prompt/content mismatch, foreign conversation,
+ * conflicting history shapes and unknown structured parts.
+ */
+export function exactProviderAcceptedUserMessage(
+  response: unknown, exactChatUrl: string, outgoingMessageId: string,
+  exactPrompt: string,
+): string | null {
+  if (!/^[A-Za-z0-9_-]{1,200}$/.test(outgoingMessageId) ||
+      typeof exactPrompt !== "string" || !exactPrompt.trim() ||
+      exactPrompt.length > 250_000) return null;
+  let chatId:string;
+  try {
+    if (canonicalPrivateChatUrl(exactChatUrl) !== exactChatUrl) return null;
+    chatId=new URL(exactChatUrl).pathname.split("/c/")[1] ?? "";
+    if (!chatId || chatId.includes("/")) return null;
+  } catch {return null;}
+  if (!record(response)) return null;
+  if ((response.conversation_id ?? response.id) !== chatId ||
+      (response.conversation_id !== undefined && response.conversation_id !== chatId) ||
+      (response.id !== undefined && response.id !== chatId) ||
+      (response.mapping !== undefined && response.messages !== undefined)) return null;
+  const normalize=(s:string)=>s.replace(/\r\n?/g,"\n").replace(/\u00a0/g," ").normalize("NFC").trim();
+  const accept=(m:unknown):boolean=>{
+    if(!record(m)||m.author?.role!=="user"||m.id!==outgoingMessageId)return false;
+    const parts=m.content?.parts;
+    return Array.isArray(parts) && parts.length>0 &&
+      parts.every((p:unknown)=>typeof p==="string") &&
+      normalize(parts.join(""))===normalize(exactPrompt);
+  };
+  let messages:unknown[];
+  if(response.mapping!==undefined){
+    if(!record(response.mapping)||Object.keys(response.mapping).length>10_000)return null;
+    messages=Object.values(response.mapping).map(entry=>record(entry)?entry.message:null);
+  }else{
+    if(!Array.isArray(response.messages)||response.messages.length>10_000)return null;
+    messages=response.messages.map((entry:unknown)=>record(entry)?entry.message??entry:entry);
+  }
+  return messages.filter(accept).length===1 ? outgoingMessageId : null;
+}

@@ -1,0 +1,36 @@
+name: Dynamic agent core checks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/dynamic-agent-runtime.yml'
+      - 'src/dynamic-agent-*.ts'
+      - 'tests/dynamic-agent-*.test.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dynamic-agents-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Install and verify pinned Spec Kit and Superpowers sources
+        run: node scripts/devos-upstreams.mjs install
+      - name: TypeScript build
+        run: npm run build
+      - name: CoS-derived agent protocol tests
+        run: npx tsx --test --test-concurrency=1 tests/dynamic-agent-*.test.ts
+      - name: Full DevOS unit and integration test suite
+        run: npm test
