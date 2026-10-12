@@ -5,7 +5,7 @@
 
 ## Design principles
 
-The Main Agent defines an approved **task policy**, not an immutable execution itinerary. A trusted task-scoped broker validates and durably applies **agent decisions**, and a task runtime executes authorized activities. A worker-directed message can target any member; a worker-directed spawn can request a new member inside approved resource/capability bounds. Browser/Codex transport adapters do not own approval or select recipient.
+The Main Agent defines a **host-sealed task policy**, not an immutable execution itinerary or a per-task user-consent receipt. A trusted task-scoped broker validates and durably applies **agent decisions**, and a task runtime executes authorized activities. A worker-directed message can target any member; a worker-directed spawn can request a new member inside approved resource/capability bounds. Browser/Codex transport adapters do not own approval or select recipient.
 
 ### Layer boundaries
 
@@ -39,7 +39,7 @@ All acceptance is authoritative only after durable commit; browser/provider evid
 
 **Stage D — orchestration/evidence.** Enable dynamic QA/reviewer/security work routing, independent reviewer results and Main Agent addressable messages, without graph predeclaring branches. Attach acceptance evidence to task and maintain original GitHub Issue/PR lifecycle.
 
-**Stage E — real E2E and release.** Run actual headed signed-in browser two-Issue journeys, worker-to-worker and Main Agent messages, stress/fault injections, independent code and security reviews, full tests, rollback drill. Owner authorizes exact reviewed diff/policy and Production cutover. Existing legacy tasks remain on legacy path until separately proven.
+**Stage E — real E2E and release.** Run actual headed signed-in browser two-Issue journeys, worker-to-worker and Main Agent messages, stress/fault injections, independent code and security reviews, full tests, rollback drill. Owner authorizes Production cutover and any privileged scope expansion; routine task admission inside a host-sealed policy does not require separate evidence that a user explicitly initiated it. Existing legacy tasks remain on legacy path until separately proven.
 
 ## Migration/rollback matrix
 
