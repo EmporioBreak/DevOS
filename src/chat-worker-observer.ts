@@ -1,6 +1,6 @@
 import type { Page } from "playwright-core";
 import type { TaskRef } from "./workflow.js";
-import { exactWorkerHistoryProof } from "./chat-worker-history-proof.js";
+import { exactWorkerHistoryProof, exactProviderAcceptedUserMessage } from "./chat-worker-history-proof.js";
 import { localWorkerAuthorization } from "./chat-worker-grants.js";
 import { debugLog } from "./debug-log.js";
 
@@ -67,6 +67,37 @@ export async function readExactHistory(
     return exactWorkerHistoryProof(history, url, userMessageId, resourceUri, exactPrompt);
   } catch { return null; }
   finally { await verifier?.close().catch(() => {}); }
+}
+
+/**
+ * Native acceptance receipt: read ONLY a successful provider GET for the
+ * exact saved chat, then match the intercepted outgoing user-message ID and
+ * the *whole* task prompt against the provider's user message history.
+ * A POST attempt, DOM click, cached assistant reply or foreign origin fails.
+ */
+export async function readExactAcceptedUserMessage(
+  workerPage:Page, chatUrl:string, messageId:string, exactPrompt:string,
+  signal:AbortSignal
+):Promise<string|null>{
+  if(signal.aborted || workerPage.url()!==chatUrl)return null;
+  let verifier:Page|undefined;
+  try{
+    verifier=await workerPage.context().newPage();
+    const wait=verifier.waitForResponse(response=>
+      response.request().method()==="GET" &&
+      isExactWorkerHistoryEndpoint(response.url(),chatUrl),
+      {timeout:14_000}
+    );
+    void wait.catch(()=>{});
+    await verifier.goto(chatUrl,{waitUntil:"domcontentloaded",timeout:14_000});
+    if(signal.aborted||verifier.url()!==chatUrl||workerPage.url()!==chatUrl)return null;
+    const response=await wait;
+    if(signal.aborted||response.status()!==200 ||
+      verifier.url()!==chatUrl||workerPage.url()!==chatUrl)return null;
+    const history:unknown=await response.json();
+    return exactProviderAcceptedUserMessage(history,chatUrl,messageId,exactPrompt);
+  }catch{return null;}
+  finally{await verifier?.close().catch(()=>{});}
 }
 
 /** Fail-closed, bounded read-only browser observation. Authorization occurs
