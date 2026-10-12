@@ -428,7 +428,8 @@ export class DynamicAgentBroker {
       "Spawn batch size must be 1..8");
     return this.perform((state, actor) => {
       invariant(actor.status !== "sleeping" && actor.status !== "waking" &&
-        actor.status !== "blocked", "Inactive worker cannot admit specialists");
+        actor.status !== "blocked" && actor.status !== "terminal",
+        "Inactive worker cannot admit specialists");
       invariant(actor.id === "main_agent" || this.policy.roles[actor.role]?.mayAdmit,
         "Actor cannot admit specialists");
       const accepted = state.pendingSpawns ??= [];
@@ -563,7 +564,8 @@ export class DynamicAgentBroker {
     invariant(await this.trust.verifyNewAgentBinding({ ...input, task: this.policy.task }), "Unverified new agent identity");
     return this.perform((state, actor) => {
       invariant(actor.status !== "sleeping" && actor.status !== "waking" &&
-        actor.status !== "blocked", "Inactive worker cannot admit specialists");
+        actor.status !== "blocked" && actor.status !== "terminal",
+        "Inactive worker cannot admit specialists");
       invariant(actor.id === "main_agent" || this.policy.roles[actor.role]?.mayAdmit, "Actor cannot admit specialists");
       invariant(IDENT.test(input.id) && input.id !== "main_agent" && !state.agents.some(a => a.id === input.id), "Invalid or duplicate agent id");
       invariant(!!input.sessionFingerprint && typeof input.sessionFingerprint === "string", "No verified session binding");
@@ -690,7 +692,8 @@ export class DynamicAgentBroker {
     invariant(Number.isSafeInteger(maxChars) && maxChars > 0 && maxChars <= 32_000, "Invalid offer byte budget");
     return this.perform((state, actor) => {
       invariant(actor.status !== "blocked" && actor.status !== "sleeping" &&
-        actor.status !== "waking" && !!actor.sessionId, "No active bound agent session for tool offer");
+        actor.status !== "waking" && actor.status !== "terminal" &&
+        !!actor.sessionId, "No active bound agent session for tool offer");
       const pending = state.messages.filter(m => m.to === actor.id && m.state !== "acked");
       const offered: DynamicMessage[] = [];
       let size = 0;
@@ -936,7 +939,7 @@ export class DynamicAgentBroker {
         input.result.length <= MAX_MESSAGE_CHARS, "Invalid finish report");
       invariant(typeof input.idempotencyKey === "string" && input.idempotencyKey.length >= 8 &&
         input.idempotencyKey.length <= 128, "Invalid finish idempotency key");
-      if (actor.status === "sleeping") {
+      if (actor.status === "sleeping" || actor.status === "terminal") {
         invariant(actor.lastFinishKey === input.idempotencyKey && actor.lastResult === input.result,
           "Sleeping worker cannot finish a new work unit");
         const previous = state.messages.find(m =>
