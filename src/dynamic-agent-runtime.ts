@@ -9,6 +9,8 @@ export interface DynamicAgentPolicy {
   task: TaskRef;
   policyId: string;
   maxAgents: number;
+  /** Simultaneously executing or waking worker slots; absent uses maxAgents minus owner. */
+  maxActiveWorkers?: number;
   maxPendingPerAgent: number;
   roles: Record<string, { executor: ExecutorKind; manifestSha256: string; mayAdmit: boolean }>;
 }
@@ -19,7 +21,7 @@ export interface VerifiedDynamicCaller {
 }
 export type DynamicMessageKind = "work" | "question" | "review" | "evidence" | "blocker";
 export type DynamicMessageState = "queued" | "tool_offered" | "dispatch_uncertain" | "sent" | "acked";
-export type DynamicAgentStatus = "idle" | "busy" | "sleeping" | "blocked";
+export type DynamicAgentStatus = "idle" | "busy" | "sleeping" | "waking" | "blocked";
 export interface DynamicAgent {
   id: string;
   role: string;
@@ -28,6 +30,8 @@ export interface DynamicAgent {
   sessionFingerprint: string;
   sessionId?: string;
   status: DynamicAgentStatus;
+  lastResult?: string;
+  lastFinishKey?: string;
 }
 export interface DynamicMessage {
   id: string;
@@ -81,6 +85,8 @@ export function validateDynamicPolicy(policy: DynamicAgentPolicy): void {
   invariant(policy.task.pr === undefined || (Number.isSafeInteger(policy.task.pr) && policy.task.pr > 0), "Invalid task PR");
   invariant(typeof policy.policyId === "string" && SHA256.test(policy.policyId), "Missing sealed policy identifier");
   invariant(Number.isSafeInteger(policy.maxAgents) && policy.maxAgents >= 2 && policy.maxAgents <= 64, "Invalid agent limit");
+  invariant(policy.maxActiveWorkers === undefined || (Number.isSafeInteger(policy.maxActiveWorkers) &&
+    policy.maxActiveWorkers > 0 && policy.maxActiveWorkers < policy.maxAgents), "Invalid active worker slots");
   invariant(Number.isSafeInteger(policy.maxPendingPerAgent) && policy.maxPendingPerAgent >= 1 && policy.maxPendingPerAgent <= 256, "Invalid inbox limit");
   invariant(!!policy.roles && typeof policy.roles === "object" && !Array.isArray(policy.roles), "Invalid role catalog");
   invariant(Object.keys(policy.roles).length > 0, "Empty role catalog");
@@ -143,6 +149,11 @@ function validateSnapshot(state: DynamicSnapshot): DynamicSnapshot {
   for (const agent of state.agents) {
     invariant(IDENT.test(agent.id) && !ids.has(agent.id), "Duplicate or invalid dynamic agent");
     invariant(typeof agent.sessionFingerprint === "string" && !!agent.sessionFingerprint, "Missing agent proof binding");
+    invariant(["idle", "busy", "sleeping", "waking", "blocked"].includes(agent.status), "Invalid agent lifecycle state");
+    invariant(agent.lastResult === undefined || (typeof agent.lastResult === "string" &&
+      agent.lastResult.length > 0 && agent.lastResult.length <= MAX_MESSAGE_CHARS), "Invalid worker finish");
+    invariant(agent.lastFinishKey === undefined || (typeof agent.lastFinishKey === "string" &&
+      agent.lastFinishKey.length >= 8 && agent.lastFinishKey.length <= 128), "Invalid worker finish key");
     ids.add(agent.id);
   }
   invariant(ids.has("main_agent"), "Missing Main Agent identity");
@@ -288,8 +299,10 @@ export class DynamicAgentBroker {
     idempotencyKey: string; inReplyTo?: string }>): Promise<DynamicMessage[]> {
     invariant(Array.isArray(items) && items.length > 0 && items.length <= 16, "Message batch size must be 1..16");
     return this.perform((state, actor) => {
-      invariant(actor.status !== "blocked", "Sender is blocked");
+      invariant(actor.status !== "blocked" && actor.status !== "sleeping" &&
+        actor.status !== "waking", "Sender is not executing work");
       const planned: DynamicMessage[] = [];
+      const waking = new Set<string>();
       const byRecipient = new Map<string, number>();
       const byKey = new Map<string, DynamicMessage>();
       for (const input of items) {
@@ -298,7 +311,15 @@ export class DynamicAgentBroker {
           input.body.length <= MAX_MESSAGE_CHARS, "Invalid message body");
         invariant(typeof input.idempotencyKey === "string" &&
           input.idempotencyKey.length >= 8 && input.idempotencyKey.length <= 128, "Invalid idempotency key");
-        invariant(input.to !== actor.id && state.agents.some(a => a.id === input.to), "Unknown recipient or self-send");
+        const recipient = state.agents.find(a => a.id === input.to);
+        invariant(input.to !== actor.id && recipient, "Unknown recipient or self-send");
+        // CoS beginRevival(): queue ownership and active-slot reservation are
+        // one transaction; a wake already in progress refuses further work.
+        invariant(recipient.status !== "waking" && recipient.status !== "blocked", "Recipient cannot accept another wake");
+        if (recipient.status === "sleeping") {
+          invariant(!!recipient.sessionId, "Sleeping worker has no original conversation to wake");
+          waking.add(recipient.id);
+        }
         invariant(!input.inReplyTo || [...state.messages, ...planned].some(m =>
           m.id === input.inReplyTo && (m.to === actor.id || m.from === actor.id)), "Invalid reply chain");
         const existing = byKey.get(input.idempotencyKey) ??
@@ -320,6 +341,11 @@ export class DynamicAgentBroker {
         byKey.set(input.idempotencyKey, msg);
         planned.push(msg);
       }
+      const active = state.agents.filter(a =>
+        a.id !== "main_agent" && (a.status === "busy" || a.status === "waking")).length;
+      invariant(active + waking.size <= (this.policy.maxActiveWorkers ?? this.policy.maxAgents - 1),
+        "NO_FREE_SLOT: sleeping worker cannot be woken");
+      for (const agent of state.agents) if (waking.has(agent.id)) agent.status = "waking";
       // This synchronous, single-writer projection is published *only* when
       // DynamicAgentStore.transact() has fsynced and renamed the accepted snapshot.
       state.messages.push(...planned.filter(m => !state.messages.includes(m)).filter((m,i,a)=>a.indexOf(m)===i));
@@ -340,7 +366,8 @@ export class DynamicAgentBroker {
   async offerToolInbox(maxChars = 32_000, byFinish = false): Promise<DynamicMessage[]> {
     invariant(Number.isSafeInteger(maxChars) && maxChars > 0 && maxChars <= 32_000, "Invalid offer byte budget");
     return this.perform((state, actor) => {
-      invariant(actor.status !== "blocked" && !!actor.sessionId, "No active bound agent session for tool offer");
+      invariant(actor.status !== "blocked" && actor.status !== "sleeping" &&
+        actor.status !== "waking" && !!actor.sessionId, "No active bound agent session for tool offer");
       const pending = state.messages.filter(m => m.to === actor.id && m.state !== "acked");
       const offered: DynamicMessage[] = [];
       let size = 0;
@@ -371,6 +398,7 @@ export class DynamicAgentBroker {
     invariant(await this.trust.verifyToolCall(call), "Unverified subsequent tool call");
     return this.perform((state, actor) => {
       invariant(actor.id === call.recipientId && !!actor.sessionId, "Tool call recipient mismatch");
+      if (actor.status === "waking") actor.status = "busy";
       const acknowledged: string[] = [];
       for (const msg of state.messages) {
         if (msg.to !== actor.id || msg.state !== "tool_offered" || !msg.toolOffer) continue;
@@ -449,6 +477,7 @@ export class DynamicAgentBroker {
       const msg = state.messages.find(m => m.id === messageId && m.to === actor.id);
       invariant(msg && (msg.state === "sent" || msg.state === "acked"), "Provider delivery not confirmed");
       msg.state = "acked";
+      if (actor.status === "waking") actor.status = "busy";
     });
   }
   async releaseProvenUnsubmitted(proof: DynamicNoSubmitProof): Promise<void> {
@@ -458,6 +487,53 @@ export class DynamicAgentBroker {
       const msg = state.messages.find(m => m.id === proof.messageId && m.to === actor.id);
       invariant(msg && msg.state === "dispatch_uncertain", "No uncertain dispatch to release");
       msg.state = "queued";
+    });
+  }
+  /**
+   * CoS stageFinish()/finishAgent() adaptation: worker finishes one unit and
+   * sleeps in its *original* conversation. The result is atomically reported
+   * to the requester (or Main Agent), not a terminal task approval.
+   *
+   * A repeated exact finish key returns the same report instead of creating
+   * an extra message after an MCP response is lost.
+   */
+  async finishWork(input: { result: string; idempotencyKey: string; reportTo?: string }): Promise<DynamicMessage> {
+    return this.perform((state, actor) => {
+      invariant(actor.id !== "main_agent", "Main Agent does not finish worker work");
+      invariant(typeof input.result === "string" && input.result.trim().length > 0 &&
+        input.result.length <= MAX_MESSAGE_CHARS, "Invalid finish report");
+      invariant(typeof input.idempotencyKey === "string" && input.idempotencyKey.length >= 8 &&
+        input.idempotencyKey.length <= 128, "Invalid finish idempotency key");
+      if (actor.status === "sleeping") {
+        invariant(actor.lastFinishKey === input.idempotencyKey && actor.lastResult === input.result,
+          "Sleeping worker cannot finish a new work unit");
+        const previous = state.messages.find(m =>
+          m.from === actor.id && m.idempotencyKey === input.idempotencyKey);
+        invariant(previous && (input.reportTo === undefined || previous.to === input.reportTo),
+          "Previous finish report no longer has a matching recipient");
+        return previous;
+      }
+      invariant(actor.status !== "blocked", "Blocked worker cannot report finished work");
+      const lastRequest = [...state.messages].reverse().find(m =>
+        m.to === actor.id && m.kind === "work");
+      const recipientId = input.reportTo ?? lastRequest?.from ?? "main_agent";
+      invariant(recipientId !== actor.id && state.agents.some(a => a.id === recipientId),
+        "Unknown finish report recipient");
+      invariant(!state.messages.some(m => m.from === actor.id && m.idempotencyKey === input.idempotencyKey),
+        "Finish idempotency key already used");
+      invariant(state.messages.filter(m => m.to === recipientId && m.state !== "acked").length <
+        this.policy.maxPendingPerAgent, "Finish report recipient inbox full");
+      // A new verified call from the same recipient proves an earlier browser
+      // Send reached its conversation; do not carry those rows into another wake.
+      for (const msg of state.messages) if (msg.to === actor.id && msg.state === "sent") msg.state = "acked";
+      const report: DynamicMessage = { id: randomUUID(), taskKey: taskKey(state.task), from: actor.id,
+        to: recipientId, kind: "evidence", body: input.result, idempotencyKey: input.idempotencyKey,
+        ...(lastRequest ? { inReplyTo: lastRequest.id } : {}), state: "queued" };
+      state.messages.push(report);
+      actor.lastFinishKey = input.idempotencyKey;
+      actor.lastResult = input.result;
+      actor.status = "sleeping";
+      return report;
     });
   }
   async requestFinalReview(): Promise<void> {
