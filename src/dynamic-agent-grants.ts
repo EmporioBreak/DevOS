@@ -5,8 +5,8 @@ import {canonicalPrivateChatUrl} from "./chat-access.js";
 import {ChatWorkerProbeRegistry,exactWorkerProbeResult} from "./chat-worker-probe.js";
 import {taskLockPath} from "./task-lock.js";
 import {captureProcessIdentity,sameProcessIdentity,type ProcessIdentity} from "./process-identity.js";
-import {DynamicAgentStore,type DynamicAgentPolicy,type VerifiedDynamicCaller} from "./dynamic-agent-runtime.js";
-import {verifySealedDynamicAgentPolicy} from "./dynamic-agent-policy.js";
+import {DynamicAgentBroker,DynamicAgentStore,type DynamicAgentPolicy,type VerifiedDynamicCaller} from "./dynamic-agent-runtime.js";
+import {verifySealedDynamicAgentPolicy,sealedDynamicPolicyVerifier} from "./dynamic-agent-policy.js";
 import type {TaskRef} from "./workflow.js";
 
 type Grant={ fingerprint:string;task:TaskRef;agentId:string;sessionId:string;
@@ -140,10 +140,48 @@ export class DynamicAgentGrantRegistry {
     // The one-use nonce is consumed only by the trusted local observation path.
     const fingerprint=probe.claim(nonce);
     if(!fingerprint)return false;
-    const state=await new DynamicAgentStore(this.root,input.task).load().catch(()=>null);
-    const agent=state?.agents.find(a=>a.id===input.agentId);
-    if(!agent||agent.sessionId!==input.sessionId||
-      agent.sessionFingerprint!==fingerprint)return false;
+    const store=new DynamicAgentStore(this.root,input.task);
+    let state=await store.load().catch(()=>null);
+    if(!state || !sameTask(state.task,input.policy.task) ||
+      !await ownerAlive(this.root,input.task) ||
+      !await verifySealedDynamicAgentPolicy({root:this.root,policy:input.policy,
+        ownerSecret:this.secret}).catch(()=>false))return false;
+
+    // First-turn CoS bootstrap: the provider has now independently proved
+    // which exact NEW conversation obtained this one-use MCP challenge.
+    // Publish its pre-reserved, already-claimed worker identity BEFORE issuing
+    // the v2 grant. Never create a chat or silently accept an unclaimed spawn.
+    let agent=state.agents.find(a=>a.id===input.agentId);
+    if(!agent){
+      const pending=state.pendingSpawns?.find(p=>p.id===input.agentId &&
+        p.state==="bootstrap_uncertain" &&
+        input.policy.roles[p.role]?.executor==="chatgpt_browser");
+      if(!pending)return false;
+      const lease={task:input.task,agentId:pending.id,idempotencyKey:pending.idempotencyKey};
+      const broker=new DynamicAgentBroker(input.policy,store,{
+        resolveCaller:async()=>{throw new Error("Bootstrap observer never delegates a caller");},
+        verifyPolicy:sealedDynamicPolicyVerifier(this.root,this.secret),
+        verifyNewAgentBinding:async proof=>
+          sameTask(proof.task,input.task) && proof.id===pending.id &&
+          proof.role===pending.role && proof.sessionId===input.sessionId &&
+          proof.sessionFingerprint===fingerprint,
+        verifySpawnLease:async requested=>sameTask(requested.task,lease.task) &&
+          requested.agentId===lease.agentId &&
+          requested.idempotencyKey===lease.idempotencyKey,
+        verifyTransportLease:async()=>false,
+        verifyToolCall:async()=>false,
+        verifyProviderReceipt:async()=>false,
+        verifyNoSubmit:async()=>false,
+      });
+      try {agent=await broker.bindSpawn(lease,{
+        sessionId:input.sessionId,sessionFingerprint:fingerprint
+      });}catch{return false;}
+      // bindSpawn updates the durable state before any grant becomes valid.
+      state=await store.load().catch(()=>null);
+    }
+    if(!agent || !state || agent.sessionId!==input.sessionId ||
+      agent.sessionFingerprint!==fingerprint ||
+      agent.executor!=="chatgpt_browser")return false;
     const grant:Grant={fingerprint,task:input.task,agentId:input.agentId,
       sessionId:input.sessionId,grantEpoch:agent.grantEpoch??0,
       policyId:input.policy.policyId,expiresAt:Date.now()+TTL_MS};
