@@ -1,4 +1,5 @@
 import { DynamicAgentDispatcher } from "./dynamic-agent-dispatch.js";
+import { DynamicWakeDispatcher } from "./dynamic-agent-wake.js";
 import { DynamicAgentStore } from "./dynamic-agent-runtime.js";
 
 export interface DynamicDrainReport {
@@ -11,8 +12,43 @@ export interface DynamicDrainReport {
  * worker from a signed workflow table and never polls/sends an uncertain turn.
  * A subsequent authenticated message/event can schedule another pass.
  */
+export interface DynamicWakeDrainReport {
+  sent: string[];
+  blocked: Array<{ commandId: string; recipientId: string;
+    reason: "dispatch_uncertain" | "transport_error" }>;
+}
 export class DynamicAgentScheduler {
   constructor(private readonly store: DynamicAgentStore, private readonly dispatch: DynamicAgentDispatcher) {}
+  /**
+   * CoS bridge pendingWorkerRevivals() / requestWorkerRevivals():
+   * drain wake commands independently of ordinary inbox Sends, with bounded
+   * work and a durable claim-before-Send barrier in DynamicWakeDispatcher.
+   * One uncertain recipient must not halt unrelated sleeping teammates.
+   */
+  async drainWakes(wake: DynamicWakeDispatcher, maxCommands = 16): Promise<DynamicWakeDrainReport> {
+    if (!Number.isSafeInteger(maxCommands) || maxCommands < 1 || maxCommands > 64)
+      throw new Error("Invalid wake scheduler budget");
+    const result: DynamicWakeDrainReport = { sent: [], blocked: [] };
+    const attempted = new Set<string>();
+    while (result.sent.length + result.blocked.length < maxCommands) {
+      const state = await this.store.load();
+      if (!state || state.ownerDecision === "approved") break;
+      const command = state.wakeCommands?.find(c => c.state === "queued" && !attempted.has(c.id));
+      if (!command) break;
+      attempted.add(command.id);
+      try {
+        await wake.dispatch({task:state.task,commandId:command.id,recipientId:command.recipientId,
+          conversationId:command.conversationId,wakeKey:command.wakeKey});
+        result.sent.push(command.id);
+      } catch {
+        const after = await this.store.load();
+        const claim = after?.wakeCommands?.find(c => c.id === command.id);
+        result.blocked.push({commandId:command.id,recipientId:command.recipientId,
+          reason: claim?.state === "claimed" ? "dispatch_uncertain" : "transport_error"});
+      }
+    }
+    return result;
+  }
   async drain(maxMessages = 16): Promise<DynamicDrainReport> {
     if (!Number.isSafeInteger(maxMessages) || maxMessages < 1 || maxMessages > 64)
       throw new Error("Invalid dynamic scheduler budget");
