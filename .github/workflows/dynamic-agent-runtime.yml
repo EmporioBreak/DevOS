@@ -26,6 +26,8 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Install and verify pinned Spec Kit and Superpowers sources
+        run: node scripts/devos-upstreams.mjs install
       - name: TypeScript build
         run: npm run build
       - name: CoS-derived agent protocol tests
