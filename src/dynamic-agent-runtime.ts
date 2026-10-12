@@ -169,9 +169,18 @@ function validateSnapshot(state: DynamicSnapshot): DynamicSnapshot {
   invariant(typeof state.finalReviewRequested === "boolean", "Invalid review state");
   invariant(state.ownerDecision === undefined || state.ownerDecision === "approved" || state.ownerDecision === "changes_requested", "Invalid owner decision");
   const ids = new Set<string>();
+  const conversations = new Set<string>();
+  const principals = new Set<string>();
   for (const agent of state.agents) {
     invariant(IDENT.test(agent.id) && !ids.has(agent.id), "Duplicate or invalid dynamic agent");
     invariant(typeof agent.sessionFingerprint === "string" && !!agent.sessionFingerprint, "Missing agent proof binding");
+    invariant(!principals.has(agent.sessionFingerprint), "Agent principal is claimed by another teammate");
+    principals.add(agent.sessionFingerprint);
+    if (agent.sessionId !== undefined) {
+      invariant(typeof agent.sessionId === "string" && !!agent.sessionId.trim() &&
+        !conversations.has(agent.sessionId), "Agent conversation already owned by another teammate");
+      conversations.add(agent.sessionId);
+    }
     invariant(["idle", "busy", "sleeping", "waking", "blocked"].includes(agent.status), "Invalid agent lifecycle state");
     invariant(agent.lastResult === undefined || (typeof agent.lastResult === "string" &&
       agent.lastResult.length > 0 && agent.lastResult.length <= MAX_MESSAGE_CHARS), "Invalid worker finish");
