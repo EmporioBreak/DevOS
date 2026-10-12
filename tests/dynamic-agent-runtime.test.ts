@@ -304,7 +304,7 @@ test("CoS worker finish sleeps exact conversation; same-key report is idempotent
   assert.deepEqual(beforeClaim!.messages.filter(m=>m.to==="qa").map(m=>[m.id,m.state]),
     [[assigned.id,"acked"],[work.id,"queued"]]);
   await assert.rejects(f.broker.claimForTransport({task,recipientId:"qa",messageId:work.id}),
-    /Wake-owned work/);
+    /Stopped worker requires exact wake|Wake-owned work/);
   await f.broker.claimWake(lease);
   await f.broker.confirmWake(lease,{...lease,providerMessageId:"provider-revival"});
   f.as("qa");await f.broker.acknowledge(work.id);
