@@ -28,6 +28,7 @@ async function fixture(){
     resolveCaller:async()=>actor,verifyPolicy:sealedDynamicPolicyVerifier(root,secret),
     verifyNewAgentBinding:async()=>true,verifyToolCall:async()=>true,
     verifyTransportLease:async()=>true,verifyProviderReceipt:async()=>true,verifyNoSubmit:async()=>false,
+    verifyWakeLease:async()=>true,verifyWakeReceipt:async()=>true,
   });
   await broker.initialize();await broker.admit({id:"qa1",role:"qa",sessionFingerprint:fp});
   actor={task,agentId:"qa1",sessionFingerprint:fp};await broker.bindSession(chat);
@@ -99,7 +100,13 @@ test("COS saved QA conversation can receive a newly authenticated v2 grant after
   await f.broker.send({to:"qa1",kind:"work",body:"Review the corrected PR",
     idempotencyKey:"grant-revive-message-01"});
   assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa1")?.status,"waking");
-  assert.equal(await f.bind(),true,"new provider-authenticated probe creates new epoch grant");
+  assert.equal(await f.bind(),false,"a page/tool probe alone cannot prove that revival happened");
+  const wake=(await f.store.load())!.wakeCommands![0]!;
+  const lease={task,commandId:wake.id,recipientId:wake.recipientId,
+    conversationId:wake.conversationId,wakeKey:wake.wakeKey};
+  await f.broker.claimWake(lease);
+  await f.broker.confirmWake(lease,{...lease,providerMessageId:"real-provider-wake-id"});
+  assert.equal(await f.bind(),true,"fresh proof after a confirmed wake restores worker authorization");
   assert.deepEqual(await f.registry.resolveCaller(fp,policy),
     {task,agentId:"qa1",sessionFingerprint:fp});
 });
