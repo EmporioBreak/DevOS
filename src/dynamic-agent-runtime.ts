@@ -261,26 +261,60 @@ export class DynamicAgentBroker {
       actor.sessionId = sessionId;
     });
   }
-  async send(input: { to: string; kind: DynamicMessageKind; body: string; idempotencyKey: string; inReplyTo?: string }): Promise<DynamicMessage> {
+  /**
+   * Port of CoS agents.ts stageMessagesActive() planning:
+   * validate the *entire* batch and per-recipient capacities before accepting
+   * any messages. Our per-Issue store clones and durably commits the snapshot
+   * as one transaction instead of CoS's in-memory staged/publication overlay.
+   * Source: CoS f64ee51, src/main/agents.ts stageMessagesActive.
+   */
+  async sendBatch(items: ReadonlyArray<{ to: string; kind: DynamicMessageKind; body: string;
+    idempotencyKey: string; inReplyTo?: string }>): Promise<DynamicMessage[]> {
+    invariant(Array.isArray(items) && items.length > 0 && items.length <= 16, "Message batch size must be 1..16");
     return this.perform((state, actor) => {
-      invariant(["work", "question", "review", "evidence", "blocker"].includes(input.kind), "Unknown message kind");
-      invariant(typeof input.body === "string" && input.body.trim().length > 0 && input.body.length <= MAX_MESSAGE_CHARS, "Invalid message body");
-      invariant(typeof input.idempotencyKey === "string" && input.idempotencyKey.length >= 8 && input.idempotencyKey.length <= 128, "Invalid idempotency key");
-      invariant(input.to !== actor.id && state.agents.some(a => a.id === input.to), "Unknown recipient or self-send");
-      invariant(!input.inReplyTo || state.messages.some(m => m.id === input.inReplyTo && (m.to === actor.id || m.from === actor.id)), "Invalid reply chain");
-      const existing = state.messages.find(m => m.from === actor.id && m.idempotencyKey === input.idempotencyKey);
-      if (existing) {
-        invariant(existing.to === input.to && existing.kind === input.kind && existing.body === input.body && existing.inReplyTo === input.inReplyTo, "Idempotency-key payload conflict");
-        return existing;
+      invariant(actor.status !== "blocked", "Sender is blocked");
+      const planned: DynamicMessage[] = [];
+      const byRecipient = new Map<string, number>();
+      const byKey = new Map<string, DynamicMessage>();
+      for (const input of items) {
+        invariant(["work", "question", "review", "evidence", "blocker"].includes(input.kind), "Unknown message kind");
+        invariant(typeof input.body === "string" && input.body.trim().length > 0 &&
+          input.body.length <= MAX_MESSAGE_CHARS, "Invalid message body");
+        invariant(typeof input.idempotencyKey === "string" &&
+          input.idempotencyKey.length >= 8 && input.idempotencyKey.length <= 128, "Invalid idempotency key");
+        invariant(input.to !== actor.id && state.agents.some(a => a.id === input.to), "Unknown recipient or self-send");
+        invariant(!input.inReplyTo || [...state.messages, ...planned].some(m =>
+          m.id === input.inReplyTo && (m.to === actor.id || m.from === actor.id)), "Invalid reply chain");
+        const existing = byKey.get(input.idempotencyKey) ??
+          state.messages.find(m => m.from === actor.id && m.idempotencyKey === input.idempotencyKey);
+        if (existing) {
+          invariant(existing.to === input.to && existing.kind === input.kind && existing.body === input.body &&
+            existing.inReplyTo === input.inReplyTo, "Idempotency-key payload conflict");
+          byKey.set(input.idempotencyKey, existing);
+          planned.push(existing);
+          continue;
+        }
+        const already = byRecipient.get(input.to) ?? 0;
+        invariant(state.messages.filter(m => m.to === input.to && m.state !== "acked").length +
+          already < this.policy.maxPendingPerAgent, "Inbox budget exhausted");
+        const msg: DynamicMessage = { id: randomUUID(), taskKey: taskKey(state.task), from: actor.id,
+          to: input.to, kind: input.kind, body: input.body, idempotencyKey: input.idempotencyKey,
+          ...(input.inReplyTo ? { inReplyTo: input.inReplyTo } : {}), state: "queued" };
+        byRecipient.set(input.to, already + 1);
+        byKey.set(input.idempotencyKey, msg);
+        planned.push(msg);
       }
-      invariant(state.messages.filter(m => m.to === input.to && m.state !== "acked").length < this.policy.maxPendingPerAgent, "Inbox budget exhausted");
-      const msg: DynamicMessage = { id: randomUUID(), taskKey: taskKey(state.task), from: actor.id,
-        to: input.to, kind: input.kind, body: input.body, idempotencyKey: input.idempotencyKey,
-        ...(input.inReplyTo ? { inReplyTo: input.inReplyTo } : {}), state: "queued" };
-      state.messages.push(msg);
-      return msg;
+      // This synchronous, single-writer projection is published *only* when
+      // DynamicAgentStore.transact() has fsynced and renamed the accepted snapshot.
+      state.messages.push(...planned.filter(m => !state.messages.includes(m)).filter((m,i,a)=>a.indexOf(m)===i));
+      return planned;
     });
   }
+  async send(input: { to: string; kind: DynamicMessageKind; body: string;
+    idempotencyKey: string; inReplyTo?: string }): Promise<DynamicMessage> {
+    return (await this.sendBatch([input]))[0]!;
+  }
+
   /** Commit the uncertain dispatch fence before touching ChatGPT/Codex. */
   async claimForDelivery(messageId: string): Promise<DynamicMessage> {
     return this.perform((state, actor) => {
