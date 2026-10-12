@@ -5,7 +5,7 @@ Task ids denote implementable work/evidence, **not** a fixed worker execution gr
 
 ## Baseline / architecture
 - [ ] T001 Pin GitHub main and reviewed CoS source SHA; inventory existing Runner, MCP, browser, Codex and active task state without mutating them.
-- [ ] T002 Define task policy, runtime version/compatibility selector and explicit trusted owner approval boundary; verify frozen v1 tasks remain unchanged.
+- [ ] T002 Define task policy, runtime version/compatibility selector and trusted host signing boundary, without per-task proof of user initiation; verify frozen v1 tasks remain unchanged.
 - [ ] T003 Define typed AgentDirectory, MessageEnvelope, wake/ACK and unit-of-work state transitions, separately distinguishing queue acceptance from actual provider Send.
 - [ ] T004 Create RED tests for direct worker->worker, worker->Main Agent and unplanned specialist admission; demonstrate current graph/CoS-star topology cannot satisfy intended behavior.
 
@@ -27,5 +27,5 @@ Task ids denote implementable work/evidence, **not** a fixed worker execution gr
 - [ ] T015 Run RED/GREEN targeted tests, full affected test suite, TypeScript build, command/recovery/concurrency stress, owner authorization negative cases.
 - [ ] T016 Independent reviewer and security auditor inspect exact diffs, evidence, replay/identity protections; remediate in same Issue/PR without self-approval.
 - [ ] T017 Run headed signed-in actual ChatGPT E2E with two Issues, direct Developer->QA->Security->Reviewer, new worker admission, Main Agent messages, real provider receipt, no duplicate send, restart, and legacy session preservation.
-- [ ] T018 Obtain trusted owner approval of reviewed policy+Spec Kit+diff for cutover; roll out v2 to new tasks only, verify rollback and production observability.
+- [ ] T018 Obtain required trusted approval for Production deployment/cutover (not routine task initiation); roll out v2 to new tasks only, verify rollback and production observability.
 - [ ] T019 Main Agent independently accepts, merges reviewed PR and closes Issue only after all gates, with exact evidence links and no unresolved legacy ownership conflicts.
