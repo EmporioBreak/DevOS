@@ -1,14 +1,6 @@
 name: Dynamic agent core checks
 
 on:
-  push:
-    branches: [architecture/dynamic-agent-runtime-246]
-    paths:
-      - '.github/workflows/dynamic-agent-runtime.yml'
-      - 'src/dynamic-agent-*.ts'
-      - 'tests/dynamic-agent-*.test.ts'
-      - 'package.json'
-      - 'package-lock.json'
   pull_request:
     paths:
       - '.github/workflows/dynamic-agent-runtime.yml'
@@ -18,6 +10,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: dynamic-agents-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   core:
