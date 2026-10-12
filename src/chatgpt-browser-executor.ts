@@ -20,6 +20,7 @@ import { CHATGPT_RESPONSE_LOADER_SOURCE } from "./chatgpt-response-loader.js";
 import { readExactDomFinal } from "./chatgpt-dom-recovery.js";
 import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { observeWorkerAuthorization } from "./chat-worker-observer.js";
+import {observeDynamicWorkerAuthorizationLocal} from "./dynamic-agent-observer.js";
 import { localWorkerAuthorization } from "./chat-worker-grants.js";
 import { classifyBrowserFailure, browserRecoveryDelayMs } from "./browser-recovery-policy.js";
 
@@ -106,6 +107,8 @@ export class ChatGptBrowserExecutor implements Executor {
   }
 
   private async runTurn(request: WorkerRequest): Promise<WorkerOutput> {
+    if (request.dynamicAgentV2 && process.env.DEVOS_DYNAMIC_AGENTS_V2 !== "enabled")
+      throw new Error("Dynamic v2 browser worker execution not enabled by trusted host");
     const projectScope = request.enforceProjectScope
       ? getChatGptProjectScope(this.config.projectUrl)
       : null;
@@ -139,14 +142,24 @@ export class ChatGptBrowserExecutor implements Executor {
     // result is checked against the exact saved worker URL and active turn.
     // It never enters model-visible context or grants based on prompt strings.
     if (request.reportTurn && request.workerId && reportAbort) {
-      void observeWorkerAuthorization({
-        page, root: request.projectRoot, task: request.reportTurn.task,
-        workerId: request.workerId, turn: request.reportTurn.active.turn,
-        expectedConversation: () => durableSession,
-        expectedUserMessageId: () => submitted?.messageId,
-        exactSubmittedPrompt: request.prompt,
-        signal: reportAbort.signal,
-      }).catch(() => {
+      const evidence = request.dynamicAgentV2
+        ? observeDynamicWorkerAuthorizationLocal({
+            page, root: request.projectRoot, task: request.reportTurn.task,
+            agentId: request.workerId,
+            expectedConversation: () => durableSession,
+            expectedUserMessageId: () => submitted?.messageId,
+            exactSubmittedPrompt: request.prompt,
+            signal: reportAbort.signal,
+          })
+        : observeWorkerAuthorization({
+            page, root: request.projectRoot, task: request.reportTurn.task,
+            workerId: request.workerId, turn: request.reportTurn.active.turn,
+            expectedConversation: () => durableSession,
+            expectedUserMessageId: () => submitted?.messageId,
+            exactSubmittedPrompt: request.prompt,
+            signal: reportAbort.signal,
+          });
+      void evidence.catch(() => {
         debugLog("browser.worker-access", { phase: "observer", decision: "unavailable" });
       });
     }
