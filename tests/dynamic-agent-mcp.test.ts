@@ -29,6 +29,7 @@ async function fixture(){
     resolveCaller:async()=>actor,verifyPolicy:async()=>true,verifyNewAgentBinding:async()=>true,
     verifyToolCall:async()=>true,verifyTransportLease:async()=>true,
     verifyProviderReceipt:async()=>true,verifyNoSubmit:async()=>false,
+    verifyWakeLease:async()=>true,verifyWakeReceipt:async()=>true,
   });
   await broker.initialize();await broker.admit({id:"qa1",role:"qa",sessionFingerprint:qaFp});
   actor={task,agentId:"qa1",sessionFingerprint:qaFp};await broker.bindSession(chat);
@@ -48,7 +49,9 @@ async function fixture(){
   }
   const call=(fingerprint:string,ownerApproved:()=>boolean,argumentsValue:unknown)=>
     callDynamicAgentsMcp({root,ownerSecret:secret,fingerprint,ownerApproved,argumentsValue});
-  return {root,store,broker,registry,bind,call,asQa:()=>actor={task,agentId:"qa1",sessionFingerprint:qaFp},
+  return {root,store,broker,registry,bind,call,
+    asQa:()=>actor={task,agentId:"qa1",sessionFingerprint:qaFp},
+    asOwner:()=>actor={task,agentId:"main_agent",sessionFingerprint:ownerFp},
     close:async()=>{await lock.release();await rm(root,{recursive:true,force:true})}};
 }
 test("gated MCP v2 verifies real owner session and exact sealed issue policy",async t=>{
@@ -84,4 +87,28 @@ test("v2 gateway rechecks worker generation and rejects stale grant after finish
   f.asQa();await f.broker.finishWork({result:"QA finished",idempotencyKey:"qa-v2-finish-01"});
   await assert.rejects(f.call(qaFp,()=>false,{action:"status"}),
     /Worker grant revoked, expired/);
+});
+
+test("first authenticated v2 tool call after confirmed wake makes QA active before finish",async t=>{
+  const f=await fixture();t.after(f.close);assert.equal(await f.bind(),true);
+  f.asQa();
+  await f.broker.finishWork({result:"Initial work complete",idempotencyKey:"qa-initial-finish"});
+  f.asOwner();
+  await f.broker.send({to:"qa1",kind:"work",body:"Recheck changed PR",idempotencyKey:"qa-wake-work-001"});
+  const wake=(await f.store.load())!.wakeCommands![0]!;
+  const lease={task,recipientId:wake.recipientId,conversationId:wake.conversationId,
+    commandId:wake.id,wakeKey:wake.wakeKey};
+  await f.broker.claimWake(lease);
+  await f.broker.confirmWake(lease,{...lease,providerMessageId:"provider-wake-approved"});
+  assert.equal((await f.store.load())!.agents.find(a=>a.id==="qa1")!.status,"waking");
+  assert.equal(await f.bind(),true);
+  await new Promise(resolve=>setTimeout(resolve,5));
+  const finish=await f.call(qaFp,()=>false,{action:"finish",
+    result:"QA accepted corrected work",idempotency_key:"qa-after-wake-001"});
+  assert.equal(finish.structuredContent.action,"finish");
+  const after=await f.store.load();
+  assert.equal(after!.wakeCommands![0]!.state,"alive");
+  assert.equal(after!.agents.find(a=>a.id==="qa1")!.status,"sleeping");
+  assert.equal(after!.agents.find(a=>a.id==="qa1")!.grantEpoch,2);
+  assert.equal(await f.registry.resolveCaller(qaFp,policy),null);
 });
