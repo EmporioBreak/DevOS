@@ -762,6 +762,8 @@ export class DynamicAgentBroker {
   async claimForDelivery(messageId: string): Promise<DynamicMessage> {
     return this.perform((state, actor) => {
       const msg = state.messages.find(m => m.id === messageId && m.to === actor.id);
+      invariant(actor.status !== "sleeping" && actor.status !== "waking",
+        "Stopped worker requires exact wake command before a new Send");
       invariant(msg && msg.state === "queued", "Message not claimable; may already have been submitted");
       invariant(!state.wakeCommands?.some(c => c.state !== "alive" && c.messageIds.includes(msg.id)),
         "Wake-owned work must use exact revival command");
@@ -787,6 +789,9 @@ export class DynamicAgentBroker {
   }
   async claimForTransport(lease: DynamicTransportLease): Promise<DynamicMessage> {
     return this.hostDelivery(lease, (msg, state) => {
+      const recipient = state.agents.find(a => a.id === msg.to);
+      invariant(recipient && recipient.status !== "sleeping" && recipient.status !== "waking",
+        "Stopped worker requires exact wake command before a new Send");
       invariant(msg.state === "queued", "Message not claimable; may already have been submitted");
       invariant(!state.wakeCommands?.some(c => c.state !== "alive" && c.messageIds.includes(msg.id)),
         "Wake-owned work must use exact revival command");
