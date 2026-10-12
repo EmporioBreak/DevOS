@@ -26,6 +26,7 @@ function setup(){
       projectRoot:"/verified/project",prompt:"Host-sourced original task briefing",workerId,
       ...(sessionId?{sessionId}:{}),
       ...(executor==="chatgpt_browser"?{
+        dynamicAgentV2:true,
         enforceProjectScope:true,
         reportTurn:{task,active:{workerId,turn:1,tokenHash:"d".repeat(64)}},
       }:{
