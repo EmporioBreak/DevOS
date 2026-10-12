@@ -199,7 +199,7 @@ export class DynamicAgentStore {
         version: 1, repo: this.task.repo, issue: this.task.issue,
         pr: this.task.pr ?? null, pid: process.pid, identity,
         nonce: randomUUID(), createdAt: Date.now(),
-      }) + "\\n", "utf8");
+      }) + "\n", "utf8");
       await lock.sync();
       const before = await this.load();
       const { state, result } = update(before === null ? null : structuredClone(before));
