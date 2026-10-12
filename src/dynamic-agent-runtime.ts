@@ -333,8 +333,6 @@ export class DynamicAgentBroker {
     return this.perform((state, actor) => {
       invariant(actor.status !== "sleeping" && actor.status !== "waking" &&
         actor.status !== "blocked", "Inactive worker cannot admit specialists");
-      invariant(actor.status !== "sleeping" && actor.status !== "waking" &&
-        actor.status !== "blocked", "Inactive worker cannot admit specialists");
       invariant(actor.id === "main_agent" || this.policy.roles[actor.role]?.mayAdmit, "Actor cannot admit specialists");
       invariant(IDENT.test(input.id) && input.id !== "main_agent" && IDENT.test(input.role),
         "Invalid requested agent identity");
@@ -457,6 +455,8 @@ export class DynamicAgentBroker {
   async admit(input: { id: string; role: string; sessionFingerprint: string }): Promise<DynamicAgent> {
     invariant(await this.trust.verifyNewAgentBinding({ ...input, task: this.policy.task }), "Unverified new agent identity");
     return this.perform((state, actor) => {
+      invariant(actor.status !== "sleeping" && actor.status !== "waking" &&
+        actor.status !== "blocked", "Inactive worker cannot admit specialists");
       invariant(actor.id === "main_agent" || this.policy.roles[actor.role]?.mayAdmit, "Actor cannot admit specialists");
       invariant(IDENT.test(input.id) && input.id !== "main_agent" && !state.agents.some(a => a.id === input.id), "Invalid or duplicate agent id");
       invariant(!!input.sessionFingerprint && typeof input.sessionFingerprint === "string", "No verified session binding");
