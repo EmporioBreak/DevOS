@@ -42,6 +42,8 @@ export interface DynamicAgent {
   /** Monotonic host-measured token usage. Never derived from worker prompt. */
   contextTokens?: number;
   contextMeasuredAt?: number;
+  /** Revokes prior worker MCP grants after every completed work unit. */
+  grantEpoch?: number;
 }
 export interface DynamicMessage {
   id: string;
@@ -240,6 +242,9 @@ function validateSnapshot(state: DynamicSnapshot): DynamicSnapshot {
       conversations.add(agent.sessionId);
     }
     invariant(["idle", "busy", "sleeping", "waking", "blocked", "terminal"].includes(agent.status), "Invalid agent lifecycle state");
+    invariant(agent.grantEpoch === undefined ||
+      (Number.isSafeInteger(agent.grantEpoch) && agent.grantEpoch >= 0 &&
+        agent.grantEpoch < Number.MAX_SAFE_INTEGER), "Invalid worker grant epoch");
     invariant(agent.contextTokens === undefined ||
       (Number.isSafeInteger(agent.contextTokens) && agent.contextTokens >= 0),
       "Invalid context token evidence");
@@ -979,6 +984,9 @@ export class DynamicAgentBroker {
       invariant(state.messages.length < (this.policy.maxRecordedMessages ?? 8192),
         "Message history limit reached; cannot safely discard accepted receipts");
       state.messages.push(report);
+      invariant((actor.grantEpoch ?? 0) < Number.MAX_SAFE_INTEGER - 1,
+        "Worker grant generation exhausted");
+      actor.grantEpoch = (actor.grantEpoch ?? 0) + 1;
       actor.lastFinishKey = input.idempotencyKey;
       actor.lastResult = input.result;
       actor.status = this.policy.workerContextCeilingTokens !== undefined &&
