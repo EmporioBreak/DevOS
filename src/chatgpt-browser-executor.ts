@@ -21,6 +21,7 @@ import { readExactDomFinal } from "./chatgpt-dom-recovery.js";
 import { DevosToolRegistry } from "./mcp-tools/registry.js";
 import { observeWorkerAuthorization } from "./chat-worker-observer.js";
 import {observeDynamicWorkerAuthorizationLocal} from "./dynamic-agent-observer.js";
+import {waitForDynamicBrowserTurn} from "./dynamic-agent-wait.js";
 import { localWorkerAuthorization } from "./chat-worker-grants.js";
 import { classifyBrowserFailure, browserRecoveryDelayMs } from "./browser-recovery-policy.js";
 
@@ -109,6 +110,11 @@ export class ChatGptBrowserExecutor implements Executor {
   private async runTurn(request: WorkerRequest): Promise<WorkerOutput> {
     if (request.dynamicAgentV2 && process.env.DEVOS_DYNAMIC_AGENTS_V2 !== "enabled")
       throw new Error("Dynamic v2 browser worker execution not enabled by trusted host");
+    if (request.dynamicAgentV2 &&
+      (!request.dynamicTurn || request.reportTurn ||
+       request.workerId !== request.dynamicTurn.agentId ||
+       request.dynamicTurn.mode !== (request.sessionId ? "work" : "bootstrap")))
+      throw new Error("Dynamic browser turn must use separate exact v2 worker identity and lifecycle");
     const projectScope = request.enforceProjectScope
       ? getChatGptProjectScope(this.config.projectUrl)
       : null;
@@ -131,7 +137,7 @@ export class ChatGptBrowserExecutor implements Executor {
     let durableSession = request.sessionId;
     // The terminal MCP tool is the control plane: receipt of its authenticated,
     // turn-scoped report can finish this run even if the SSE observer hangs.
-    const reportAbort = request.reportTurn ? new AbortController() : undefined;
+    const reportAbort = request.reportTurn || request.dynamicTurn ? new AbortController() : undefined;
     const rememberSession = async (session: string) => {
       if (durableSession && !isSameChatGptConversation(durableSession, session)) throw new Error("ChatGPT changed conversation identity");
       if (projectScope) assertChatGptProjectScope(this.config.projectUrl, session, true);
@@ -141,19 +147,19 @@ export class ChatGptBrowserExecutor implements Executor {
     // Local-only authorization observer: the Page's structured provider tool
     // result is checked against the exact saved worker URL and active turn.
     // It never enters model-visible context or grants based on prompt strings.
-    if (request.reportTurn && request.workerId && reportAbort) {
-      const evidence = request.dynamicAgentV2
+    if (request.workerId && reportAbort && (request.dynamicTurn || request.reportTurn)) {
+      const evidence = request.dynamicTurn
         ? observeDynamicWorkerAuthorizationLocal({
-            page, root: request.projectRoot, task: request.reportTurn.task,
-            agentId: request.workerId,
+            page, root: request.projectRoot, task: request.dynamicTurn.task,
+            agentId: request.dynamicTurn.agentId,
             expectedConversation: () => durableSession,
             expectedUserMessageId: () => submitted?.messageId,
             exactSubmittedPrompt: request.prompt,
             signal: reportAbort.signal,
           })
         : observeWorkerAuthorization({
-            page, root: request.projectRoot, task: request.reportTurn.task,
-            workerId: request.workerId, turn: request.reportTurn.active.turn,
+            page, root: request.projectRoot, task: request.reportTurn!.task,
+            workerId: request.workerId, turn: request.reportTurn!.active.turn,
             expectedConversation: () => durableSession,
             expectedUserMessageId: () => submitted?.messageId,
             exactSubmittedPrompt: request.prompt,
@@ -209,13 +215,22 @@ export class ChatGptBrowserExecutor implements Executor {
       };
       // MCP worker status is the only normal completion signal. Submit once
       // and never parse UI/DOM/SSE final text for these turns.
-      const streamResponse = request.reportTurn
+      const streamResponse = request.reportTurn || request.dynamicTurn
         ? submitOnly(page, request.prompt, this.timeoutMs, assertSubmissionScope, preparedMessage)
             .then(() => new Promise<never>(() => {}), error => ({ error } as const))
         : sendAndRead(page, request.prompt, this.timeoutMs, assertSubmissionScope, preparedMessage).then(
             text => ({ text } as const), error => ({ error } as const),
           );
-      const response = request.reportTurn && reportAbort
+      const response = request.dynamicTurn && reportAbort
+        ? Promise.race([
+            streamResponse,
+            waitForDynamicBrowserTurn({
+              root: request.projectRoot, turn: request.dynamicTurn,
+              expectedConversation: () => durableSession,
+              signal: reportAbort.signal, maxWaitMs: Math.min(this.timeoutMs, 600_000)
+            }).then(() => ({ text: "" } as const)),
+          ])
+        : request.reportTurn && reportAbort
         ? Promise.race([
             streamResponse,
             new DevosToolRegistry(request.projectRoot).waitForReport(
@@ -324,7 +339,7 @@ export class ChatGptBrowserExecutor implements Executor {
       // Revoke on normal completion, cancellation or a caught failure.
       // Abrupt process loss is additionally bounded by the grant expiry and
       // requires task state validation on every forwarded operation.
-      if (request.reportTurn && request.workerId) {
+      if (request.reportTurn && !request.dynamicTurn && request.workerId) {
         try {
           localWorkerAuthorization(request.projectRoot)?.registry.revoke(
             request.reportTurn.task, request.workerId,
