@@ -16,6 +16,8 @@ export interface WorkerRequest {
   dynamicAgentV2?: true;
   /** Host-only CoS v2 completion receipt; independent of legacy reportTurn. */
   dynamicTurn?: {task:TaskRef;agentId:string;mode:"bootstrap"|"work";startingGrantEpoch:number};
+  /** Trusted browser callback only after exact provider GET proved the outgoing user Send. */
+  onAcceptedUserMessage?: (receipt:{sessionId:string;providerMessageId:string})=>Promise<void>|void;
   sessionId?: string;
   /** Trusted task/worker identity set by Orchestrator, not from prompt. */
   codexSkills?: CodexSkillAssignment;
