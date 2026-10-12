@@ -23,7 +23,9 @@ export class DynamicAgentDispatcher {
       (state.task.pr ?? null) !== (lease.task.pr ?? null)) throw new Error("Dispatch task mismatch");
     const recipient = state.agents.find(a => a.id === lease.recipientId);
     const message = state.messages.find(m => m.id === lease.messageId && m.to === lease.recipientId);
-    if (!recipient || !message || !recipient.sessionId || recipient.status === "blocked") {
+    if (!recipient || !message || !recipient.sessionId ||
+      recipient.status === "blocked" || recipient.status === "sleeping" ||
+      recipient.status === "waking") {
       throw new Error("Dispatch requires exact saved recipient session and message");
     }
     // Durable fence must be recorded before any transport/browser side effect.
