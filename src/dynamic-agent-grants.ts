@@ -143,6 +143,17 @@ export class DynamicAgentGrantRegistry {
       return true;
     }catch{return false;}
   }
+  /**
+   * A signed grant's task is only a *lookup hint*, never caller authority.
+   * The host MUST subsequently resolveCaller with the exact sealed policy.
+   */
+  candidateTask(fingerprint:string|undefined,now=Date.now()):TaskRef|null {
+    if(!fingerprint||!FINGERPRINT.test(fingerprint))return null;
+    try{
+      const entry=this.read().find(g=>g.fingerprint===fingerprint&&now<g.expiresAt);
+      return entry?entry.task:null;
+    }catch{return null;}
+  }
   /** Invoke on every agents_v2 tool call using the real gateway MCP signal. */
   async resolveCaller(fingerprint:string|undefined,policy:DynamicAgentPolicy,
     now=Date.now()):Promise<VerifiedDynamicCaller|null>{
