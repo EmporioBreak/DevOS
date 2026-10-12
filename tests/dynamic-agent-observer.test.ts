@@ -24,7 +24,7 @@ const prompt="Issue #246 QA must use exact probe from original conversation";
 async function fixture(){
   const root=await mkdtemp(join(tmpdir(),"cos-v2-provider-observer-"));
   const lock=await acquireTaskLock(root,task);
-  await sealDynamicAgentPolicy({root,policy,ownerSecret:secret,assertTrustedOwnerApproval:async()=>true});
+  await sealDynamicAgentPolicy({root,policy,ownerSecret:secret});
   let caller="main_agent";
   const store=new DynamicAgentStore(root,task);
   const broker=new DynamicAgentBroker(policy,store,{
