@@ -6,7 +6,6 @@ import type {WorkerOutput} from "../src/workflow.js";
 
 const task={repo:"EmporioBreak/DevOS",issue:246,pr:247};
 const chat="https://chatgpt.com/c/8ae6fc47-4cab-43e4-bc8d-6679512b3f53";
-type Prepared=Parameters<DynamicTrustedExecutorHost["prepareBootstrap"]>[0];
 function setup(){
   const calls:Array<{kind:string;request:WorkerRequest}>=[];
   let receipt:string|null="trusted-provider-message-id";
@@ -39,7 +38,7 @@ function setup(){
     prepareMessage:async input=>prepare(input.recipient.id,input.recipient.executor as "codex"|"chatgpt_browser",
       input.recipient.sessionId),
     prepareWake:async input=>prepare(input.recipientId,"chatgpt_browser",input.conversationId),
-    verifiedBootstrap:async(input:Prepared&{sessionId:string})=>binding,
+    verifiedBootstrap:async()=>binding,
     verifiedProviderMessage:async()=>receipt,
   };
   const adapter=new DynamicDevosExecutorAdapter({codex,chatgpt_browser:browser},host);
