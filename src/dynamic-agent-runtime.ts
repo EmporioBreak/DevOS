@@ -55,7 +55,25 @@ export interface DynamicStatusView {
   finalReviewRequested: boolean;
   ownerDecision?: "approved" | "changes_requested";
 }
+/** Durable two-phase CoS-style spawn authority; no provisional worker may call tools. */
+export interface PendingDynamicSpawn {
+  id: string;
+  role: string;
+  requestedBy: string;
+  idempotencyKey: string;
+  /** Once claimed, browser/host bootstrap may have begun and cannot be retried blindly. */
+  state: "reserved" | "bootstrap_uncertain" | "bound";
+}
+export interface DynamicSpawnLease {
+  task: TaskRef;
+  agentId: string;
+  idempotencyKey: string;
+}
+export interface DynamicSpawnNoStartProof extends DynamicSpawnLease {
+  evidenceId: string;
+}
 export interface DynamicSnapshot {
+  pendingSpawns?: PendingDynamicSpawn[];
   version: 2;
   task: TaskRef;
   policyHash: string;
@@ -143,6 +161,7 @@ function validateSnapshot(state: DynamicSnapshot): DynamicSnapshot {
   invariant(state?.version === 2 && state.task && SHA256.test(state.policyHash), "Invalid dynamic state");
   invariant(Number.isSafeInteger(state.generation) && state.generation >= 0, "Invalid dynamic generation");
   invariant(Array.isArray(state.agents) && Array.isArray(state.messages), "Invalid dynamic collections");
+  invariant(state.pendingSpawns === undefined || Array.isArray(state.pendingSpawns), "Invalid spawn ledger");
   invariant(typeof state.finalReviewRequested === "boolean", "Invalid review state");
   invariant(state.ownerDecision === undefined || state.ownerDecision === "approved" || state.ownerDecision === "changes_requested", "Invalid owner decision");
   const ids = new Set<string>();
@@ -157,6 +176,19 @@ function validateSnapshot(state: DynamicSnapshot): DynamicSnapshot {
     ids.add(agent.id);
   }
   invariant(ids.has("main_agent"), "Missing Main Agent identity");
+  const reserved = new Set<string>(), requests = new Set<string>();
+  for (const pending of state.pendingSpawns ?? []) {
+    invariant(IDENT.test(pending.id) && !reserved.has(pending.id), "Duplicate spawn reservation");
+    invariant(IDENT.test(pending.role) && ids.has(pending.requestedBy), "Invalid reserved spawn identity");
+    invariant(["reserved", "bootstrap_uncertain", "bound"].includes(pending.state), "Invalid spawn lifecycle");
+    invariant(typeof pending.idempotencyKey === "string" && pending.idempotencyKey.length >= 8 &&
+      pending.idempotencyKey.length <= 128, "Invalid spawn idempotency key");
+    const requestKey = pending.requestedBy + "\\u0000" + pending.idempotencyKey;
+    invariant(!requests.has(requestKey), "Duplicate spawn request identity");
+    invariant(pending.state === "bound" ? ids.has(pending.id) : !ids.has(pending.id),
+      "Spawn reservation conflicts with published worker");
+    reserved.add(pending.id); requests.add(requestKey);
+  }
   const msgIds = new Set<string>();
   const dedupe = new Set<string>();
   for (const msg of state.messages) {
@@ -205,6 +237,9 @@ export interface DynamicTrustBoundary {
   verifyTransportLease(lease: DynamicTransportLease): Promise<boolean>;
   /** Prove a later, exact MCP call belongs to the already bound recipient. */
   verifyToolCall(call: VerifiedDynamicToolCall): Promise<boolean>;
+  /** Host-owned, exact reserved agent bootstrap identity. Absent = default deny. */
+  verifySpawnLease?(lease: DynamicSpawnLease): Promise<boolean>;
+  verifySpawnNoStart?(proof: DynamicSpawnNoStartProof): Promise<boolean>;
   verifyProviderReceipt(receipt: DynamicDeliveryReceipt): Promise<boolean>;
   verifyNoSubmit(proof: DynamicNoSubmitProof): Promise<boolean>;
 }
@@ -225,7 +260,7 @@ export class DynamicAgentBroker {
         version: 2, task: this.policy.task, policyHash: policyHash(this.policy), generation: 0,
         agents: [{ id: "main_agent", role: "main_agent", executor: "main_agent", manifestSha256: null,
           sessionFingerprint: caller.sessionFingerprint, status: "idle" }],
-        messages: [], finalReviewRequested: false,
+        messages: [], pendingSpawns: [], finalReviewRequested: false,
       };
       return { state, result: state };
     });
@@ -264,6 +299,130 @@ export class DynamicAgentBroker {
       finalReviewRequested: state.finalReviewRequested,
       ...(state.ownerDecision ? { ownerDecision: state.ownerDecision } : {}),
     };
+  }
+
+  /**
+   * CoS stageSpawn() adapted to dynamic peer admission: reserve host-owned
+   * identity *before* creating a browser tab or Codex session. The reservation
+   * is durably published, but remains unreachable to worker calls until host
+   * proves the real new session in bindSpawn().
+   */
+  async requestSpawn(input: { id: string; role: string; idempotencyKey: string }): Promise<PendingDynamicSpawn> {
+    return this.perform((state, actor) => {
+      invariant(actor.id === "main_agent" || this.policy.roles[actor.role]?.mayAdmit, "Actor cannot admit specialists");
+      invariant(IDENT.test(input.id) && input.id !== "main_agent" && IDENT.test(input.role),
+        "Invalid requested agent identity");
+      invariant(typeof input.idempotencyKey === "string" && input.idempotencyKey.length >= 8 &&
+        input.idempotencyKey.length <= 128, "Invalid spawn idempotency key");
+      const pending = state.pendingSpawns ??= [];
+      const repeated = pending.find(p => p.requestedBy === actor.id &&
+        p.idempotencyKey === input.idempotencyKey);
+      if (repeated) {
+        invariant(repeated.id === input.id && repeated.role === input.role, "Spawn idempotency-key conflict");
+        return repeated;
+      }
+      invariant(!state.agents.some(a => a.id === input.id) && !pending.some(p => p.id === input.id),
+        "Agent identity already owned or reserved");
+      invariant(this.policy.roles[input.role], "Role/capability outside task policy");
+      invariant(state.agents.length + pending.filter(p => p.state !== "bound").length <
+        this.policy.maxAgents, "Agent budget exhausted");
+      const active = state.agents.filter(a => a.id !== "main_agent" &&
+        ["busy", "waking"].includes(a.status)).length;
+      const pendingActive = pending.filter(p => p.state !== "bound").length;
+      invariant(active + pendingActive < (this.policy.maxActiveWorkers ?? this.policy.maxAgents - 1),
+        "NO_FREE_SLOT: worker bootstrap capacity exhausted");
+      const entry: PendingDynamicSpawn = {
+        id: input.id, role: input.role, idempotencyKey: input.idempotencyKey,
+        requestedBy: actor.id, state: "reserved"
+      };
+      pending.push(entry);
+      return entry;
+    });
+  }
+  /**
+   * Browser/bootstrap authority belongs to a *verified host lease*, not to a
+   * worker model or arbitrary recipient fingerprint. Fence before side effects.
+   */
+  async claimSpawnBootstrap(lease: DynamicSpawnLease): Promise<PendingDynamicSpawn> {
+    invariant(sameTask(lease.task, this.policy.task), "Cross-task spawn denied");
+    invariant(await this.trust.verifyPolicy(this.policy) &&
+      await this.trust.verifySpawnLease?.(lease) === true, "Unverified spawn bootstrap lease");
+    return this.store.transact(existing => {
+      invariant(existing && existing.policyHash === policyHash(this.policy) &&
+        sameTask(existing.task, this.policy.task) && existing.ownerDecision !== "approved",
+        "Spawn task policy changed");
+      const pending = existing.pendingSpawns?.find(p => p.id === lease.agentId &&
+        p.idempotencyKey === lease.idempotencyKey);
+      invariant(pending && pending.state === "reserved", "Spawn bootstrap already claimed or bound");
+      pending.state = "bootstrap_uncertain";
+      existing.generation++;
+      return { state: existing, result: pending };
+    });
+  }
+  /**
+   * Host confirms an actual saved provider conversation / Codex session after
+   * an already claimed bootstrap. A retry with exact same binding is safe.
+   */
+  async bindSpawn(lease: DynamicSpawnLease, binding: {
+    sessionId: string; sessionFingerprint: string
+  }): Promise<DynamicAgent> {
+    invariant(sameTask(lease.task, this.policy.task) &&
+      typeof binding.sessionId === "string" && !!binding.sessionId.trim() &&
+      typeof binding.sessionFingerprint === "string" && !!binding.sessionFingerprint.trim(),
+      "Invalid spawn provider identity");
+    invariant(await this.trust.verifyPolicy(this.policy) &&
+      await this.trust.verifySpawnLease?.(lease) === true &&
+      await this.trust.verifyNewAgentBinding({
+        task: this.policy.task, id: lease.agentId,
+        role: (await this.store.load())?.pendingSpawns?.find(p => p.id === lease.agentId &&
+          p.idempotencyKey === lease.idempotencyKey)?.role ?? "",
+        sessionFingerprint: binding.sessionFingerprint,
+      }), "Unverified spawned provider identity");
+    return this.store.transact(existing => {
+      invariant(existing && existing.policyHash === policyHash(this.policy) &&
+        sameTask(existing.task, this.policy.task) && existing.ownerDecision !== "approved",
+        "Spawn task policy changed");
+      const pending = existing.pendingSpawns?.find(p => p.id === lease.agentId &&
+        p.idempotencyKey === lease.idempotencyKey);
+      invariant(pending && (pending.state === "bootstrap_uncertain" || pending.state === "bound"),
+        "Bootstrap must be claimed before session binding");
+      const admitted = existing.agents.find(a => a.id === lease.agentId);
+      if (pending.state === "bound") {
+        invariant(admitted && admitted.sessionId === binding.sessionId &&
+          admitted.sessionFingerprint === binding.sessionFingerprint,
+          "Spawn binding conflict");
+        existing.generation++;
+        return { state: existing, result: admitted };
+      }
+      invariant(!admitted, "Spawn identity already bound");
+      const rule = this.policy.roles[pending.role];
+      invariant(rule, "Spawn capability revoked");
+      const agent: DynamicAgent = { id: pending.id, role: pending.role,
+        executor: rule.executor, manifestSha256: rule.manifestSha256,
+        sessionId: binding.sessionId, sessionFingerprint: binding.sessionFingerprint,
+        status: "idle" };
+      existing.agents.push(agent);
+      pending.state = "bound";
+      existing.generation++;
+      return { state: existing, result: agent };
+    });
+  }
+  /** A failed pre-submit bootstrap may be released only with host-only proof. */
+  async releaseUnstartedSpawn(proof: DynamicSpawnNoStartProof): Promise<PendingDynamicSpawn> {
+    invariant(sameTask(proof.task, this.policy.task) && !!proof.evidenceId?.trim() &&
+      await this.trust.verifySpawnNoStart?.(proof) === true &&
+      await this.trust.verifySpawnLease?.(proof) === true &&
+      await this.trust.verifyPolicy(this.policy), "Missing independent no-bootstrap proof");
+    return this.store.transact(existing => {
+      invariant(existing && existing.policyHash === policyHash(this.policy) &&
+        sameTask(existing.task, this.policy.task), "Spawn policy changed");
+      const pending = existing.pendingSpawns?.find(p => p.id === proof.agentId &&
+        p.idempotencyKey === proof.idempotencyKey);
+      invariant(pending && pending.state === "bootstrap_uncertain", "No uncertain spawn to release");
+      pending.state = "reserved";
+      existing.generation++;
+      return { state: existing, result: pending };
+    });
   }
 
   async admit(input: { id: string; role: string; sessionFingerprint: string }): Promise<DynamicAgent> {
@@ -523,9 +682,9 @@ export class DynamicAgentBroker {
         "Finish idempotency key already used");
       invariant(state.messages.filter(m => m.to === recipientId && m.state !== "acked").length <
         this.policy.maxPendingPerAgent, "Finish report recipient inbox full");
-      // A new verified call from the same recipient proves an earlier browser
-      // Send reached its conversation; do not carry those rows into another wake.
-      for (const msg of state.messages) if (msg.to === actor.id && msg.state === "sent") msg.state = "acked";
+      // Do not retire browser messages here: caller liveness alone does not
+      // prove every prior Send was consumed. The separately verified ACK
+      // protocol owns that transition (CoS finish/offer boundary).
       const report: DynamicMessage = { id: randomUUID(), taskKey: taskKey(state.task), from: actor.id,
         to: recipientId, kind: "evidence", body: input.result, idempotencyKey: input.idempotencyKey,
         ...(lastRequest ? { inReplyTo: lastRequest.id } : {}), state: "queued" };
