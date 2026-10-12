@@ -12,10 +12,15 @@ function setup(){
   let binding:string|null="host-proved-session-grant";
   let wrongSession=false;
   let invalidSkills=false;
+  let suppressReceipt=false;
   const browser:Executor={kind:"chatgpt_browser",async run(request):Promise<WorkerOutput>{
     calls.push({kind:"chatgpt_browser",request});
-    return {text:"",sessionId:wrongSession?
-      "https://chatgpt.com/c/7b54fc47-4cab-43e4-bc8d-6679512b3f53":chat};
+    const sessionId=wrongSession?
+      "https://chatgpt.com/c/7b54fc47-4cab-43e4-bc8d-6679512b3f53":chat;
+    if(request.dynamicTurn?.mode==="work" && !suppressReceipt){
+      await request.onAcceptedUserMessage?.({sessionId,providerMessageId:"trusted-provider-message-id"});
+    }
+    return {text:"",sessionId};
   }};
   const codex:Executor={kind:"codex",async run(request):Promise<WorkerOutput>{
     calls.push({kind:"codex",request});
@@ -45,7 +50,8 @@ function setup(){
   };
   const adapter=new DynamicDevosExecutorAdapter({codex,chatgpt_browser:browser},host);
   return {adapter,calls,host,denyReceipt:()=>receipt=null,denyBinding:()=>binding=null,
-    invalidSkills:()=>invalidSkills=true,wrongSession:()=>wrongSession=true};
+    invalidSkills:()=>invalidSkills=true,wrongSession:()=>wrongSession=true,
+    suppressReceipt:()=>suppressReceipt=true};
 }
 test("real DevOS Executor.run bootstrap adapter accepts only host-proved session and task skills",async()=>{
   const f=setup();
@@ -120,4 +126,22 @@ test("dynamic waking Codex peer resumes exact original thread with signed skill 
     conversationId:"codex-1",commandId:"codex-wake-2",wakeKey:"b".repeat(64),
     messages:[{id:"msg-codex-2",from:"qa1",kind:"work",body:"Fix again"}]}),
     /Executor changed the exact saved worker conversation\/thread/);
+});
+
+test("browser native Send is never considered accepted when only host text claims receipt",async()=>{
+  const f=setup();f.suppressReceipt();
+  await assert.rejects(f.adapter.send({task,recipientId:"qa",conversationId:chat,
+    executor:"chatgpt_browser",commandId:"wake-native-required",
+    wakeKey:"c".repeat(64),messages:[{
+      id:"m-missing",from:"developer",kind:"review",body:"Please review"
+    }]}),/without exact provider GET Send acceptance/);
+});
+test("host receipt must equal independently observed browser user-message identity",async()=>{
+  const f=setup();
+  f.host.verifiedProviderMessage=async()=> "different-provider-message";
+  await assert.rejects(f.adapter.send({task,recipientId:"qa",conversationId:chat,
+    executor:"chatgpt_browser",commandId:"wake-host-mismatch",
+    wakeKey:"d".repeat(64),messages:[{
+      id:"m-other",from:"developer",kind:"work",body:"Verify fix"
+    }]}),/without matching independently verified provider acceptance/);
 });
