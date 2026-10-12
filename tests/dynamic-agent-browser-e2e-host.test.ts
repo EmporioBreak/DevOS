@@ -101,6 +101,9 @@ test("first E2E browser host completes existing-chat grant, real-send proof and 
   const wakeLease={task,recipientId:"qa1",conversationId:chat,
     commandId:wake.id,wakeKey:wake.wakeKey};
   await f.broker.claimWake(wakeLease);
+  f.host.setWakeAcceptance(async receipt=>{
+    await f.broker.confirmWake(wakeLease,receipt);
+  });
   const wakeRequest=await f.host.prepareWake({task,recipientId:"qa1",conversationId:chat,
     executor:"chatgpt_browser",commandId:wake.id,wakeKey:wake.wakeKey,
     messages:[{id:wakeMsg.id,from:"main_agent",kind:"work",body:"Recheck again"}]});
@@ -108,8 +111,10 @@ test("first E2E browser host completes existing-chat grant, real-send proof and 
   assert.equal(wakeRequest.dynamicTurn?.startingGrantEpoch,1);
   await wakeRequest.onAcceptedUserMessage?.({sessionId:chat,providerMessageId:"provider-wake-002"});
   assert.equal(f.host.verifyWakeReceipt({...wakeLease,providerMessageId:"provider-wake-002"}),true);
+  assert.equal((await f.store.load())!.wakeCommands![0]!.state,"delivered",
+    "Native wake receipt must commit before Executor.run can finish");
+  // The outer wake dispatcher can reconcile the same provider receipt after run.
   await f.broker.confirmWake(wakeLease,{...wakeLease,providerMessageId:"provider-wake-002"});
-  assert.equal((await f.store.load())!.wakeCommands![0]!.state,"delivered");
 });
 test("first browser E2E host rejects wrong chat, unclaimed send, and unsealed Codex worker",async t=>{
   const f=await fixture();t.after(f.close);
